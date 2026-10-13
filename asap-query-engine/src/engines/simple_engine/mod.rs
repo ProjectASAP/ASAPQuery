@@ -190,17 +190,6 @@ struct RangeQueryReads {
     keys: Option<TimestampedBucketsMap>,
 }
 
-/// Single-subpopulation types whose merge of two groups' states is the state
-/// of their union. Increase is excluded: its merge joins pieces of one
-/// counter in time.
-const ROLLUP_AGGREGATION_TYPES: [AggregationType; 5] = [
-    AggregationType::Sum,
-    AggregationType::MinMax,
-    AggregationType::DatasketchesKLL,
-    AggregationType::DDSketch,
-    AggregationType::HLL,
-];
-
 type BucketMap = HashMap<u64, Vec<Arc<dyn AggregateCore>>>;
 type TopkPartition = (u64, Vec<String>);
 type TopkCandidates<'a> = HashMap<TopkPartition, Vec<(&'a KeyByLabelValues, f64)>>;
@@ -2586,7 +2575,7 @@ impl SimpleEngine {
                     context.metric, output, context.agg_info.aggregation_id_for_value, grouping
                 ))
             })?;
-        if !ROLLUP_AGGREGATION_TYPES.contains(&value_type) {
+        if !value_type.merges_across_groups() {
             return Err(QueryExecutionError::Native(format!(
                 "query on metric {} is grouped by {:?}, a roll-up of aggregation {} (grouped by \
                  {:?}), but {} can't be merged across groups",

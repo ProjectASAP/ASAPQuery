@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
 use rqe_optimizer::milp::MilpSolution;
-use rqe_optimizer::{Capability, Deployment};
+use rqe_optimizer::{Capability, Deployment, LabelSet, Raqe};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -48,10 +48,22 @@ pub enum MilpOutputError {
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
     QueryOnTwoDeployments(String),
     #[error(
-        "query {query:?} is grouped by {raqe:?} but served by a deployment grouped by \
-         {deployment:?}: a roll-up, which the engine can't read yet"
+        "query {query:?} is grouped by {raqe:?} but served by a {aggregation_type} deployment \
+         grouped by {deployment:?}: only aggregations that merge across groups roll up \
+         ({mergeable:?})",
+        mergeable = AggregationType::MERGEABLE_ACROSS_GROUPS
     )]
     RollupUnsupported {
+        query: String,
+        aggregation_type: AggregationType,
+        raqe: Vec<String>,
+        deployment: Vec<String>,
+    },
+    #[error(
+        "query {query:?} is grouped by {raqe:?}, which is not a subset of its \
+         deployment's grouping {deployment:?}"
+    )]
+    GroupingOutsideDeployment {
         query: String,
         raqe: Vec<String>,
         deployment: Vec<String>,
@@ -117,20 +129,8 @@ pub fn deployments_to_planner_output(
         "one deployment per Raqe"
     );
     reject_unwritable_queries(config)?;
-    // sketch-bench lets a deployment serve a RAQE grouped by a subset of its
-    // grouping (a roll-up, sketch-bench#190). The engine reads a deployment
-    // only at its own grouping, and `aggregation_config` takes the labels
-    // from the first RAQE served, so refuse a roll-up rather than write
-    // configs at the wrong grouping.
     for (raqe, &index) in workload.raqes.iter().zip(served_by) {
-        let deployment = &deployments[index];
-        if raqe.grouping_labels != deployment.grouping_labels {
-            return Err(MilpOutputError::RollupUnsupported {
-                query: raqe.id.clone(),
-                raqe: raqe.grouping_labels.iter().cloned().collect(),
-                deployment: deployment.grouping_labels.iter().cloned().collect(),
-            });
-        }
+        check_grouping(raqe, &deployments[index])?;
     }
 
     // A SQL aggregation names its table and value column, and its metric is
@@ -169,6 +169,11 @@ pub fn deployments_to_planner_output(
     for (raqe, &index) in served_by.iter().enumerate() {
         let item = workload.raqe_items[raqe];
         let key = &item_keys[&(index, item)];
+        check_rollup(
+            &workload.raqes[raqe],
+            &deployments[index],
+            aggregations[key].aggregation_type,
+        )?;
         for query in &workload.items[item].query_strings {
             match queries.entry(query.clone()) {
                 Entry::Vacant(entry) => {
@@ -212,9 +217,46 @@ pub fn deployments_to_planner_output(
     }))
 }
 
+fn label_names(set: &LabelSet) -> Vec<String> {
+    set.iter().cloned().collect()
+}
+
+/// A deployment can serve a Raqe grouped by its own grouping or a subset of
+/// it (a roll-up), never one grouped by labels it doesn't keep.
+fn check_grouping(raqe: &Raqe, deployment: &Deployment) -> Result<(), MilpOutputError> {
+    if raqe.grouping_labels.is_subset(&deployment.grouping_labels) {
+        return Ok(());
+    }
+    Err(MilpOutputError::GroupingOutsideDeployment {
+        query: raqe.id.clone(),
+        raqe: label_names(&raqe.grouping_labels),
+        deployment: label_names(&deployment.grouping_labels),
+    })
+}
+
+/// A Raqe grouped by a strict subset of its deployment's grouping is a
+/// roll-up. The engine merges such aggregations across the deployment's
+/// groups at query time, so those need only a query_config naming the
+/// aggregation.
+fn check_rollup(
+    raqe: &Raqe,
+    deployment: &Deployment,
+    aggregation_type: AggregationType,
+) -> Result<(), MilpOutputError> {
+    if raqe.grouping_labels == deployment.grouping_labels || aggregation_type.merges_across_groups()
+    {
+        return Ok(());
+    }
+    Err(MilpOutputError::RollupUnsupported {
+        query: raqe.id.clone(),
+        aggregation_type,
+        raqe: label_names(&raqe.grouping_labels),
+        deployment: label_names(&deployment.grouping_labels),
+    })
+}
+
 /// The aggregation `deployment` runs for `item`, one of the optimizer items
-/// it serves. Items share the deployment's capability and grouping
-/// (`plan_to_planner_output` refuses roll-ups); `item` decides the labels.
+/// it serves.
 fn aggregation_config(
     deployment: &Deployment,
     item: &OptimizerItem,
@@ -283,7 +325,8 @@ fn aggregation_config(
         }
     };
 
-    let (grouping_labels, aggregated_labels) = subpopulation_labels(item, aggregation_type);
+    let (grouping_labels, aggregated_labels) =
+        subpopulation_labels(deployment, item, aggregation_type);
 
     Ok(IntermediateAggConfig {
         aggregation_type,
@@ -309,20 +352,34 @@ fn aggregation_config(
     })
 }
 
-/// The (grouping, aggregated) labels `item`'s query needs from an aggregation
-/// of `aggregation_type`.
+/// The (grouping, aggregated) labels `item`'s query needs from `deployment`.
+/// A roll-up query is grouped by a subset of the deployment's grouping, so a
+/// non-top-k aggregation is always built at the deployment's grouping. A
+/// top-k heap is bucketed and keyed by the item's own labels (its `topk by`
+/// buckets; all labels, or a topk-of-sum's inner `sum by` labels), which can
+/// differ between items on one deployment. Top-k never rolls up.
 fn subpopulation_labels(
+    deployment: &Deployment,
     item: &OptimizerItem,
     aggregation_type: AggregationType,
 ) -> (KeyByLabelNames, KeyByLabelNames) {
     let requirements = &item.requirements;
+    let deployment_labels =
+        KeyByLabelNames::new(deployment.grouping_labels.iter().cloned().collect());
+    let (subpopulation_labels, topk_by_labels) = match deployment.capability {
+        Capability::TopKByValue | Capability::TopKByCount => (
+            &requirements.grouping_labels,
+            requirements.topk_by_labels.as_ref(),
+        ),
+        _ => (&deployment_labels, None),
+    };
     let mut grouping_labels = KeyByLabelNames::empty();
     let mut aggregated_labels = KeyByLabelNames::empty();
     set_subpopulation_labels(
         requirements.statistics[0],
         aggregation_type,
-        &requirements.grouping_labels,
-        requirements.topk_by_labels.as_ref(),
+        subpopulation_labels,
+        topk_by_labels,
         &mut KeyByLabelNames::empty(),
         &mut grouping_labels,
         &mut aggregated_labels,
@@ -603,6 +660,50 @@ mod tests {
         }
     }
 
+    /// Cardinality only comes from SQL `COUNT(DISTINCT ...)`, so the HLL
+    /// roll-up is planned from a real SQL cardinality query.
+    #[test]
+    fn hll_count_distinct_rollup_is_deployed_at_the_deployment_grouping() {
+        let query = "SELECT job, COUNT(DISTINCT requests) FROM http WHERE \
+                     time BETWEEN DATEADD(s, -60, NOW()) AND NOW() GROUP BY job";
+        let sql: SQLControllerConfig = serde_yaml::from_str(&format!(
+            "tables:\n  - name: http\n    time_column: time\n    value_columns: [requests]\n    \
+             metadata_columns: [instance, job]\nquery_groups:\n{}",
+            group(query, 0.99)
+        ))
+        .unwrap();
+        let facts = parse_workload_facts(
+            &FACTS.replace("http_requests_total", "http.requests"),
+            &MilpConfig::Sql(&sql).hints().unwrap(),
+            SCRAPE_MS,
+        )
+        .unwrap();
+        let workload = build_milp_workload(MilpConfig::Sql(&sql), &facts, SCRAPE_MS).unwrap();
+        let raqe = &workload.raqes[0];
+        assert_eq!(raqe.capability, Capability::Cardinality);
+        assert_eq!(raqe.grouping_labels, LabelSet::from(["job".into()]));
+        // The test cost table has no HLL rows to solve with, so reuse a
+        // solved deployment's shape as an HLL deployment on the table.
+        let (_, _, mut solution) = plan(&group(
+            "quantile by (job) (0.99, http_requests_total)",
+            0.99,
+        ));
+        widen_to_instance_job(&mut solution);
+        let mut deployment = solution.deployments[0].deployment.clone();
+        deployment.metric = raqe.metric.clone();
+        deployment.capability = Capability::Cardinality;
+        deployment.config.sketch = "hll".into();
+        deployment.config.sketch_config["params"] = json!({"lg_k": 12});
+
+        let output =
+            deployments_to_planner_output(MilpConfig::Sql(&sql), &workload, &[deployment], &[0])
+                .unwrap();
+        let a = aggregation_in(&output, query, QueryLanguage::sql);
+        assert_eq!(a.aggregation_type, AggregationType::HLL);
+        assert_eq!(a.grouping_labels, instance_job());
+        assert!(a.aggregated_labels.is_empty());
+    }
+
     /// The heap `query`'s deployment needs for it: `m · k` for the windows
     /// its lookback merges and its own `k` (`Deployment::heap_needed`).
     fn heap_needed(workload: &MilpWorkload, solution: &MilpSolution, query: &str) -> u64 {
@@ -823,22 +924,72 @@ mod tests {
         );
     }
 
+    fn instance_job() -> KeyByLabelNames {
+        KeyByLabelNames::new(vec!["instance".into(), "job".into()])
+    }
+
+    /// The solution with its only deployment grouped by (instance, job).
+    fn widen_to_instance_job(solution: &mut MilpSolution) {
+        let [planned] = solution.deployments.as_mut_slice() else {
+            panic!("expected one deployment, got {:?}", solution.deployments);
+        };
+        planned.deployment.grouping_labels = LabelSet::from(["instance".into(), "job".into()]);
+    }
+
+    /// A sketch `by (job)` served from a deployment by (instance, job) is
+    /// written at the deployment's grouping; the engine merges across
+    /// `instance` at query time.
     #[test]
-    fn rollup_is_refused() {
-        // A deployment by (instance, job) serving a query by (job): the
-        // engine would build the aggregation at the query's grouping.
+    fn sketch_rollup_is_deployed_at_the_deployment_grouping() {
+        let query = "quantile by (job) (0.99, http_requests_total)";
+        for (variant, capability, params, aggregation_type) in [
+            (
+                "kll-percall",
+                Capability::Quantile,
+                json!({"k": 200}),
+                AggregationType::DatasketchesKLL,
+            ),
+            (
+                "dd",
+                Capability::Quantile,
+                json!({"alpha": 0.01}),
+                AggregationType::DDSketch,
+            ),
+        ] {
+            let (config, workload, mut solution) = plan(&group(query, 0.99));
+            assert_eq!(
+                workload.raqes[0].grouping_labels,
+                LabelSet::from(["job".into()])
+            );
+            widen_to_instance_job(&mut solution);
+            let deployment = &mut solution.deployments[0].deployment;
+            deployment.config.sketch = variant.into();
+            deployment.config.sketch_config["params"] = params;
+            deployment.capability = capability;
+
+            let output =
+                plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+            assert_eq!(output.streaming_aggregation_count(), 1, "{variant}");
+            let a = aggregation_for(&output, query);
+            assert_eq!(a.aggregation_type, aggregation_type, "{variant}");
+            assert_eq!(a.grouping_labels, instance_job(), "{variant}");
+            assert!(a.aggregated_labels.is_empty(), "{variant}");
+        }
+    }
+
+    /// Exact accumulators are keyed types the engine doesn't roll up.
+    #[test]
+    fn exact_sum_rollup_is_refused() {
         let query = "sum by (job) (http_requests_total)";
         let (config, workload, mut solution) = plan(&group(query, 0.99));
-        solution.deployments[0]
-            .deployment
-            .grouping_labels
-            .insert("instance".into());
+        widen_to_instance_job(&mut solution);
         let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()
             .unwrap();
         assert!(
-            matches!(&err, MilpOutputError::RollupUnsupported { query: q, raqe, deployment }
-                if q.contains(query) && raqe == &["job"] && deployment == &["instance", "job"]),
+            matches!(&err, MilpOutputError::RollupUnsupported {
+                query: q, aggregation_type: AggregationType::MultipleSum, raqe, deployment
+            } if q.contains(query) && raqe == &["job"] && deployment == &["instance", "job"]),
             "{err}"
         );
     }
@@ -868,6 +1019,64 @@ mod tests {
                 KeyByLabelNames::new(vec![key.to_string()]),
                 "{query}"
             );
+        }
+    }
+
+    #[test]
+    fn grouping_outside_the_deployment_is_refused() {
+        let query = "quantile by (job) (0.99, http_requests_total)";
+        let (config, workload, mut solution) = plan(&group(query, 0.99));
+        let grouping = &mut solution.deployments[0].deployment.grouping_labels;
+        *grouping = LabelSet::from(["instance".into()]);
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&err, MilpOutputError::GroupingOutsideDeployment { raqe, deployment, .. }
+                if raqe == &["job"] && deployment == &["instance"]),
+            "{err}"
+        );
+    }
+
+    /// A deployment serving an exact-grouping query and a roll-up is one
+    /// aggregation at the deployment's grouping, whichever query comes first.
+    #[test]
+    fn shared_deployment_takes_its_own_grouping_in_either_order() {
+        let fine = "quantile by (instance, job) (0.99, http_requests_total)";
+        let coarse = "quantile by (job) (0.99, http_requests_total)";
+        for reverse in [false, true] {
+            let (config, mut workload, mut solution) =
+                plan(&(group(fine, 0.99) + &group(coarse, 0.99)));
+            // Raqes are sorted by query string; reversing the index-aligned
+            // lists puts the other query first.
+            if reverse {
+                workload.raqes.reverse();
+                workload.raqe_items.reverse();
+                solution.raqes.reverse();
+            }
+            let fine_raqe = workload
+                .raqes
+                .iter()
+                .position(|r| r.id.contains(fine))
+                .unwrap();
+            let shared = solution.deployments[solution.raqes[fine_raqe].deployment].clone();
+            solution.deployments = vec![shared];
+            for planned in &mut solution.raqes {
+                planned.deployment = 0;
+            }
+
+            let output =
+                plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+            assert_eq!(output.streaming_aggregation_count(), 1);
+            for query in [fine, coarse] {
+                let a = aggregation_for(&output, query);
+                assert_eq!(a.aggregation_type, AggregationType::DatasketchesKLL);
+                assert_eq!(
+                    a.grouping_labels,
+                    instance_job(),
+                    "{query}, reverse {reverse}"
+                );
+            }
         }
     }
 
