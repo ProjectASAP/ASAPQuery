@@ -42,6 +42,8 @@ PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY = "exited_at_sample"
 PROMETHEUS_CONFIG_DIR = "prometheus_config"
 PROMETHEUS_CONFIG_FILE = "prometheus.yml"
 PROMETHEUS_REMOTE_WRITE_ENDPOINT = "/api/v1/write"
+# Lets Prometheus accept samples pushed to PROMETHEUS_REMOTE_WRITE_ENDPOINT.
+PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG = "--web.enable-remote-write-receiver"
 HTTP_READINESS_CURL_TIMEOUT_SECONDS = 5
 QUERY_ENGINE_RUNTIME_INFO_ENDPOINT = "/api/v1/status/runtimeinfo"
 

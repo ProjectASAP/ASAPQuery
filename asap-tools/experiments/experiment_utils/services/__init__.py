@@ -34,6 +34,12 @@ from .misc import (
     ControllerService,
 )
 from .grafana import GrafanaService
+from .paced_feeder import (
+    PACED_FEEDER_EXPORTER,
+    PacedFeederService,
+    check_paced_feeder_config,
+    paced_feeder_sinks,
+)
 from .clickhouse_service import ClickHouseService, ClickHouseDataLoaderService
 
 
@@ -71,6 +77,10 @@ def create_prometheus_service(cfg, provider, num_nodes: int, node_offset: int):
         )
 
     monitoring = cfg.experiment_params.monitoring
+    # The paced feeder pushes over remote write instead of being scraped.
+    remote_write_receiver = (
+        PACED_FEEDER_EXPORTER in cfg.experiment_params.exporters.exporter_list
+    )
 
     # Validate required fields
     if not hasattr(monitoring, "tool"):
@@ -108,7 +118,9 @@ def create_prometheus_service(cfg, provider, num_nodes: int, node_offset: int):
     # Create appropriate service based on deployment mode
     if monitoring.deployment_mode == "containerized":
         if monitoring.tool == "prometheus":
-            return DockerPrometheusService(provider, num_nodes, node_offset)
+            return DockerPrometheusService(
+                provider, num_nodes, node_offset, remote_write_receiver
+            )
         elif monitoring.tool == "victoriametrics":
             return DockerVictoriaMetricsService(provider, num_nodes, node_offset)
     else:  # bare_metal
@@ -117,7 +129,9 @@ def create_prometheus_service(cfg, provider, num_nodes: int, node_offset: int):
                 "ERROR: VictoriaMetrics only supports containerized deployment. "
                 "Use tool: prometheus for bare_metal deployment."
             )
-        return PrometheusService(provider, num_nodes, node_offset)
+        return PrometheusService(
+            provider, num_nodes, node_offset, remote_write_receiver
+        )
 
 
 __all__ = [
@@ -147,4 +161,8 @@ __all__ = [
     "create_prometheus_service",
     "ClickHouseService",
     "ClickHouseDataLoaderService",
+    "PACED_FEEDER_EXPORTER",
+    "PacedFeederService",
+    "check_paced_feeder_config",
+    "paced_feeder_sinks",
 ]

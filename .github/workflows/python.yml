@@ -92,6 +92,9 @@ jobs:
     - name: Type check with mypy
       working-directory: asap-tools/queriers/prometheus-client
       run: mypy .
+    - name: Run tests
+      working-directory: asap-tools/queriers/prometheus-client
+      run: python -m unittest discover -s tests -v
 
   test-utilities:
     needs: detect-changes

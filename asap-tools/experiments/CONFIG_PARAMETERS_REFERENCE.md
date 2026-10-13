@@ -457,6 +457,44 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Example**: `"gauge"`
 - **Note**: Counter metrics have `_total` suffix, gauge metrics don't
 
+#### Paced Feeder Parameters
+
+`paced_feeder` runs `asap-tools/data-sources/paced-feeder` (built by
+`installation/common/setup_dependencies.sh`) bare-metal on the worker nodes,
+one process per (sink, metric). It pushes over remote write instead of being
+scraped: in `sketchdb` mode to the query engine's ingest
+(`streaming.remote_write`, which must have `parallelism: 1`), plus Prometheus
+when the mode sets `query_prometheus_too`; in every other mode to Prometheus,
+which then starts with `--web.enable-remote-write-receiver`. All processes
+share the seed and table, so every system gets the same data. Its metrics are
+listed under `metrics` with `exporter: paced_feeder`; Prometheus does not
+forward them to the query engine. Generate a whole config from a sketch-bench
+table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.workload_table` (string, required)
+- **Description**: Local path of the sketch-bench workload table; copied to each feeder node
+- **Example**: `/path/to/synthetic-templatesclassic-shared1.json`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.metrics` (list, required)
+- **Description**: Metrics of the table's `workloads[0].e2e.metrics` to send; gauge or counter only
+- **Example**: `[data, data_total]`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.seed` (int, required)
+- **Description**: `--seed` of every feeder process
+- **Example**: `42`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.duration_secs` (int, required)
+- **Description**: Seconds of data to send. Must be at least `flow.steady_state_wait` plus the query groups' running time
+- **Example**: `4000`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.samples_per_sec` (int, optional)
+- **Description**: Overrides the table's `samples_per_sec_per_series`
+- **Example**: `20`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.extra_flags` (string, optional)
+- **Description**: Appended to every feeder command line
+- **Example**: `"--concurrency 32"`
+
 ### Query Group Configuration
 
 #### `experiment_params.query_groups` (list, required)
@@ -499,6 +537,11 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Range**: 0-300 seconds
 - **Example**: `15`
 - **Usage**: Ensures data is available for lookback queries
+
+#### `experiment_params.query_groups[].client_options.align_to_interval` (boolean, optional)
+- **Description**: Evaluate repetition k at `t_k = floor((start - query_time_offset) / T) * T + k * T`, with `T = repetition_delay_ms` (whole seconds), sending it at wall-clock `t_k + query_time_offset`
+- **Default**: `false`
+- **Usage**: Every evaluation time is a multiple of `T`, so each system answers the same windows; `query_time_offset` is how long the data of the window ending at `t_k` gets to arrive. Overrides the query engine's per-aggregation alignment in sketchdb mode
 
 #### `experiment_params.query_groups[].client_options.starting_delay` (int, required)
 - **Description**: Initial delay in seconds before starting query execution

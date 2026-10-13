@@ -30,6 +30,11 @@ from classes.QueryLatencyExporter import QueryLatencyExporter
 from classes.query_client import QueryClient
 from classes.query_client_factory import QueryClientFactory
 from classes.query_template import QueryTemplate
+from classes.query_time import (
+    aligned_eval_time,
+    first_aligned_eval_time,
+    secs_until_send,
+)
 from promql_utilities.query_results.classes import QueryResult, QueryResultAcrossTime
 from promql_utilities.query_results.serializers import SerializerFactory
 
@@ -316,20 +321,36 @@ def handle_query_group(
         for server_name in servers
     }
 
+    # See classes/query_time.py. Aligned groups ignore query_start_times.
+    align_to_interval = getattr(query_group, "align_to_interval", False)
+    if align_to_interval:
+        offset_secs = getattr(query_group, "query_time_offset", 0)
+        first_eval_time = first_aligned_eval_time(
+            time.time(), query_group.repetition_delay_ms, offset_secs
+        )
+
     for repetition_idx in range(query_group.repetitions):
-        current_time = datetime.datetime.now()
-        logger.debug("Current unix time: {}", int(current_time.timestamp()))
-
-        if hasattr(query_group, "query_time_offset"):
-            current_time = current_time - datetime.timedelta(
-                seconds=query_group.query_time_offset
+        if align_to_interval:
+            query_unix_time = aligned_eval_time(
+                first_eval_time, query_group.repetition_delay_ms, repetition_idx
             )
-            logger.debug(
-                "Offsetting query time by {} seconds", query_group.query_time_offset
-            )
+            time.sleep(secs_until_send(query_unix_time, offset_secs, time.time()))
+            logger.debug("Aligned evaluation time: {}", query_unix_time)
+        else:
+            current_time = datetime.datetime.now()
+            logger.debug("Current unix time: {}", int(current_time.timestamp()))
 
-        query_unix_time = int(current_time.timestamp())
-        logger.debug("Unix time after query_time_offset: {}", query_unix_time)
+            if hasattr(query_group, "query_time_offset"):
+                current_time = current_time - datetime.timedelta(
+                    seconds=query_group.query_time_offset
+                )
+                logger.debug(
+                    "Offsetting query time by {} seconds",
+                    query_group.query_time_offset,
+                )
+
+            query_unix_time = int(current_time.timestamp())
+            logger.debug("Unix time after query_time_offset: {}", query_unix_time)
 
         if parallel:
             # Execute queries in parallel
@@ -337,11 +358,15 @@ def handle_query_group(
                 futures = []
                 for local_query_idx, query in enumerate(query_group.queries):
                     global_query_idx = global_query_idx_start + local_query_idx
-                    current_query_unix_time = get_query_unix_time(
-                        query,
-                        query_unix_time,
-                        query_start_times,
-                        query_group.repetition_delay_ms,
+                    current_query_unix_time = (
+                        query_unix_time
+                        if align_to_interval
+                        else get_query_unix_time(
+                            query,
+                            query_unix_time,
+                            query_start_times,
+                            query_group.repetition_delay_ms,
+                        )
                     )
 
                     for server_name, server_object in servers.items():
@@ -380,11 +405,15 @@ def handle_query_group(
             # Serial execution - use the same execute_single_query function
             for local_query_idx, query in enumerate(query_group.queries):
                 global_query_idx = global_query_idx_start + local_query_idx
-                current_query_unix_time = get_query_unix_time(
-                    query,
-                    query_unix_time,
-                    query_start_times,
-                    query_group.repetition_delay_ms,
+                current_query_unix_time = (
+                    query_unix_time
+                    if align_to_interval
+                    else get_query_unix_time(
+                        query,
+                        query_unix_time,
+                        query_start_times,
+                        query_group.repetition_delay_ms,
+                    )
                 )
 
                 logger.debug("Unix time for query: {}", current_query_unix_time)
@@ -428,7 +457,8 @@ def handle_query_group(
         if latency_exporter is not None:
             latency_exporter.export_repetition(repetition_idx, result)
 
-        if repetition_idx < query_group.repetitions - 1:
+        # Aligned groups wait for their next evaluation time instead.
+        if not align_to_interval and repetition_idx < query_group.repetitions - 1:
             time.sleep(query_group.repetition_delay_ms / 1000)
 
     if latency_exporter is not None:

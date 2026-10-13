@@ -134,6 +134,17 @@ def read_exporter_config(experiment_params: DictConfig) -> Tuple[Optional[Dict],
                     "cluster_data_exporter with parts_mode='part-index' requires 'part_index'",
                 )
 
+    from experiment_utils.services.paced_feeder import (
+        PACED_FEEDER_EXPORTER,
+        PACED_FEEDER_REQUIRED_KEYS,
+    )
+
+    if PACED_FEEDER_EXPORTER in exporters_config.exporter_list:
+        feeder_config = exporters_config.exporter_list[PACED_FEEDER_EXPORTER]
+        missing_keys = [k for k in PACED_FEEDER_REQUIRED_KEYS if k not in feeder_config]
+        if missing_keys:
+            return None, f"Missing keys in paced_feeder section: {missing_keys}"
+
     return exporters_config, ""
 
 
@@ -186,9 +197,25 @@ def call_generate_prometheus_config(
     import generate_prometheus_config
     import generate_victoriametrics_config
 
+    from experiment_utils.services.paced_feeder import paced_feeder_metric_names
+
+    # The paced feeder writes its metrics to the query engine itself, so
+    # Prometheus forwarding them too would send them twice.
+    fed_metrics = paced_feeder_metric_names(cfg.experiment_params)
+    metrics_to_remote_write = [
+        m
+        for m in get_metrics_to_remote_write(cfg.experiment_params)
+        if m not in fed_metrics
+    ]
+    # With only fed metrics there is nothing for Prometheus to forward. (An
+    # empty list without the feeder keeps meaning "forward everything".)
+    forward_to_query_engine = bool(metrics_to_remote_write) or not fed_metrics
     # Set up remote write if this is a SketchDB experiment
-    if experiment_mode == sketchdb_experiment_name and sketchdb_experiment_name:
-        metrics_to_remote_write = get_metrics_to_remote_write(cfg.experiment_params)
+    if (
+        experiment_mode == sketchdb_experiment_name
+        and sketchdb_experiment_name
+        and forward_to_query_engine
+    ):
         args.remote_write_metric_names = metrics_to_remote_write
 
         # Build remote_write_url from experiment params

@@ -42,7 +42,7 @@ def get_fake_exporter_seed(
     return derived_seed
 
 
-def get_fake_exporter_target_nodes(args) -> List[int]:
+def get_exporter_target_nodes(args) -> List[int]:
     """Return exporter nodes, preserving the single-node local fallback."""
     worker_nodes = args.get_node_range(include_coordinator=False)
     return worker_nodes or [args.get_coordinator_node()]
@@ -429,7 +429,7 @@ class RustExporterService(BaseExporterService):
         dataset = config["dataset"]
 
         commands_by_port: List[List[Tuple[int, str]]] = []
-        target_nodes = get_fake_exporter_target_nodes(self.args)
+        target_nodes = get_exporter_target_nodes(self.args)
         for port_ordinal in range(num_ports):
             port_commands = []
             for worker_ordinal, node_idx in enumerate(target_nodes):
@@ -488,7 +488,7 @@ class RustExporterService(BaseExporterService):
         # Build docker run commands for each port
         docker_run_cmds: List[Tuple[int, str]] = []
         container_names: List[str] = []
-        target_nodes = get_fake_exporter_target_nodes(self.args)
+        target_nodes = get_exporter_target_nodes(self.args)
 
         for worker_ordinal, node_idx in enumerate(target_nodes):
             for port_ordinal in range(num_ports):
@@ -579,7 +579,7 @@ class RustExporterService(BaseExporterService):
             **kwargs: Additional configuration (currently unused)
         """
         cmd = "pkill -f fake_exporter"
-        target_nodes = get_fake_exporter_target_nodes(self.args)
+        target_nodes = get_exporter_target_nodes(self.args)
         self.provider.execute_command_parallel(
             node_idxs=target_nodes,
             cmd=cmd,
@@ -591,7 +591,7 @@ class RustExporterService(BaseExporterService):
 
     def _stop_containerized(self, **kwargs) -> None:
         """Stop fake exporters using containerized deployment."""
-        target_nodes = get_fake_exporter_target_nodes(self.args)
+        target_nodes = get_exporter_target_nodes(self.args)
         try:
             if self.container_names is not None and len(self.container_names) > 0:
                 # Stop and remove containers by name
