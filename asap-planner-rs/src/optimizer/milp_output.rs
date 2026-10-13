@@ -1,6 +1,6 @@
 //! Turns a solved MILP plan into the planner's streaming and inference YAML.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use asap_types::enums::{CleanupPolicy, WindowType};
 use asap_types::query_config::QueryTimeAggregationOperator;
@@ -19,12 +19,12 @@ use crate::error::ControllerError;
 use crate::generator::{GeneratorOutput, QueryPlanEntry};
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::labels::set_subpopulation_labels;
-use crate::planner::promql::{aggregation_stage, strip_parens};
+use crate::planner::promql::{aggregation_stage, parse_binary_arms, strip_parens};
 use crate::planner_output::PlannerOutput;
 use crate::promql::generator::{build_inference_yaml, build_streaming_yaml};
 use crate::sql::generator::{build_sql_inference_yaml, build_sql_streaming_yaml};
 
-use super::aqe_extractor::contains_avg;
+use super::aqe_extractor::{contains_avg, decompose_to_leaves};
 use super::milp::{MilpConfig, MilpWorkload};
 use super::solution::OptimizerItem;
 
@@ -53,14 +53,14 @@ pub enum MilpOutputError {
     QueryOnTwoDeployments(String),
     #[error(
         "query {query:?} is grouped by {raqe:?} but served by a {aggregation_type} deployment \
-         grouped by {deployment:?}: roll-ups need DatasketchesKLL, DDSketch, HLL, or a \
-         MultipleSum or MultipleMinMax answering sum, count, min or max"
+         grouped by {deployment:?}: {reason}"
     )]
     RollupUnsupported {
         query: String,
         aggregation_type: AggregationType,
         raqe: Vec<String>,
         deployment: Vec<String>,
+        reason: RollupBlocker,
     },
     #[error(
         "query {query:?} is grouped by {raqe:?}, which is not a subset of its \
@@ -75,6 +75,20 @@ pub enum MilpOutputError {
     UnregroupableQuery(String),
     #[error(transparent)]
     Generator(#[from] ControllerError),
+}
+
+/// Why a roll-up can't be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum RollupBlocker {
+    #[error(
+        "roll-ups need DatasketchesKLL, DDSketch, HLL, or a MultipleSum or MultipleMinMax \
+         answering sum, count, min or max"
+    )]
+    Aggregation,
+    #[error("an exact roll-up needs a query-time stage, which a binary query's arms can't run")]
+    BinaryArm,
+    #[error("an exact roll-up needs a query-time stage, which SQL queries can't run")]
+    Sql,
 }
 
 /// Errors on queries whose plan can be costed but not written as configs:
@@ -167,11 +181,19 @@ pub fn deployments_to_planner_output(
         item_keys.insert((index, item), key);
     }
 
+    let binary_leaves = binary_query_leaves(config);
     let mut queries: IndexMap<String, QueryPlanEntry> = IndexMap::new();
     for (raqe, &index) in served_by.iter().enumerate() {
         let item = workload.raqe_items[raqe];
         let key = &item_keys[&(index, item)];
         for query in &workload.items[item].query_strings {
+            let stage_blocker = match config {
+                MilpConfig::Sql(_) => Some(RollupBlocker::Sql),
+                MilpConfig::Promql(_) if binary_leaves.contains(query) => {
+                    Some(RollupBlocker::BinaryArm)
+                }
+                MilpConfig::Promql(_) => None,
+            };
             match queries.entry(query.clone()) {
                 Entry::Vacant(entry) => {
                     entry.insert(query_plan_entry(
@@ -180,6 +202,7 @@ pub fn deployments_to_planner_output(
                         &workload.raqes[raqe],
                         &deployments[index],
                         aggregations[key].aggregation_type,
+                        stage_blocker,
                     )?);
                 }
                 Entry::Occupied(entry) if entry.get().aggregation_keys[0].0 == *key => {}
@@ -223,13 +246,15 @@ pub fn deployments_to_planner_output(
 /// roll-up. The engine merges single-subpopulation sketches across the
 /// deployment's groups itself, so those name the aggregation as is. Exact
 /// keyed accumulators are read at the deployment's grouping and regrouped
-/// at query time, which is exact for sum, count, min and max.
+/// at query time, which is exact for sum, count, min and max, unless
+/// `stage_blocker` says `query` can't run a query-time stage.
 fn query_plan_entry(
     query: &str,
     key: &str,
     raqe: &Raqe,
     deployment: &Deployment,
     aggregation_type: AggregationType,
+    stage_blocker: Option<RollupBlocker>,
 ) -> Result<QueryPlanEntry, MilpOutputError> {
     let aggregation_keys = vec![(key.to_string(), None)];
     let (fine, coarse) = (&deployment.grouping_labels, &raqe.grouping_labels);
@@ -256,16 +281,19 @@ fn query_plan_entry(
             aggregation_keys,
         ));
     }
+    let unsupported = |reason| MilpOutputError::RollupUnsupported {
+        query: raqe.id.clone(),
+        aggregation_type,
+        raqe: labels(coarse),
+        deployment: labels(fine),
+        reason,
+    };
     match deployment.capability {
         Capability::Sum | Capability::Count | Capability::Min | Capability::Max => {}
-        _ => {
-            return Err(MilpOutputError::RollupUnsupported {
-                query: raqe.id.clone(),
-                aggregation_type,
-                raqe: labels(coarse),
-                deployment: labels(fine),
-            })
-        }
+        _ => return Err(unsupported(RollupBlocker::Aggregation)),
+    }
+    if let Some(reason) = stage_blocker {
+        return Err(unsupported(reason));
     }
     let unregroupable = || MilpOutputError::UnregroupableQuery(query.to_string());
     let aggregate = outer_aggregate(query).ok_or_else(unregroupable)?;
@@ -279,6 +307,21 @@ fn query_plan_entry(
         planned_subquery: regrouped(aggregate, fine),
         query_time_aggregations: vec![stage],
     })
+}
+
+/// The leaves of the workload's binary queries. The engine runs a binary
+/// query's arms without query-time stages.
+fn binary_query_leaves(config: MilpConfig) -> HashSet<String> {
+    let MilpConfig::Promql(config) = config else {
+        return HashSet::new();
+    };
+    config
+        .query_groups
+        .iter()
+        .flat_map(|group| &group.queries)
+        .filter(|query| parse_binary_arms(query).is_some())
+        .flat_map(|query| decompose_to_leaves(query))
+        .collect()
 }
 
 /// The aggregation `query` applies last, inside any parentheses.
@@ -621,6 +664,48 @@ mod tests {
         )
     }
 
+    /// Plans SQL `groups` on table `http`, whose value column `requests` has
+    /// `http_requests_total`'s labels and facts.
+    fn sql_plan(groups: &str) -> (SQLControllerConfig, MilpWorkload, MilpSolution) {
+        let sql: SQLControllerConfig = serde_yaml::from_str(&format!(
+            "tables:\n  - name: http\n    time_column: time\n    value_columns: [requests]\n    \
+             metadata_columns: [instance, job]\nquery_groups:\n{groups}"
+        ))
+        .unwrap();
+        let facts = parse_workload_facts(
+            &FACTS.replace("http_requests_total", "http.requests"),
+            &MilpConfig::Sql(&sql).hints().unwrap(),
+            SCRAPE_MS,
+        )
+        .unwrap();
+        let (workload, solution) = solve(MilpConfig::Sql(&sql), &facts);
+        (sql, workload, solution)
+    }
+
+    /// The SQL engine runs no query-time stages, so a SQL query can't be an
+    /// exact roll-up.
+    #[test]
+    fn sql_exact_rollup_is_refused() {
+        let query = "SELECT job, SUM(requests) FROM http \
+                     WHERE time BETWEEN DATEADD(s, -15, NOW()) AND NOW() GROUP BY job";
+        let (sql, workload, mut solution) = sql_plan(&group(query, 0.99));
+        widen_to_instance_job(&mut solution);
+        let err = plan_to_planner_output(MilpConfig::Sql(&sql), &workload, &solution)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(
+                &err,
+                MilpOutputError::RollupUnsupported {
+                    aggregation_type: AggregationType::MultipleSum,
+                    reason: RollupBlocker::Sql,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
     /// A workload written in SQL, on a table whose value column has
     /// `http_requests_total`'s labels and facts, plans exactly as in PromQL.
     #[test]
@@ -670,18 +755,7 @@ mod tests {
         let (promql, promql_workload, promql_solution) = plan(&promql_groups);
 
         let sql_groups: String = twins.iter().map(|(_, q)| group(q, 0.99)).collect();
-        let sql: SQLControllerConfig = serde_yaml::from_str(&format!(
-            "tables:\n  - name: http\n    time_column: time\n    value_columns: [requests]\n    \
-             metadata_columns: [instance, job]\nquery_groups:\n{sql_groups}"
-        ))
-        .unwrap();
-        let facts = parse_workload_facts(
-            &FACTS.replace("http_requests_total", "http.requests"),
-            &MilpConfig::Sql(&sql).hints().unwrap(),
-            SCRAPE_MS,
-        )
-        .unwrap();
-        let (sql_workload, sql_solution) = solve(MilpConfig::Sql(&sql), &facts);
+        let (sql, sql_workload, sql_solution) = sql_plan(&sql_groups);
 
         let (promql_cost, sql_cost) = (&promql_solution.plan_cost, &sql_solution.plan_cost);
         assert_eq!(sql_cost.cpu_secs_per_sec(), promql_cost.cpu_secs_per_sec());
@@ -1178,12 +1252,58 @@ mod tests {
                 .unwrap();
             assert!(
                 matches!(&err, MilpOutputError::RollupUnsupported {
-                    query: q, aggregation_type, raqe, deployment
+                    query: q, aggregation_type, raqe, deployment,
+                    reason: RollupBlocker::Aggregation,
                 } if q.contains(query) && *aggregation_type == expected
                     && raqe == &["job"] && deployment == &["instance", "job"]),
                 "{err}"
             );
         }
+    }
+
+    /// The engine runs a binary query's arms without query-time stages, so a
+    /// binary query's leaf can't be an exact roll-up.
+    #[test]
+    fn exact_rollup_of_a_binary_query_leaf_is_refused() {
+        for query in [
+            "sum by (job) (http_requests_total) * 100",
+            "sum by (job) (http_requests_total) / sum by (job) (http_requests_total)",
+        ] {
+            let (config, workload, mut solution) = plan(&group(query, 0.99));
+            widen_to_instance_job(&mut solution);
+            let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
+                .err()
+                .unwrap();
+            assert!(
+                matches!(
+                    &err,
+                    MilpOutputError::RollupUnsupported {
+                        aggregation_type: AggregationType::MultipleSum,
+                        reason: RollupBlocker::BinaryArm,
+                        ..
+                    }
+                ),
+                "{query}: {err}"
+            );
+        }
+    }
+
+    /// A sketch roll-up needs no query-time stage, so a binary query's leaf
+    /// can still be one.
+    #[test]
+    fn sketch_rollup_of_a_binary_query_leaf_is_planned() {
+        let leaf = "quantile by (job) (0.99, http_requests_total)";
+        let (config, workload, mut solution) = plan(&group(&format!("{leaf} * 100"), 0.99));
+        widen_to_instance_job(&mut solution);
+        let deployment = &mut solution.deployments[0].deployment;
+        deployment.config.sketch = "kll-percall".into();
+        deployment.config.sketch_config["params"] = json!({"k": 200});
+        deployment.capability = Capability::Quantile;
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+        let query_config = query_config_for(&output, leaf);
+        assert_eq!(query_config.planned_subquery, leaf);
+        assert!(query_config.query_time_aggregations.is_empty());
     }
 
     /// Both are global top-k Raqes on one metric, so the solver may give them
