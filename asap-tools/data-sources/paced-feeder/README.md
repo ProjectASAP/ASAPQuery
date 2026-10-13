@@ -234,15 +234,18 @@ credentials.
 
 ## Pacing and stats
 
-Each tick's rows are split into `--batch-rows` requests and sent with up to
-`--concurrency` in flight. The next tick starts only after every request of
-the current one returns, so samples arrive out of order only within a tick.
-A tick starting at `t` holds samples spaced evenly over `(t, t + 1 s]`, the
-same left-open interval as ASAPQuery's one-second windows, so a tick never
-spans two windows. Out-of-order samples within it are then safe for
+Each tick's rows are split into requests of about `--batch-rows` rows and
+sent with up to `--concurrency` in flight. A tick's rows are series-major and
+requests are cut only between series, so each series' samples of a tick go
+in one request, in timestamp order; the next tick starts only after every
+request of the current one returns. Each series' samples therefore arrive in
+order (counters never seem to reset, and Prometheus needs no out-of-order
+window), while samples of different series of a group may arrive out of
+order within a tick. A tick starting at `t` holds samples spaced evenly over
+`(t, t + 1 s]`, the same left-open interval as ASAPQuery's one-second
+windows, so a tick never spans two windows, and that reordering is safe for
 ASAPQuery as long as its allowed lateness is at least 1 s (the default is
-5 s). Prometheus' remote-write receiver needs an out-of-order window of at
-least 1 s (`storage.tsdb.out_of_order_time_window`).
+5 s).
 `--samples-per-sec` is at most 1000, so timestamps (in ms) never repeat. The
 default batch size is 50,000 rows for remote write, which keeps a compressed
 request under axum's 2 MB body limit in ASAPQuery's ingest, and 100,000 for
@@ -251,7 +254,10 @@ ClickHouse, where every INSERT creates a part.
 For records metrics, each request generates its own records as it encodes
 them, so generation runs on all cores. For remote write, `--batch-rows`
 counts samples, a record being one per value field (`http`: 25,000 records
-per request). Rows in the stats are records.
+per request). Records requests are cut anywhere, so a series' records may
+arrive out of order within a tick; that is safe because no records query
+reads a series in arrival order (as `increase` does) and Prometheus is not a
+target for them. Rows in the stats are records.
 
 `--stats-out` writes, per tick, the rows, bytes, start lag and elapsed time,
 plus totals:
