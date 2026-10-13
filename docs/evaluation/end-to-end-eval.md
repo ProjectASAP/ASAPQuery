@@ -90,12 +90,21 @@ own plan (PromQL→SQL for PilotDB, its sampling modes).
   requests run concurrently ([#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)). ASAPQuery's allowed lateness stays at its
   5 s default. Prometheus needs no out-of-order window.
 
+**Windows are not scaled.** The windows (15m–24h) define the RQEs; the rate
+only sets how much data a window holds. Keeping them makes the e2e workload the
+§6.3 one. Scaling them up 20× to keep the items per window would mean 5 h to 20
+day windows; scaling them down 20× would put most per-series windows below the
+accuracy curves (a series' 15m window would hold 450 items) and change the
+workload. At 1/20 of the rate each baseline query scans 1/20 of the data, so
+the measured speedups understate ASAPQuery's advantage at the §6.3 rate.
+
 ## 6. Planner at 10 samples/s
 
 The §6.3 plans were solved at 200 samples/s. Ingest CPU scales with the rate,
 but each sketch's accuracy and memory depend on its items per window `n`, so
 the plan can change at 1/20 of the rate, and the tables and plans are
-regenerated at 10 samples/s (`SYNTHETIC_SAMPLES_PER_SEC`). Constraints:
+regenerated at 10 samples/s (`SYNTHETIC_SAMPLES_PER_SEC`). These plans are for
+the e2e run only; §6.3's results stay at 200 samples/s. Constraints:
 
 - **Accuracy curves start at N = 1e3.** Below a curve's first measured N the
   optimizer has no accuracy for the pair and the deployment is ineligible
