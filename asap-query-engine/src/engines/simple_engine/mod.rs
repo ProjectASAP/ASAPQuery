@@ -190,6 +190,17 @@ struct RangeQueryReads {
     keys: Option<TimestampedBucketsMap>,
 }
 
+/// Single-subpopulation types whose merge of two groups' states is the state
+/// of their union. Increase is excluded: its merge joins pieces of one
+/// counter in time.
+const ROLLUP_AGGREGATION_TYPES: [AggregationType; 5] = [
+    AggregationType::Sum,
+    AggregationType::MinMax,
+    AggregationType::DatasketchesKLL,
+    AggregationType::DDSketch,
+    AggregationType::HLL,
+];
+
 type BucketMap = HashMap<u64, Vec<Arc<dyn AggregateCore>>>;
 type TopkPartition = (u64, Vec<String>);
 type TopkCandidates<'a> = HashMap<TopkPartition, Vec<(&'a KeyByLabelValues, f64)>>;
@@ -2287,11 +2298,9 @@ impl SimpleEngine {
     }
 
     /// Collects every bucket in `bucket_map` whose start falls in
-    /// `[window_start, window_end)`, stepping by `step_increment`. Missing
-    /// buckets at a given start are skipped (partial data is okay). Used
-    /// identically by `execute_range_query_pipeline` for both the value
-    /// side and (#583) the keys side — the only difference between the two
-    /// call sites is which map/lookback/bucket-width they pass in.
+    /// `[window_start, window_end)`. Sliding walks by its stored-window
+    /// stride; Tumbling walks by `step_increment`. An incomplete Sliding
+    /// cover is rejected before accumulator sketches are cloned.
     ///
     /// Cost is proportional to `(window_end - window_start) / step_increment`
     /// -- the nominal window width -- not to how many buckets actually exist
@@ -2301,12 +2310,15 @@ impl SimpleEngine {
     /// `[0, current_time)` ("replay from the beginning") -- callers on that
     /// path MUST use `collect_bucket_map_entries_before` instead, never this
     /// (#581 stage E.4 review; see that function's doc for why).
-    fn sum_window(
+    fn window_buckets_for_step(
         bucket_map: &BucketMap,
         window_start: u64,
         window_end: u64,
         step_increment: u64,
-    ) -> Vec<Box<dyn AggregateCore>> {
+        window_type: WindowType,
+        stored_window_size_ms: u64,
+        expected_sliding_window_count: Option<usize>,
+    ) -> Option<Vec<Box<dyn AggregateCore>>> {
         // A zero step never advances `t`, so the loop below would never
         // terminate. This is the single caller-facing guard for that hazard
         // -- callers upstream may also validate their own step sources, but
@@ -2314,19 +2326,43 @@ impl SimpleEngine {
         // on either of them to have done so. Kept active in release builds
         // (assert!, not debug_assert!): a hung query is a production
         // incident, not just a debug-time nicety.
+        let grid_step_ms = if window_type == WindowType::Sliding {
+            stored_window_size_ms
+        } else {
+            step_increment
+        };
         assert!(
-            step_increment > 0,
-            "sum_window: step_increment must be nonzero, or this loop never terminates"
+            grid_step_ms > 0,
+            "window_buckets_for_step: grid step must be nonzero"
         );
-        let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
+        assert_eq!(
+            expected_sliding_window_count.is_some(),
+            window_type == WindowType::Sliding,
+            "only Sliding windows have a completeness requirement"
+        );
+
+        let mut selected_buckets = Vec::new();
+        let mut covered_window_count = 0;
         let mut t = window_start;
         while t < window_end {
-            if let Some(buckets) = bucket_map.get(&t) {
-                window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
+            if let Some(window_buckets) = bucket_map.get(&t) {
+                if !window_buckets.is_empty() {
+                    covered_window_count += 1;
+                    selected_buckets.extend(window_buckets.iter());
+                }
             }
-            t += step_increment;
+            t += grid_step_ms;
         }
-        window_buckets
+        if expected_sliding_window_count.is_some_and(|expected| covered_window_count < expected) {
+            return None;
+        }
+
+        Some(
+            selected_buckets
+                .into_iter()
+                .map(|bucket| bucket.clone_boxed_core())
+                .collect(),
+        )
     }
 
     /// Collects every bucket in `bucket_map` with a start timestamp strictly
@@ -2387,30 +2423,6 @@ impl SimpleEngine {
             .into_iter()
             .map(|(_, b)| b.clone_boxed_core())
             .collect()
-    }
-
-    /// Picks how a step's window is composed from `bucket_map`: Sliding walks
-    /// the non-overlapping stored-window stride `W`; Tumbling walks the
-    /// bucket grid stride. Used identically for values and SetAggregator
-    /// keys. Walking Sliding by its slide `S` would double-count overlapping
-    /// full-window aggregates (#608/#621).
-    ///
-    /// NOT used for `AggregationType::DeltaSetAggregator` keys -- callers on
-    /// that path must call `collect_bucket_map_entries_before` directly
-    /// instead (see its doc comment).
-    fn window_buckets_for_step(
-        bucket_map: &BucketMap,
-        window_start: u64,
-        window_end: u64,
-        step_increment: u64,
-        window_type: WindowType,
-        stored_window_size_ms: u64,
-    ) -> Vec<Box<dyn AggregateCore>> {
-        if window_type == WindowType::Sliding {
-            Self::sum_window(bucket_map, window_start, window_end, stored_window_size_ms)
-        } else {
-            Self::sum_window(bucket_map, window_start, window_end, step_increment)
-        }
     }
 
     /// Execute the range query pipeline.
@@ -2546,10 +2558,83 @@ impl SimpleEngine {
         ))
     }
 
+    /// For a query grouped by labels `Q` served from a single-subpopulation
+    /// aggregation grouped by `G ⊋ Q` (a roll-up), the position in `G` of
+    /// each label of `Q`. `None` when the query reads the aggregation at its
+    /// own grouping. Keyed and top-k aggregations are never rolled up here.
+    fn rollup_projection(
+        context: &QueryExecutionContext,
+    ) -> Result<Option<Vec<usize>>, QueryExecutionError> {
+        let value_type = context.agg_info.aggregation_type_for_value;
+        let single_subpopulation = !value_type.is_keyed()
+            && context.store_plan.keys_query.is_none()
+            && context.aggregated_labels.labels.is_empty()
+            && context.metadata.statistic_to_compute != Statistic::Topk;
+        let grouping = &context.grouping_labels.labels;
+        let output = &context.metadata.query_output_labels.labels;
+        if !single_subpopulation || grouping == output {
+            return Ok(None);
+        }
+        let projection = output
+            .iter()
+            .map(|label| grouping.iter().position(|g| g == label))
+            .collect::<Option<Vec<usize>>>()
+            .ok_or_else(|| {
+                QueryExecutionError::Native(format!(
+                    "query on metric {} is grouped by {:?}, which aggregation {} (grouped by \
+                     {:?}) can't serve",
+                    context.metric, output, context.agg_info.aggregation_id_for_value, grouping
+                ))
+            })?;
+        if !ROLLUP_AGGREGATION_TYPES.contains(&value_type) {
+            return Err(QueryExecutionError::Native(format!(
+                "query on metric {} is grouped by {:?}, a roll-up of aggregation {} (grouped by \
+                 {:?}), but {} can't be merged across groups",
+                context.metric,
+                output,
+                context.agg_info.aggregation_id_for_value,
+                grouping,
+                value_type.as_str()
+            )));
+        }
+        Ok(Some(projection))
+    }
+
+    /// Re-keys every store group by its projection onto the query's labels,
+    /// so the per-step merge folds all subpopulations of an output group.
+    fn roll_up_groups(
+        values: TimestampedBucketsMap,
+        projection: &[usize],
+        grouping_label_count: usize,
+    ) -> Result<TimestampedBucketsMap, QueryExecutionError> {
+        let mut rolled: TimestampedBucketsMap = HashMap::new();
+        for (key, buckets) in values {
+            let key = key
+                .filter(|key| key.labels.len() == grouping_label_count)
+                .ok_or_else(|| {
+                    QueryExecutionError::Native(format!(
+                        "store key doesn't have the aggregation's {grouping_label_count} \
+                         grouping label values"
+                    ))
+                })?;
+            let projected = KeyByLabelValues::new_with_labels(
+                projection.iter().map(|&i| key.labels[i].clone()).collect(),
+            );
+            rolled.entry(Some(projected)).or_default().extend(buckets);
+        }
+        // The store sorts each group's buckets chronologically; keep that
+        // order across the merged groups.
+        for buckets in rolled.values_mut() {
+            buckets.sort_by_key(|(range, _)| *range);
+        }
+        Ok(rolled)
+    }
+
     fn read_range_query_inputs(
         &self,
         context: &RangeQueryExecutionContext,
     ) -> Result<RangeQueryReads, QueryExecutionError> {
+        let rollup_projection = Self::rollup_projection(&context.base)?;
         let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
         let values = if context.window_type == WindowType::Sliding {
             self.execute_sliding_cover_query(
@@ -2574,6 +2659,14 @@ impl SimpleEngine {
             values.len(),
             values.values().map(|buckets| buckets.len()).sum::<usize>()
         );
+        let values = match rollup_projection {
+            Some(projection) => Self::roll_up_groups(
+                values,
+                &projection,
+                context.base.grouping_labels.labels.len(),
+            )?,
+            None => values,
+        };
 
         let keys = match &context.base.store_plan.keys_query {
             Some(query) if context.keys_window_type == Some(WindowType::Sliding) => {
@@ -2932,27 +3025,27 @@ impl SimpleEngine {
                                 };
                                 let keys_window_start =
                                     keys_window_end.saturating_sub(*keys_lookback_ms);
-                                Self::window_buckets_for_step(
+                                let expected_sliding_window_count =
+                                    (*keys_window_type == WindowType::Sliding).then_some(
+                                        (*keys_lookback_ms / *keys_stored_window_size_ms) as usize,
+                                    );
+                                let Some(keys_window_buckets) = Self::window_buckets_for_step(
                                     keys_bucket_map,
                                     keys_window_start,
                                     keys_window_end,
                                     *keys_tumbling_window_ms,
                                     *keys_window_type,
                                     *keys_stored_window_size_ms,
-                                )
+                                    expected_sliding_window_count,
+                                ) else {
+                                    debug!(
+                                        "Skipping incomplete Sliding key cover at t={}",
+                                        current_time
+                                    );
+                                    continue;
+                                };
+                                keys_window_buckets
                             };
-
-                        if *keys_window_type == WindowType::Sliding {
-                            let expected =
-                                (*keys_lookback_ms / *keys_stored_window_size_ms) as usize;
-                            if keys_window_buckets.len() < expected {
-                                debug!(
-                                    "Skipping incomplete Sliding key cover at t={}",
-                                    current_time
-                                );
-                                continue;
-                            }
-                        }
 
                         if keys_window_buckets.is_empty() {
                             debug!(
@@ -2988,14 +3081,23 @@ impl SimpleEngine {
                 };
                 let window_start = window_end.saturating_sub(lookback_ms);
 
-                let window_buckets = Self::window_buckets_for_step(
+                let expected_sliding_window_count = (window_type == WindowType::Sliding)
+                    .then_some((lookback_ms / context.window_size_ms) as usize);
+                let Some(window_buckets) = Self::window_buckets_for_step(
                     bucket_map,
                     window_start,
                     window_end,
                     tumbling_window_ms,
                     window_type,
                     context.window_size_ms,
-                );
+                    expected_sliding_window_count,
+                ) else {
+                    debug!(
+                        "Skipping incomplete Sliding value cover at t={}",
+                        current_time
+                    );
+                    continue;
+                };
 
                 trace!(
                     current_time,
@@ -3007,17 +3109,6 @@ impl SimpleEngine {
                     selected_bucket_count = window_buckets.len(),
                     "Composed query output window from stored buckets"
                 );
-
-                if window_type == WindowType::Sliding {
-                    let expected = (lookback_ms / context.window_size_ms) as usize;
-                    if window_buckets.len() < expected {
-                        debug!(
-                            "Skipping incomplete Sliding value cover at t={}",
-                            current_time
-                        );
-                        continue;
-                    }
-                }
 
                 if window_buckets.is_empty() {
                     // No data at all for this window - skip sample
@@ -3090,6 +3181,85 @@ impl SimpleEngine {
         // after every timestamp's ranking above has already decided which
         // groups/samples survive.
         Ok(results.into_values().collect())
+    }
+}
+
+#[cfg(test)]
+mod roll_up_groups_tests {
+    use super::SimpleEngine;
+    use crate::data_model::{AggregateCore, KeyByLabelValues};
+    use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::stores::TimestampedBucketsMap;
+    use std::sync::Arc;
+
+    fn bucket(start: u64, value: f64) -> ((u64, u64), Arc<dyn AggregateCore>) {
+        (
+            (start, start + 1_000),
+            Arc::new(SumAccumulator::with_sum(value)),
+        )
+    }
+
+    fn key(labels: &[&str]) -> Option<KeyByLabelValues> {
+        Some(KeyByLabelValues::new_with_labels(
+            labels.iter().map(|label| label.to_string()).collect(),
+        ))
+    }
+
+    #[test]
+    fn groups_with_the_same_projection_share_one_chronological_bucket_list() {
+        let values: TimestampedBucketsMap = [
+            (key(&["/x", "a"]), vec![bucket(2_000, 1.0)]),
+            (
+                key(&["/y", "a"]),
+                vec![bucket(1_000, 2.0), bucket(2_000, 4.0)],
+            ),
+            (key(&["/x", "b"]), vec![bucket(1_000, 8.0)]),
+        ]
+        .into_iter()
+        .collect();
+
+        let rolled = SimpleEngine::roll_up_groups(values, &[1], 2).unwrap();
+
+        let ranges = |labels: &[&str]| -> Vec<(u64, u64)> {
+            rolled[&key(labels)]
+                .iter()
+                .map(|(range, _)| *range)
+                .collect()
+        };
+        assert_eq!(rolled.len(), 2);
+        assert_eq!(
+            ranges(&["a"]),
+            vec![(1_000, 2_000), (2_000, 3_000), (2_000, 3_000)]
+        );
+        assert_eq!(ranges(&["b"]), vec![(1_000, 2_000)]);
+    }
+
+    #[test]
+    fn empty_projection_rolls_everything_into_one_group() {
+        let values: TimestampedBucketsMap = [
+            (key(&["/x", "a"]), vec![bucket(1_000, 1.0)]),
+            (key(&["/x", "b"]), vec![bucket(1_000, 2.0)]),
+        ]
+        .into_iter()
+        .collect();
+
+        let rolled = SimpleEngine::roll_up_groups(values, &[], 2).unwrap();
+
+        assert_eq!(rolled.len(), 1);
+        assert_eq!(rolled[&key(&[])].len(), 2);
+    }
+
+    #[test]
+    fn a_store_key_without_every_grouping_value_is_an_error() {
+        for bad_key in [None, key(&["a"])] {
+            let values: TimestampedBucketsMap = [(bad_key.clone(), vec![bucket(1_000, 1.0)])]
+                .into_iter()
+                .collect();
+            assert!(
+                SimpleEngine::roll_up_groups(values, &[0], 2).is_err(),
+                "{bad_key:?} should be rejected"
+            );
+        }
     }
 }
 

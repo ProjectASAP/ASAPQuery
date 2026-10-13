@@ -11,14 +11,16 @@ use rqe_optimizer::{
 };
 use thiserror::Error;
 
-use crate::config::input::ControllerConfig;
+use crate::config::input::{
+    ControllerConfig, ControllerOptions, MetricDefinition, SQLControllerConfig, TableDefinition,
+};
 
 use std::path::Path;
 
 use anyhow::Context;
 use rqe_optimizer::saturation::SaturationCurves;
 
-use super::aqe_extractor::{extract_aqes, RQE};
+use super::aqe_extractor::{extract_aqes, extract_sql_aqes, sql_metric, RQE};
 use super::atomic_costs::load_flat_atomic_cost_table;
 use super::error::OptimizerError;
 use super::solution::OptimizerItem;
@@ -38,6 +40,10 @@ pub enum MilpError {
     MissingMetricHints,
     #[error("workload metrics missing from `metrics:` hints: {0:?}")]
     MetricsWithoutHints(Vec<String>),
+    #[error("table {0:?} lists no metadata_columns; the MILP planner doesn't discover them")]
+    TableWithoutMetadataColumns(String),
+    #[error("two SQL value columns both name metric {0:?}")]
+    DuplicateSqlMetric(String),
     #[error(transparent)]
     Extraction(#[from] OptimizerError),
     #[error("query {query:?}: accuracy_sla {accuracy_sla} must be between 0 and 1")]
@@ -119,6 +125,91 @@ pub fn solve_milp(
     Ok(solution)
 }
 
+/// The workload config the MILP plans, by query language.
+#[derive(Debug, Clone, Copy)]
+pub enum MilpConfig<'a> {
+    Promql(&'a ControllerConfig),
+    Sql(&'a SQLControllerConfig),
+}
+
+impl<'a> MilpConfig<'a> {
+    /// Each workload metric's labels. A SQL table's value columns are its
+    /// metrics, labelled by its metadata columns.
+    pub(crate) fn hints(self) -> Result<Vec<MetricDefinition>, MilpError> {
+        let MilpConfig::Promql(config) = self else {
+            let mut hints: Vec<MetricDefinition> = Vec::new();
+            for (metric, table, _) in self.sql_columns() {
+                if table.metadata_columns.is_empty() {
+                    return Err(MilpError::TableWithoutMetadataColumns(table.name.clone()));
+                }
+                if hints.iter().any(|hint| hint.metric == metric) {
+                    return Err(MilpError::DuplicateSqlMetric(metric));
+                }
+                hints.push(MetricDefinition {
+                    metric,
+                    labels: table.metadata_columns.clone(),
+                });
+            }
+            return Ok(hints);
+        };
+        config.metrics.clone().ok_or(MilpError::MissingMetricHints)
+    }
+
+    /// Every SQL value column as `(metric, table, column)`; empty for PromQL.
+    pub(crate) fn sql_columns(self) -> Vec<(String, &'a TableDefinition, &'a str)> {
+        let MilpConfig::Sql(config) = self else {
+            return Vec::new();
+        };
+        config
+            .tables
+            .iter()
+            .flat_map(|table| {
+                table
+                    .value_columns
+                    .iter()
+                    .map(move |column| (sql_metric(&table.name, column), table, column.as_str()))
+            })
+            .collect()
+    }
+
+    fn items(self, scrape_interval_ms: u64) -> Result<Vec<OptimizerItem>, MilpError> {
+        let (windowing, sketch_parameters, aggregate_cleanup) = match self {
+            MilpConfig::Promql(c) => (&c.windowing, &c.sketch_parameters, &c.aggregate_cleanup),
+            MilpConfig::Sql(c) => (&c.windowing, &c.sketch_parameters, &c.aggregate_cleanup),
+        };
+        reject_fields([
+            ("windowing", windowing.is_some()),
+            ("sketch_parameters", sketch_parameters.is_some()),
+            ("aggregate_cleanup", aggregate_cleanup.is_some()),
+        ])?;
+        match self {
+            MilpConfig::Promql(config) => extract_hinted_items(config, scrape_interval_ms),
+            MilpConfig::Sql(config) => {
+                let rqes = config_to_rqes(
+                    config
+                        .query_groups
+                        .iter()
+                        .map(|qg| (&qg.queries, qg.repetition_delay_ms, &qg.controller_options)),
+                );
+                Ok(extract_sql_aqes(&rqes, &config.tables, scrape_interval_ms)?)
+            }
+        }
+    }
+}
+
+/// The MILP chooses windows and sketch parameters itself.
+fn reject_fields(fields: [(&'static str, bool); 3]) -> Result<(), MilpError> {
+    let unsupported: Vec<&'static str> = fields
+        .into_iter()
+        .filter_map(|(field, set)| set.then_some(field))
+        .collect();
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(MilpError::UnsupportedFields(unsupported))
+    }
+}
+
 /// What a MILP planning run reads besides the workload config.
 pub struct MilpInputs<'a> {
     pub workload_facts: &'a Path,
@@ -141,12 +232,12 @@ pub struct MilpPlan {
 
 /// Loads the facts, costs and saturation curves and solves for the cheapest
 /// plan.
-pub fn plan_milp(config: &ControllerConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
-    config.warn_default_slas();
-    let Some(hints) = config.metrics.as_deref() else {
-        return Err(MilpError::MissingMetricHints.into());
-    };
-    let facts = load_workload_facts(inputs.workload_facts, hints, inputs.scrape_interval_ms)?;
+pub fn plan_milp(config: MilpConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
+    if let MilpConfig::Promql(promql) = config {
+        promql.warn_default_slas();
+    }
+    let hints = config.hints()?;
+    let facts = load_workload_facts(inputs.workload_facts, &hints, inputs.scrape_interval_ms)?;
     let curves = SaturationCurves::load(inputs.saturation_dir).with_context(|| {
         format!(
             "loading saturation curves from {}",
@@ -240,23 +331,11 @@ pub struct MilpWorkload {
 /// dashboards running the same query at the same cadence become two
 /// identical Raqes, which the MILP serves from one shared deployment.
 pub fn build_milp_workload(
-    config: &ControllerConfig,
+    config: MilpConfig,
     facts: &WorkloadFacts,
     scrape_interval_ms: u64,
 ) -> Result<MilpWorkload, MilpError> {
-    // The MILP chooses windows and sketch parameters itself.
-    let unsupported: Vec<&'static str> = [
-        ("windowing", config.windowing.is_some()),
-        ("sketch_parameters", config.sketch_parameters.is_some()),
-        ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
-    ]
-    .into_iter()
-    .filter_map(|(field, set)| set.then_some(field))
-    .collect();
-    if !unsupported.is_empty() {
-        return Err(MilpError::UnsupportedFields(unsupported));
-    }
-    let mut items = extract_hinted_items(config, scrape_interval_ms)?;
+    let mut items = config.items(scrape_interval_ms)?;
     // Stable Raqe order and ids across runs.
     items.sort_by(|a, b| {
         (&a.query_strings, a.t_repeat_ms)
@@ -319,7 +398,12 @@ fn extract_hinted_items(
         return Err(MilpError::MissingMetricHints);
     }
     let schema = config.schema_from_hints();
-    let rqes = config_to_rqes(config);
+    let rqes = config_to_rqes(
+        config
+            .query_groups
+            .iter()
+            .map(|qg| (&qg.queries, qg.repetition_delay_ms, &qg.controller_options)),
+    );
     let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms)?;
 
     // Requirement extraction treats an unknown metric as having no labels,
@@ -337,18 +421,19 @@ fn extract_hinted_items(
     Ok(aqes)
 }
 
-/// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
-/// Each (query, repetition_delay_ms) pair becomes one RQE.
-fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
-    config
-        .query_groups
-        .iter()
-        .flat_map(|qg| {
-            qg.queries.iter().map(|q| RQE {
+/// Flattens query groups, each `(queries, repetition_delay_ms, options)`,
+/// into one RQE per query.
+fn config_to_rqes<'g>(
+    groups: impl IntoIterator<Item = (&'g Vec<String>, u64, &'g ControllerOptions)>,
+) -> Vec<RQE> {
+    groups
+        .into_iter()
+        .flat_map(|(queries, t_repeat_ms, options)| {
+            queries.iter().map(move |q| RQE {
                 query_string: q.clone(),
-                t_repeat_ms: qg.repetition_delay_ms,
-                accuracy_sla: qg.controller_options.accuracy_sla,
-                latency_sla_ms: qg.controller_options.latency_sla_ms,
+                t_repeat_ms,
+                accuracy_sla: options.accuracy_sla,
+                latency_sla_ms: options.latency_sla_ms,
             })
         })
         .collect()
@@ -382,15 +467,11 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
     // A top-k Raqe asks for its query's literal k (the largest, should an
     // item carry several), which sizes and prices the heap.
     let topk_k = match capability {
-        Capability::TopKByValue | Capability::TopKByCount => Some(
-            item.query_strings
-                .iter()
-                .map(|q| super::milp_output::topk_k(q))
-                .try_fold(0, |max, k| Some(max.max(k?)))
-                .ok_or_else(|| MilpError::TopkWithoutK {
-                    query: query.clone(),
-                })?,
-        ),
+        Capability::TopKByValue | Capability::TopKByCount => {
+            Some(item.topk_k.ok_or_else(|| MilpError::TopkWithoutK {
+                query: query.clone(),
+            })?)
+        }
         _ => None,
     };
 
@@ -470,7 +551,7 @@ pub(super) mod tests {
 
     pub(crate) const SCRAPE_MS: u64 = 15_000;
 
-    const FACTS: &str = r#"
+    pub(crate) const FACTS: &str = r#"
 metrics:
   - metric: http_requests_total
     value_range: [1.0, 1000.0]
@@ -505,7 +586,7 @@ metrics:
 
     fn workload(groups: &str) -> MilpWorkload {
         let config = config(groups);
-        build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap()
+        build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS).unwrap()
     }
 
     fn labels(names: &[&str]) -> LabelSet {
@@ -627,7 +708,7 @@ metrics:
         ));
         assert_eq!(w.raqes[0].topk_k, Some(7));
         let mut item = w.items[0].clone();
-        item.query_strings = vec!["topk(scalar(up), http_requests_total)".into()];
+        item.topk_k = None;
         assert!(matches!(
             item_to_raqe(&item),
             Err(MilpError::TopkWithoutK { .. })
@@ -694,7 +775,8 @@ metrics:
     #[test]
     fn accuracy_sla_above_one_is_rejected() {
         let config = config(&group("sum by (job) (http_requests_total)", 1.5));
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(matches!(err, MilpError::AccuracySlaOutOfRange { .. }));
     }
 
@@ -704,7 +786,8 @@ metrics:
             "sum by (job) (http_requests_total{job='api'})",
             0.99,
         ));
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         let MilpError::InvalidInputs(problems) = err else {
             panic!("expected InvalidInputs, got {err:?}");
         };
@@ -714,7 +797,8 @@ metrics:
     #[test]
     fn missing_cardinality_is_rejected() {
         let config = config(&group("sum by (instance) (http_requests_total)", 0.99));
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(matches!(err, MilpError::InvalidInputs(_)));
     }
 
@@ -726,7 +810,8 @@ metrics:
         config.windowing =
             Some(serde_yaml::from_str("{type: tumbling, window_size_ms: 60000}").unwrap());
         config.sketch_parameters = Some(Default::default());
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(
             matches!(&err, MilpError::UnsupportedFields(f) if f == &["windowing", "sketch_parameters"]),
             "{err}"
@@ -734,7 +819,8 @@ metrics:
         config.windowing = None;
         config.sketch_parameters = None;
         config.aggregate_cleanup = Some(serde_yaml::from_str("{}").unwrap());
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(
             matches!(&err, MilpError::UnsupportedFields(f) if f == &["aggregate_cleanup"]),
             "{err}"
@@ -746,7 +832,7 @@ metrics:
         let query = "sum by (job) (http_requests_total)";
         let config = config(&(group(query, 0.99) + &group(query, 0.99)));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let solution = solve_milp(
             &w,
             &facts,
@@ -777,7 +863,7 @@ metrics:
             .unwrap()
             .data_shape
             .clear();
-        let w = build_milp_workload(&both, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&both), &facts, SCRAPE_MS).unwrap();
         let err = solve_milp(
             &w,
             &facts,
@@ -808,7 +894,7 @@ metrics:
         .unwrap_err();
         assert!(matches!(err, MilpError::Unservable(_)), "{err:?}");
         let exact_only = config(&group(sum, 0.99));
-        let w = build_milp_workload(&exact_only, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&exact_only), &facts, SCRAPE_MS).unwrap();
         assert!(solve_milp(
             &w,
             &facts,
@@ -828,7 +914,7 @@ metrics:
             0.999,
         ));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let err = solve_milp(
             &w,
             &facts,
@@ -846,7 +932,7 @@ metrics:
         let quantile = group("quantile_over_time(0.99, http_requests_total[5m])", 0.999);
         let config = config(&(quantile.clone() + &quantile));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         assert_eq!(w.raqes.len(), 2);
         let err = solve_milp(
             &w,
@@ -867,7 +953,7 @@ metrics:
             + &group("topk(5, http_requests_total)", 0.99);
         let config = config(&groups);
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let solution = solve_milp(
             &w,
             &facts,
@@ -900,7 +986,7 @@ metrics:
         // rewrite; sharing would undercount ingest and memory.
         let config = config(&group("avg by (job) (http_requests_total)", 0.99));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let caps: Vec<_> = w.raqes.iter().map(|r| r.capability).collect();
         assert_eq!(caps.len(), 2);
         assert!(caps.contains(&Capability::Sum) && caps.contains(&Capability::Count));
@@ -969,7 +1055,12 @@ metrics:
             group_at("sum_over_time(a[5m])", 60_000),
             group_at("sum_over_time(b[5m])", 30_000)
         ));
-        let rqes = config_to_rqes(&config);
+        let rqes = config_to_rqes(
+            config
+                .query_groups
+                .iter()
+                .map(|qg| (&qg.queries, qg.repetition_delay_ms, &qg.controller_options)),
+        );
         assert_eq!(rqes.len(), 2);
         assert_eq!(rqes[0].t_repeat_ms, 60_000);
         assert_eq!(rqes[1].t_repeat_ms, 30_000);

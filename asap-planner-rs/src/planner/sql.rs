@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
-use sql_utilities::ast_matching::sqlhelper::{detect_sql_topk, Table, TimeInfo};
+use sql_utilities::ast_matching::sqlhelper::{
+    detect_sql_topk, SQLQueryData, SqlTopk, Table, TimeInfo,
+};
 use sql_utilities::ast_matching::sqlpattern_matcher::SQLPatternMatcher;
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;
 use sql_utilities::ast_matching::SQLSchema;
@@ -58,58 +60,27 @@ impl SQLSingleQueryProcessor {
         &self,
         query_evaluation_time: f64,
     ) -> Result<(Vec<IntermediateAggConfig>, Option<u64>), ControllerError> {
-        let schema = build_sql_schema(&self.table_definitions);
-
-        // Parse SQL
-        let stmts = SqlParser::parse_sql(&ClickHouseDialect {}, &self.query_string)
-            .map_err(|e| ControllerError::SqlParse(e.to_string()))?;
-
-        // Parse query into SQLQueryData
-        let qdata = SQLPatternParser::new(&schema, query_evaluation_time)
-            .parse_query(&stmts)
-            .ok_or_else(|| {
-                ControllerError::SqlParse(format!(
-                    "Failed to parse SQL query: {}",
-                    self.query_string
-                ))
-            })?;
-
-        // Match query to pattern
-        // SQLPatternMatcher.scrape_interval is in seconds (SQL timestamps are seconds-based).
-        let sql_query = SQLPatternMatcher::new(
-            schema.clone(),
-            self.data_ingestion_interval_ms as f64 / 1000.0,
-        )
-        .query_info_to_pattern(&qdata);
-
-        if !sql_query.is_valid() {
-            return Err(ControllerError::SqlParse(sql_query.msg.unwrap_or_default()));
-        }
-
-        let n = sql_query.query_data.len();
-
-        if n != 1 {
-            return Err(ControllerError::SqlParse(format!(
-                "Nested SQL queries (n={}) are not supported",
-                n
-            )));
-        }
+        let (query_data, sql_topk) = parse_sql_query(
+            &self.query_string,
+            &self.table_definitions,
+            self.data_ingestion_interval_ms,
+            query_evaluation_time,
+        )?;
 
         // Determine fields from query vecs
-        let agg_info = &sql_query.query_data[0].aggregation_info;
-        let labels = &sql_query.query_data[0].labels;
-        let table_name = &sql_query.query_data[0].metric;
+        let agg_info = &query_data.aggregation_info;
+        let labels = &query_data.labels;
+        let table_name = &query_data.metric;
 
         let value_column = agg_info.get_value_column_name().to_string();
 
         // Compute window
         let mut window_cfg = compute_sql_window(
-            &sql_query.query_data[0].time_info,
+            &query_data.time_info,
             self.data_ingestion_interval_ms,
             self.t_repeat_ms,
         )?;
-        let data_range_ms =
-            (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64;
+        let data_range_ms = sql_data_range_ms(&query_data);
         crate::planner::window::apply_windowing_override(
             &mut window_cfg,
             data_range_ms,
@@ -122,15 +93,8 @@ impl SQLSingleQueryProcessor {
 
         // Label routing
         let spatial_output = KeyByLabelNames::new(labels.iter().cloned().collect::<Vec<_>>());
-        // Top-k needs ORDER BY / LIMIT from the parser; SQLPatternMatcher drops them
-        // when building `sql_query.query_data[0]`, so use `qdata` not query_data[0].
-        let sql_topk = detect_sql_topk(&qdata);
         let treatment_type = get_sql_treatment_type(agg_info.get_name());
-        let statistics = if sql_topk.is_some() {
-            vec![Statistic::Topk]
-        } else {
-            get_sql_statistics(agg_info.get_name())?
-        };
+        let statistics = sql_statistics(&query_data, sql_topk)?;
         let rollup = if statistics.contains(&Statistic::Cardinality) {
             // Distinct target is value_column, not a rollup label dimension.
             KeyByLabelNames::empty()
@@ -182,24 +146,68 @@ impl SQLSingleQueryProcessor {
             }
         }
 
-        // SQLPatternParser always produces second-based durations; convert to ms.
-        // For a single-scrape-interval query this equals data_ingestion_interval_ms
-        // by construction (the matcher's classification boundary), so this is a
-        // plain unconditional formula, not a special case.
-        let t_lookback_ms =
-            (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64;
-
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {
             None
         } else {
             Some(
-                get_sql_cleanup_param(self.cleanup_policy, t_lookback_ms, self.t_repeat_ms)
+                get_sql_cleanup_param(self.cleanup_policy, data_range_ms, self.t_repeat_ms)
                     .map_err(ControllerError::PlannerError)?,
             )
         };
 
         Ok((configs, cleanup_param))
     }
+}
+
+/// Parses `query` and matches it against `tables`: a single-level query's
+/// data, and its top-k clause if it is one.
+pub(crate) fn parse_sql_query(
+    query: &str,
+    tables: &[TableDefinition],
+    data_ingestion_interval_ms: u64,
+    query_evaluation_time: f64,
+) -> Result<(SQLQueryData, Option<SqlTopk>), ControllerError> {
+    let schema = build_sql_schema(tables);
+    let stmts = SqlParser::parse_sql(&ClickHouseDialect {}, query)
+        .map_err(|e| ControllerError::SqlParse(e.to_string()))?;
+    let qdata = SQLPatternParser::new(&schema, query_evaluation_time)
+        .parse_query(&stmts)
+        .ok_or_else(|| ControllerError::SqlParse(format!("Failed to parse SQL query: {query}")))?;
+
+    // SQLPatternMatcher.scrape_interval is in seconds (SQL timestamps are seconds-based).
+    let sql_query = SQLPatternMatcher::new(schema, data_ingestion_interval_ms as f64 / 1000.0)
+        .query_info_to_pattern(&qdata);
+    if !sql_query.is_valid() {
+        return Err(ControllerError::SqlParse(sql_query.msg.unwrap_or_default()));
+    }
+    let n = sql_query.query_data.len();
+    let Ok([query_data]) = <[SQLQueryData; 1]>::try_from(sql_query.query_data) else {
+        return Err(ControllerError::SqlParse(format!(
+            "Nested SQL queries (n={n}) are not supported"
+        )));
+    };
+    // Top-k needs ORDER BY / LIMIT from the parser; SQLPatternMatcher drops
+    // them from its query data.
+    Ok((query_data, detect_sql_topk(&qdata)))
+}
+
+/// The statistics `query_data` needs: top-k, or its aggregation's.
+pub(crate) fn sql_statistics(
+    query_data: &SQLQueryData,
+    topk: Option<SqlTopk>,
+) -> Result<Vec<Statistic>, ControllerError> {
+    match topk {
+        Some(_) => Ok(vec![Statistic::Topk]),
+        None => get_sql_statistics(query_data.aggregation_info.get_name()),
+    }
+}
+
+/// SQLPatternParser always produces second-based durations; convert to ms.
+/// For a single-scrape-interval query this equals data_ingestion_interval_ms
+/// by construction (the matcher's classification boundary), so this is a
+/// plain unconditional formula, not a special case.
+pub(crate) fn sql_data_range_ms(query_data: &SQLQueryData) -> u64 {
+    (query_data.time_info.get_duration() * 1000.0).round() as u64
 }
 
 fn build_sql_schema(tables: &[TableDefinition]) -> SQLSchema {
