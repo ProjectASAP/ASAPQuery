@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 from experiment_run_clickhouse import (
     _deploy_prebuilt_clickhouse_controller_output,
+    _prepare_clickhouse_controller_output,
     _start_clickhouse_controller,
 )
 
@@ -56,6 +57,28 @@ class ClickHouseControllerConfigTest(unittest.TestCase):
         rsync_streaming_configs.assert_called_once_with(
             provider, "/tmp/local-controller", "/remote/controller", 2
         )
+
+    def test_prebuilt_path_does_not_generate_a_controller_output(self):
+        deploy_prebuilt_output = Mock()
+        generate_controller_output = Mock()
+
+        _prepare_clickhouse_controller_output(
+            "/plans/frozen", deploy_prebuilt_output, generate_controller_output
+        )
+
+        deploy_prebuilt_output.assert_called_once_with("/plans/frozen")
+        generate_controller_output.assert_not_called()
+
+    def test_unset_prebuilt_path_generates_a_controller_output(self):
+        deploy_prebuilt_output = Mock()
+        generate_controller_output = Mock()
+
+        _prepare_clickhouse_controller_output(
+            None, deploy_prebuilt_output, generate_controller_output
+        )
+
+        generate_controller_output.assert_called_once_with()
+        deploy_prebuilt_output.assert_not_called()
 
 
 if __name__ == "__main__":
