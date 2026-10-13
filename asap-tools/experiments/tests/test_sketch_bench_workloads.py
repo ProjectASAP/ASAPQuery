@@ -233,7 +233,13 @@ class ConvertTest(unittest.TestCase):
                 g60 = groups["interval_60s"]
                 self.assertEqual(g60["repetition_delay_ms"], 60000)
                 self.assertEqual(
-                    g60["client_options"], {"starting_delay": 30, "repetitions": 10}
+                    g60["client_options"],
+                    {
+                        "starting_delay": 30,
+                        "repetitions": 10,
+                        "align_to_interval": True,
+                        "query_time_offset": 10,
+                    },
                 )
                 self.assertEqual(
                     groups["interval_1s"]["client_options"]["repetitions"], 600
