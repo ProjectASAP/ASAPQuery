@@ -260,21 +260,31 @@ pub fn get_topk_by_labels(
     }
 
     let modifier = aggregation_token.modifier.as_ref()?;
-    let input_labels = topk_input_labels(match_result, all_labels);
+    let modifier_labels = KeyByLabelNames::new(modifier.labels.clone());
+    let Some(inner) = match_result
+        .tokens
+        .get(INNER_AGGREGATION_TOKEN)
+        .and_then(|token| token.aggregation.as_ref())
+    else {
+        // Plain topk: `all_labels` may be empty for a metric missing from
+        // the schema, so `by` labels are taken as written.
+        return Some(match modifier.modifier_type {
+            AggregationModifierType::By => modifier_labels,
+            AggregationModifierType::Without => all_labels.difference(&modifier_labels),
+        });
+    };
+    let input_labels = reducer_output_labels(inner, all_labels);
     let buckets = match modifier.modifier_type {
-        // A `by` label the input series don't carry is empty in every
-        // series, so it doesn't split the buckets.
+        // The inner sum removed every label outside its output, so such a
+        // `by` label is empty in every input series and doesn't split them.
         AggregationModifierType::By => KeyByLabelNames::new(
-            modifier
+            modifier_labels
                 .labels
-                .iter()
+                .into_iter()
                 .filter(|label| input_labels.labels.contains(label))
-                .cloned()
                 .collect(),
         ),
-        AggregationModifierType::Without => {
-            input_labels.difference(&KeyByLabelNames::new(modifier.labels.clone()))
-        }
+        AggregationModifierType::Without => input_labels.difference(&modifier_labels),
     };
     // No bucket labels left is one ranking over the whole input.
     Some(buckets).filter(|buckets| !buckets.is_empty())
@@ -376,6 +386,30 @@ mod tests {
         );
         // Only `job` is left of the inner sum's labels, not `instance`.
         assert_eq!(get_topk_by_labels(&result, &all), Some(labels(&["job"])));
+    }
+
+    /// A metric missing from the schema has no known labels; plain topk's
+    /// `by` labels must still bucket, not collapse into a global ranking.
+    #[test]
+    fn plain_topk_by_keeps_its_labels_for_a_metric_missing_from_the_schema() {
+        let ast = promql_parser::parser::parse("topk by (job) (5, x)").unwrap();
+        let result = crate::ast_matching::PromQLPattern::new(
+            crate::ast_matching::PromQLPatternBuilder::aggregation(
+                vec!["topk"],
+                crate::ast_matching::PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                None,
+                None,
+                Some("aggregation"),
+            ),
+        )
+        .matches(&ast);
+        assert!(result.matches);
+
+        assert_eq!(
+            get_topk_by_labels(&result, &KeyByLabelNames::empty()),
+            Some(labels(&["job"]))
+        );
     }
 
     /// The inner sum already removed `instance`, so every input series has
