@@ -983,6 +983,111 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
     }
 }
 
+/// The MILP planner's exact roll-up: `sum by (job)` served from a MultipleSum
+/// keyed by (instance, job), read at that grouping and summed by `job` at
+/// query time.
+#[tokio::test]
+async fn e2e_exact_rollup_regroups_a_keyed_sum_at_query_time() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+
+    let metric = "exact_rollup_requests";
+    let query = "sum by (job) (exact_rollup_requests)";
+    let scenario = NativeDagScenario {
+        port: 19429,
+        metric,
+        query,
+        aggregation_configs: vec![make_agg_config_full(
+            29,
+            metric,
+            AggregationType::MultipleSum,
+            "sum",
+            1_000,
+            0,
+            vec![],
+            vec!["instance", "job"],
+        )],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 1_000, 2.0),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "b")], 1_000, 3.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "a")],
+                1_000,
+                9.0,
+            ),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 3_000, 0.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "a")],
+                3_000,
+                0.0,
+            ),
+        ],
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            "sum by (instance, job) (exact_rollup_requests)",
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Sum,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::By,
+                    labels: vec!["job".to_string()],
+                },
+                parameter: None,
+            }],
+        )
+        .await;
+    let expected = vec![
+        (vec!["api".to_string()], 5.0),
+        (vec!["worker".to_string()], 9.0),
+    ];
+
+    let Some((_, instant)) = engine
+        .handle_query_promql(query.clone(), 1.0)
+        .expect("roll-up should execute locally")
+    else {
+        panic!("roll-up returned no local result");
+    };
+    let QueryResult::Vector(instant) = instant else {
+        panic!("instant query should return a vector");
+    };
+    let mut instant_values: Vec<(Vec<String>, f64)> = instant
+        .values
+        .into_iter()
+        .map(|value| (value.labels.labels, value.value))
+        .collect();
+    instant_values.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(instant_values, expected, "instant");
+
+    let Some((_, range)) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("roll-up range should execute locally")
+    else {
+        panic!("roll-up range returned no local result");
+    };
+    let QueryResult::Matrix(range) = range else {
+        panic!("range query should return a matrix");
+    };
+    let mut range_values: Vec<(Vec<String>, f64)> = range
+        .values
+        .into_iter()
+        .map(|value| {
+            let sample = value
+                .samples
+                .last()
+                .expect("range result should have a final sample");
+            (value.labels.labels, sample.value)
+        })
+        .collect();
+    range_values.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(range_values, expected, "range");
+}
+
 #[tokio::test]
 async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
     let port = 19402u16;

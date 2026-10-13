@@ -402,13 +402,15 @@ mod tests {
         assert!(err.contains("0 plans match"), "{err}");
     }
 
-    /// The exact sum is a keyed MultipleSum, which the engine doesn't roll up.
+    /// The exact sum is a keyed MultipleSum, so the roll-up reads it at the
+    /// deployment's grouping and sums by `job` at query time.
     #[test]
-    fn refuses_an_exact_sum_roll_up() {
+    fn writes_an_exact_sum_roll_up_as_a_query_time_sum() {
         let mut plan = plans(shared_p50());
         plan["plans"][0]["chosen"][0]["deployment_grouping"] = json!(["job", "label_0"]);
-        let err = refusal(plan, None);
-        assert!(err.contains("rolls up only"), "{err}");
+        let yaml = run(plan, None).unwrap().to_inference_yaml_string().unwrap();
+        assert!(yaml.contains("sum by (job, label_0) (data)"), "{yaml}");
+        assert!(yaml.contains("operator: sum"), "{yaml}");
     }
 
     #[test]

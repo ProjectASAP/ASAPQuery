@@ -602,7 +602,7 @@ metrics:
         names.iter().map(|s| s.to_string()).collect()
     }
 
-    fn cost(sketch: &str, accuracy: &[(&str, f64)]) -> AtomicCostEntry {
+    pub(crate) fn cost(sketch: &str, accuracy: &[(&str, f64)]) -> AtomicCostEntry {
         AtomicCostEntry {
             sketch: sketch.into(),
             sketch_config: serde_json::json!({"algorithm": sketch, "params": {}}),
