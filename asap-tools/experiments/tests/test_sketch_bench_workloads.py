@@ -169,6 +169,39 @@ def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
     return entry
 
 
+class PlanViewsTest(unittest.TestCase):
+    def views(self, cases):
+        queries = [sbw.parse_promql(p, t, LABELS) for t, p in cases]
+        return sorted(sbw.plan_views(queries, METRICS).values(), key=lambda v: v.name)
+
+    def test_classic_templates(self):
+        series = ("job", "label_0")
+        self.assertEqual(
+            [(v.name, v.keys, v.levels) for v in self.views(CLASSIC)],
+            [
+                ("data_total_value_counter_60s", series, ()),
+                ("data_value_last_1s", series, ()),
+                ("data_value_quantile_60s", series, ("0.5", "0.9", "0.99")),
+                ("data_value_sum_60s", series, ()),
+            ],
+        )
+
+    def test_keys_are_union_of_groupings_with_parents(self):
+        by_label_0 = (60, "sum by (label_0) (sum_over_time(data[1m]))")
+        by_job = (60, "sum by (job) (sum_over_time(data[1m]))")
+        self.assertEqual(self.views([by_job])[0].keys, ("job",))
+        self.assertEqual(self.views([by_label_0])[0].keys, ("job", "label_0"))
+
+    def test_window_not_multiple_of_interval_raises(self):
+        for case in [
+            (60, "sum_over_time(data[90s])"),
+            # An instant vector reads [T - 1s, T]: bucket-aligned only when T = 1 s.
+            (60, "sum by (job) (data)"),
+        ]:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.views([case])
+
+
 class ConvertTest(unittest.TestCase):
     def test_writes_config_grouped_by_interval(self):
         e2e = {
@@ -197,16 +230,24 @@ class ConvertTest(unittest.TestCase):
                 self.assertEqual(
                     groups["interval_1s"]["client_options"]["repetitions"], 600
                 )
-                with open(g60["sql_file"]["baseline"]) as f:
-                    statements = [s for s in f.read().split(";") if s.strip()]
-                self.assertEqual(len(statements), 9)
+                modes = [m["mode"] for m in cfg["experiment"]]
+                self.assertEqual(modes, ["baseline", "baseline_mv"])
+                self.assertEqual(sorted(g60["sql_file"]), modes)
+                for path in g60["sql_file"].values():
+                    with open(path) as f:
+                        statements = [s for s in f.read().split(";") if s.strip()]
+                    self.assertEqual(len(statements), 9)
                 with open(cfg["dataset"]["init_sql_file"]) as f:
                     init = f.read()
-                self.assertIn("CREATE TABLE data_total (ts DateTime64(3)", init)
                 self.assertIn(
                     "endpoint String, status String, latency Float64, "
                     "user_id Float64)",
                     init,
+                )
+                # Views only see rows inserted after them: tables, then views.
+                self.assertLess(
+                    init.index("CREATE TABLE data_total (ts DateTime64(3)"),
+                    init.index("CREATE MATERIALIZED VIEW data_total_value_counter_60s"),
                 )
                 sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
                 with open(os.path.join(sql_dir, "asapquery.sql")) as f:
@@ -493,10 +534,10 @@ def run_clickhouse(script: str, tmp: str) -> List[dict]:
     return [json.loads(line) for line in out.splitlines()]
 
 
-def load_script(tmp: str, rows: Dict[str, List[tuple]]) -> str:
+def load_script(tmp: str, rows: Dict[str, List[tuple]], views) -> str:
     """Init SQL, then each table's (ts ms, labels, values) rows inserted
     through it (and any views on it)."""
-    parts = [sbw.init_sql(METRICS)]
+    parts = [sbw.init_sql(METRICS, views)]
     for table, table_rows in rows.items():
         names = LABELS[table]
         values = sbw.value_columns(METRICS[table])
@@ -559,44 +600,65 @@ def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]
 
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
 class ClickHouseSemanticsTest(unittest.TestCase):
-    def test_raw_sql_matches_prometheus_reference(self):
+    """Every CASES and MULTIGROUP query at every eval offset, over the raw
+    table (baseline) and over its view (baseline_mv), in one clickhouse-local
+    run."""
+
+    @classmethod
+    def setUpClass(cls):
         gauge, counter = make_dataset()
         records = make_records()
-        cases = all_cases(gauge, counter, records)
+        cls.cases = all_cases(gauge, counter, records)
+        views = sbw.plan_views([q for _, q, _ in cls.cases], METRICS)
         statements, groupings = [], {}
-        for i, (_, q, _) in enumerate(cases):
+        for i, (_, q, _) in enumerate(cls.cases):
             for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
-                end = DATA_START_MS // 1000 + offset
-                qid = f"{i}@{offset}"
-                sql = sbw.raw_sql(q, LABELS).replace(sbw.END, str(end))
-                statements.append((qid, sql))
-                groupings[qid] = q.grouping
+                end = str(DATA_START_MS // 1000 + offset)
+                for mode, sql in [
+                    ("raw", sbw.raw_sql(q, LABELS)),
+                    ("mv", sbw.mv_sql(q, views, LABELS)),
+                ]:
+                    qid = f"{mode}/{i}@{offset}"
+                    statements.append((qid, sql.replace(sbw.END, end)))
+                    groupings[qid] = q.grouping
         rows = {
             "data": series_rows(gauge),
             "data_total": series_rows(counter),
             "http": records,
         }
         with tempfile.TemporaryDirectory() as tmp:
-            script = load_script(tmp, rows)
-            got = rows_by_id(
+            script = load_script(tmp, rows, list(views.values()))
+            cls.got = rows_by_id(
                 run_clickhouse(script + query_script(statements), tmp), groupings
             )
 
+    def test_raw_sql_matches_prometheus_reference(self):
         BRANCHES_HIT.clear()
-        nonempty = 0
-        for i, (name, q, ref) in enumerate(cases):
+        nonempty = total = 0
+        for i, (name, q, ref) in enumerate(self.cases):
             for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
                 with self.subTest(query=name, offset=offset):
                     want = ref(DATA_START_MS + offset * 1000)
-                    nonempty += bool(want)
-                    assert_vectors_close(self, got[f"{i}@{offset}"], want, 1e-9)
+                    nonempty, total = nonempty + bool(want), total + 1
+                    got = self.got[f"raw/{i}@{offset}"]
+                    assert_vectors_close(self, got, want, 1e-9)
         self.assertEqual(
             BRANCHES_HIT,
             {"start_avg", "start_boundary", "zero_clamp", "end_avg", "end_boundary"},
         )
         # Both empty and non-empty windows are compared.
-        self.assertGreater(nonempty, len(statements) // 2)
-        self.assertLess(nonempty, len(statements))
+        self.assertGreater(nonempty, total // 2)
+        self.assertLess(nonempty, total)
+
+    def test_mv_sql_matches_raw_sql(self):
+        for i, (name, q, _) in enumerate(self.cases):
+            # Only sums are re-associated (per bucket, then across buckets and
+            # groups); every other statistic merges to the identical value.
+            rel = 1e-9 if q.agg == "sum" else 0.0
+            for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
+                with self.subTest(query=name, offset=offset):
+                    raw = self.got[f"raw/{i}@{offset}"]
+                    assert_vectors_close(self, self.got[f"mv/{i}@{offset}"], raw, rel)
 
 
 if __name__ == "__main__":
