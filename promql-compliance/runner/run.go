@@ -27,7 +27,26 @@ const (
 	dataReadyTimeout               = 3 * time.Minute
 	readinessPollInterval          = time.Second
 	composeShutdownTimeout         = time.Minute
+
+	plannerOutputMountPath        = "/asap-planner-output"
+	fixedPlannerOutputComposeFile = "docker-compose.fixed-planner-output.yml"
+	fixedPlannerOutputDirEnv      = "ASAP_FIXED_PLANNER_OUTPUT_DIR"
 )
+
+// fixedPlannerOutputCompose overrides the base Compose file for suites with a
+// planner_output_dir: the planner sits behind a never-activated profile so it
+// does not run, and the query engine mounts the fixed directory where the
+// planner's output volume would be.
+const fixedPlannerOutputCompose = `services:
+  planner:
+    profiles: ["generated-planner-output"]
+  queryengine:
+    depends_on: !override
+      prometheus:
+        condition: service_healthy
+    volumes:
+      - "${` + fixedPlannerOutputDirEnv + `:?` + fixedPlannerOutputDirEnv + ` is required}:` + plannerOutputMountPath + `:ro"
+`
 
 type RunOptions struct {
 	DatasetPath       string
@@ -78,6 +97,13 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 		files:   options.ComposeFiles,
 		project: options.ComposeProject,
 		env:     []string{"ASAP_TEST_CONFIG_DIR=" + runDirectory},
+	}
+	if suite.PlannerOutputDir != "" {
+		lifecycle.files = append(
+			append([]string(nil), options.ComposeFiles...),
+			filepath.Join(runDirectory, fixedPlannerOutputComposeFile),
+		)
+		lifecycle.env = append(lifecycle.env, fixedPlannerOutputDirEnv+"="+suite.PlannerOutputDir)
 	}
 	if len(options.ComposeFiles) > 0 {
 		if err := lifecycle.Start(ctx); err != nil {
@@ -345,7 +371,24 @@ type plannerCleanup struct {
 	Policy string `yaml:"policy"`
 }
 
+// writeGeneratedConfigs writes the engine config plus either the planner input
+// or, for a suite with fixed planner output, the Compose override that skips
+// the planner. The planner input is not generated in the fixed case, so its
+// timing derivation cannot reject queries the planner never sees.
 func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite) error {
+	if err := writeEngineConfig(directory); err != nil {
+		return err
+	}
+	if suite.PlannerOutputDir != "" {
+		if err := os.WriteFile(filepath.Join(directory, fixedPlannerOutputComposeFile), []byte(fixedPlannerOutputCompose), 0o600); err != nil {
+			return fmt.Errorf("write fixed planner output compose override: %w", err)
+		}
+		return nil
+	}
+	return writePlannerConfig(directory, fixture, suite)
+}
+
+func writePlannerConfig(directory string, fixture seeder.Fixture, suite Suite) error {
 	metrics := make(map[string]map[string]struct{})
 	for _, series := range fixture.Series {
 		if metrics[series.Metric] == nil {
@@ -399,6 +442,10 @@ func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite
 	if err := os.WriteFile(filepath.Join(directory, "controller-config.yaml"), contents, 0o600); err != nil {
 		return fmt.Errorf("write generated planner config: %w", err)
 	}
+	return nil
+}
+
+func writeEngineConfig(directory string) error {
 	engineConfig := []byte(`output_dir: "/app/outputs"
 log_level: "INFO"
 data_ingestion_interval_ms: 1000
@@ -414,8 +461,8 @@ store:
 ingest:
   type: "http_remote_write"
   port: 9091
-inference_config: "/asap-planner-output/inference_config.yaml"
-streaming_config: "/asap-planner-output/streaming_config.yaml"
+inference_config: "` + plannerOutputMountPath + `/` + plannerInferenceConfigFile + `"
+streaming_config: "` + plannerOutputMountPath + `/` + plannerStreamingConfigFile + `"
 `)
 	if err := os.WriteFile(filepath.Join(directory, "engine_config.yaml"), engineConfig, 0o600); err != nil {
 		return fmt.Errorf("write generated engine config: %w", err)

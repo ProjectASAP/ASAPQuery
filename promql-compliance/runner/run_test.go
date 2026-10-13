@@ -159,3 +159,83 @@ func TestGeneratedPlannerGroupsUseCompatibleQueryTiming(t *testing.T) {
 		t.Fatalf("short-rate range_duration_ms = %v, want 60000", planner.QueryGroups[1].RangeDurationMS)
 	}
 }
+
+func TestGeneratedConfigsWithFixedPlannerOutputSkipPlanner(t *testing.T) {
+	directory := t.TempDir()
+	fixture := seeder.Fixture{
+		Name: "single-series",
+		Series: []seeder.FixtureSeries{{
+			Metric:  "up",
+			Labels:  map[string]string{"job": "test"},
+			Samples: []seeder.FixtureSample{{OffsetSeconds: 0, Value: 1}},
+		}},
+	}
+	suite := Suite{
+		Name:             "fixed-output",
+		Queries:          []QueryCase{{Name: "up", Expr: "up"}},
+		PlannerOutputDir: "/fixed/planner/output",
+	}
+
+	if err := writeGeneratedConfigs(directory, fixture, suite); err != nil {
+		t.Fatalf("writeGeneratedConfigs: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(directory, "controller-config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("planner config was generated for a suite with fixed planner output (stat err: %v)", err)
+	}
+
+	overrideContents, err := os.ReadFile(filepath.Join(directory, fixedPlannerOutputComposeFile))
+	if err != nil {
+		t.Fatalf("read compose override: %v", err)
+	}
+	var override struct {
+		Services struct {
+			Planner struct {
+				Profiles []string `yaml:"profiles"`
+			} `yaml:"planner"`
+			QueryEngine struct {
+				DependsOn yaml.Node `yaml:"depends_on"`
+				Volumes   []string  `yaml:"volumes"`
+			} `yaml:"queryengine"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(overrideContents, &override); err != nil {
+		t.Fatalf("parse compose override: %v", err)
+	}
+	if len(override.Services.Planner.Profiles) == 0 {
+		t.Fatal("compose override leaves the planner service active")
+	}
+	dependsOn := override.Services.QueryEngine.DependsOn
+	if dependsOn.Tag != "!override" {
+		t.Fatalf("queryengine depends_on tag = %q, want !override so the planner dependency is dropped", dependsOn.Tag)
+	}
+	var dependencies map[string]any
+	if err := dependsOn.Decode(&dependencies); err != nil {
+		t.Fatalf("decode queryengine depends_on: %v", err)
+	}
+	if _, ok := dependencies["planner"]; ok {
+		t.Fatal("queryengine still depends on the planner")
+	}
+	wantVolume := "${" + fixedPlannerOutputDirEnv + ":?" + fixedPlannerOutputDirEnv + " is required}:" + plannerOutputMountPath + ":ro"
+	if got := override.Services.QueryEngine.Volumes; len(got) != 1 || got[0] != wantVolume {
+		t.Fatalf("queryengine volumes = %v, want [%s]", got, wantVolume)
+	}
+
+	engineContents, err := os.ReadFile(filepath.Join(directory, "engine_config.yaml"))
+	if err != nil {
+		t.Fatalf("read engine config: %v", err)
+	}
+	var engine struct {
+		InferenceConfig string `yaml:"inference_config"`
+		StreamingConfig string `yaml:"streaming_config"`
+	}
+	if err := yaml.Unmarshal(engineContents, &engine); err != nil {
+		t.Fatalf("parse engine config: %v", err)
+	}
+	if got, want := engine.InferenceConfig, plannerOutputMountPath+"/"+plannerInferenceConfigFile; got != want {
+		t.Fatalf("engine inference_config = %q, want %q", got, want)
+	}
+	if got, want := engine.StreamingConfig, plannerOutputMountPath+"/"+plannerStreamingConfigFile; got != want {
+		t.Fatalf("engine streaming_config = %q, want %q", got, want)
+	}
+}
