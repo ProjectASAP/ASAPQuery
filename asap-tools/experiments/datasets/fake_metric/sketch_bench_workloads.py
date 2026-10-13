@@ -20,10 +20,12 @@ installs for bare-metal runs), whose windows are closed on both ends: range
 vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
 each series in [T - 1s, T] (a lookback of one scrape interval); quantiles use
 quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
-never reset). Structured queries read the same [T - W, T] and pool all samples
-of a group: cardinality is uniqExact of the value field, quantile is
-quantileExactInclusive. T is the client's {{ end_time }} floored to a multiple
-of the query's interval. Unsupported query shapes raise.
+never reset). Structured queries involve no Prometheus: they read ASAPQuery's
+left-open window (T - W, T], the window its SQL frontend and precompute
+windows use, and pool all samples of a group: cardinality is uniqExact of
+the value field, quantile is quantileExactInclusive. T is the client's
+{{ end_time }} floored to a multiple of the query's interval. Unsupported
+query shapes raise.
 
 Run from asap-tools/experiments:
     python3 datasets/fake_metric/sketch_bench_workloads.py \
@@ -79,7 +81,8 @@ class Query:
     Otherwise `series_fn` (last, rate, increase) gives one value per series,
     and `agg` combines those per group; `agg` None keeps them per series.
     `ratio_quantile` divides the `quantile` by a second quantile of the same
-    samples. Structured (non-PromQL) query entries map onto these fields.
+    samples. Structured (non-PromQL) query entries map onto these fields and
+    set `left_open`: their window is (end - W, end], not PromQL's closed one.
     """
 
     table: str
@@ -92,6 +95,7 @@ class Query:
     ratio_quantile: Optional[str] = None
     topk: Optional[int] = None
     value: str = VALUE_COLUMN
+    left_open: bool = False
 
 
 def _parse_series(
@@ -196,6 +200,7 @@ def query_from_entry(entry: dict, metrics: dict) -> Query:
         capability,
         str(entry["quantile"]) if capability == "quantile" else None,
         value=entry["value"],
+        left_open=True,
     )
 
 
@@ -219,7 +224,8 @@ def render(
     q: Query, series: Tuple[str, ...], source: str, where: Callable, agg: Callable
 ) -> str:
     """SQL for `q` reading the `source` rows that `where(end, window_secs)`
-    keeps for the window [end - window_secs, end].
+    keeps for the window [end - window_secs, end], or (end - window_secs, end]
+    when `q.left_open`.
 
     `series` is the table's full label list; `agg(stat, quantile)` gives the
     aggregate expression of a statistic over the source rows: sum, count,
@@ -280,14 +286,21 @@ def raw_sql(q: Query, labels: Dict[str, List[str]]) -> str:
         q,
         tuple(labels[q.table]),
         q.table,
-        lambda end, w: f"ts >= {end} - {w} AND ts <= {end}",
+        lambda end, w: f"ts {'>' if q.left_open else '>='} {end} - {w} AND ts <= {end}",
         lambda stat, quantile: raw_agg(stat, quantile, q.value),
     )
 
 
 def asapquery_sql(q: Query) -> str:
-    """A structured query in the dialect of ASAPQuery's SQL frontend. Its
-    window ends at the engine's NOW(); it cannot floor the eval time."""
+    """A structured query in the dialect of ASAPQuery's SQL frontend.
+
+    The frontend takes a datetime literal but cannot floor it, so the window
+    ends `{{ end_time }} % T` seconds before the client's {{ end_datetime }}
+    (UTC; the frontend reads timezone-naive literals as server-local time):
+    the same floored T as the ClickHouse SQL. The frontend maps the BETWEEN to
+    (start, duration) = (T - W, W) and answers over (T - W, T], as the
+    ClickHouse SQL does for structured queries.
+    """
     group = ", ".join(q.grouping)
     if q.agg == "cardinality":
         agg = f"COUNT(DISTINCT {q.value})"
@@ -295,9 +308,12 @@ def asapquery_sql(q: Query) -> str:
         agg = f"QUANTILE({q.quantile}, {q.value})"
     else:
         raise ValueError(f"no ASAPQuery SQL for {q}")
+    t = q.interval_secs
+    end = "'{{ end_datetime }}'"
     return (
         f"SELECT {group}, {agg} FROM {q.table} WHERE ts BETWEEN "
-        f"DATEADD(s, -{q.window_secs}, NOW()) AND NOW() GROUP BY {group}"
+        f"DATEADD(s, -{{{{ end_time % {t} + {q.window_secs} }}}}, {end}) AND "
+        f"DATEADD(s, -{{{{ end_time % {t} }}}}, {end}) GROUP BY {group}"
     )
 
 

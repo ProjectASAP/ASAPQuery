@@ -125,6 +125,7 @@ class ParseTest(unittest.TestCase):
                 None,
                 "cardinality",
                 value="user_id",
+                left_open=True,
             ),
         )
         self.assertEqual(
@@ -138,6 +139,7 @@ class ParseTest(unittest.TestCase):
                 "quantile",
                 "0.99",
                 value="latency",
+                left_open=True,
             ),
         )
 
@@ -212,7 +214,9 @@ class ConvertTest(unittest.TestCase):
                         f.read(),
                         "-- quantile(0.99, latency) by (service) over 300s\n"
                         "SELECT service, QUANTILE(0.99, latency) FROM http WHERE ts "
-                        "BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY service;\n",
+                        "BETWEEN DATEADD(s, -{{ end_time % 60 + 300 }}, "
+                        "'{{ end_datetime }}') AND DATEADD(s, -{{ end_time % 60 }}, "
+                        "'{{ end_datetime }}') GROUP BY service;\n",
                     )
             finally:
                 os.chdir(cwd)
@@ -441,12 +445,13 @@ def series_rows(by_series: Dict[Series, Samples]) -> List[tuple]:
 
 
 def pooled(records, t_ms: int, w_ms: int, q: "sbw.Query") -> Vector:
-    """A structured query's reference: every record of a group in the window."""
+    """A structured query's reference: every record of a group in ASAPQuery's
+    left-open window (t - w, t]."""
     idx = [HTTP_LABELS.index(name) for name in q.grouping]
     col = list(METRICS["http"]["values"]).index(q.value)
     groups: Dict[Series, List[float]] = {}
     for t, labels, values in records:
-        if t_ms - w_ms <= t <= t_ms:
+        if t_ms - w_ms < t <= t_ms:
             groups.setdefault(tuple(labels[i] for i in idx), []).append(values[col])
     if q.agg == "cardinality":
         return {k: len(set(vs)) for k, vs in groups.items()}
