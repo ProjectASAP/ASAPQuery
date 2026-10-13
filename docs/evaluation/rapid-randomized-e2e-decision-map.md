@@ -27,6 +27,13 @@ Which supported templates may contribute to a workload, and how will ten
 queries be sampled so each workload is representative rather than accidentally
 dominated by cheap or similar queries?
 
+### Answer
+
+The rapid result uses classic PromQL templates only, so ASAPQuery, Prometheus,
+VictoriaMetrics, ClickHouse, and ClickHouse + exact MVs can all participate.
+Multi-grouping SQL templates are a separate ASAPQuery-versus-ClickHouse result
+if time permits.
+
 ## #3: Measurement protocol
 
 Blocked by: #1
