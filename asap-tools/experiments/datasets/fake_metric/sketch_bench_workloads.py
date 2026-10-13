@@ -27,6 +27,16 @@ the value field, quantile is quantileExactInclusive. T is the client's
 {{ end_time }} floored to a multiple of the query's interval. Unsupported
 query shapes raise.
 
+Evaluation times: each query group sets `align_to_interval` and a
+`query_time_offset` of QUERY_TIME_OFFSET_SECS. The query client of PR #841
+then evaluates repetition k at floor((start - O) / T) * T + k * T and sends
+it O seconds later, so every run and arm answers the same windows. The
+current client ignores `align_to_interval`: it subtracts O from the eval
+time and sleeps T after each repetition's queries finish, so its eval times
+drift by the query latency. A 1 s group whose queries take 0.3 s skips
+about one T in four, and a 60 s group occasionally repeats or skips a T;
+arms then answer different windows.
+
 Run from asap-tools/experiments:
     python3 datasets/fake_metric/sketch_bench_workloads.py \
         --table <sketch-bench table.json> --data-file <path> \
@@ -51,6 +61,9 @@ from generate_workloads import (
 
 OUT_CONFIG_DIR = "config/experiment_type/sketch_bench_clickhouse"
 CLICKHOUSE_URL = "http://localhost:8123"
+# Seconds after an eval time the client sends it (PR #841's default), so
+# data up to the eval time has arrived.
+QUERY_TIME_OFFSET_SECS = 10
 VALUE_COLUMN = "value"
 # Instant vectors read the latest sample of each series in the last scrape.
 INSTANT_WINDOW_SECONDS = SCRAPE_INTERVAL_SECONDS
@@ -394,6 +407,9 @@ def convert(
                 "client_options": {
                     "starting_delay": starting_delay_secs,
                     "repetitions": duration_secs // interval,
+                    # Takes effect with PR #841's query client; see above.
+                    "align_to_interval": True,
+                    "query_time_offset": QUERY_TIME_OFFSET_SECS,
                 },
             }
         )
