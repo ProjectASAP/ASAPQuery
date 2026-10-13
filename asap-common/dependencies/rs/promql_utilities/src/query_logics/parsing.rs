@@ -170,12 +170,39 @@ pub fn get_spatial_aggregation_output_labels(
         .and_then(|token| token.aggregation.as_ref())
         .expect("aggregation token missing");
 
-    // Patching: When the query is topk, we should always return all labels
+    // topk is a selector: it keeps its input's labels, which are all labels
+    // unless an inner `sum by (...)` reduced them first.
     if aggregation_token.op.parse::<AggregationOperator>() == Ok(AggregationOperator::Topk) {
-        debug!("Aggregation operation is 'topk', returning all labels");
-        return all_labels.clone();
+        debug!("Aggregation operation is 'topk', returning its input's labels");
+        return topk_input_labels(match_result, all_labels);
     }
 
+    reducer_output_labels(aggregation_token, all_labels)
+}
+
+/// Token for the inner reducer of `topk(k, sum by (...) (f(m[w])))`.
+pub const INNER_AGGREGATION_TOKEN: &str = "inner_aggregation";
+
+/// Labels of the series topk ranks: the inner reducer's output labels when
+/// one is present, else all labels.
+fn topk_input_labels(
+    match_result: &PromQLMatchResult,
+    all_labels: &KeyByLabelNames,
+) -> KeyByLabelNames {
+    match match_result
+        .tokens
+        .get(INNER_AGGREGATION_TOKEN)
+        .and_then(|token| token.aggregation.as_ref())
+    {
+        Some(inner) => reducer_output_labels(inner, all_labels),
+        None => all_labels.clone(),
+    }
+}
+
+fn reducer_output_labels(
+    aggregation_token: &crate::AggregationToken,
+    all_labels: &KeyByLabelNames,
+) -> KeyByLabelNames {
     // Fixing issue https://github.com/ProjectASAP/asap-internal/issues/24
     let modifier: &crate::AggregationModifier = match aggregation_token.modifier.as_ref() {
         Some(m) => m,
@@ -237,7 +264,7 @@ pub fn get_topk_by_labels(
         AggregationModifierType::By => KeyByLabelNames::new(modifier.labels.clone()),
         AggregationModifierType::Without => {
             let without_labels = KeyByLabelNames::new(modifier.labels.clone());
-            all_labels.difference(&without_labels)
+            topk_input_labels(match_result, all_labels).difference(&without_labels)
         }
     })
 }
@@ -295,5 +322,82 @@ mod tests {
             get_statistics_to_compute(&PromQLMatchResult::with_tokens(HashMap::new())).unwrap_err();
 
         assert_eq!(err, StatisticExtractionError::MissingStatistic);
+    }
+
+    fn labels(names: &[&str]) -> KeyByLabelNames {
+        KeyByLabelNames::new(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    fn match_topk_of_sum(query: &str) -> PromQLMatchResult {
+        use crate::ast_matching::{PromQLPattern, PromQLPatternBuilder};
+        let pattern = PromQLPattern::new(PromQLPatternBuilder::aggregation(
+            vec!["topk"],
+            PromQLPatternBuilder::aggregation(
+                vec!["sum"],
+                PromQLPatternBuilder::function(
+                    vec!["sum_over_time"],
+                    vec![PromQLPatternBuilder::matrix_selector(
+                        PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                        None,
+                        Some("range_vector"),
+                    )],
+                    Some("function"),
+                    Some("function_args"),
+                ),
+                None,
+                None,
+                None,
+                Some(INNER_AGGREGATION_TOKEN),
+            ),
+            None,
+            None,
+            None,
+            Some("aggregation"),
+        ));
+        let result = pattern.matches(&promql_parser::parser::parse(query).unwrap());
+        assert!(result.matches, "{query} should match");
+        result
+    }
+
+    #[test]
+    fn topk_of_sum_outputs_the_inner_sum_labels() {
+        let all = labels(&["instance", "job", "label_0"]);
+        let result = match_topk_of_sum("topk(32, sum by (label_0) (sum_over_time(data[15m])))");
+
+        assert_eq!(
+            get_spatial_aggregation_output_labels(&result, &all),
+            labels(&["label_0"])
+        );
+        assert_eq!(get_topk_by_labels(&result, &all), None);
+        assert_eq!(
+            get_statistics_to_compute(&result),
+            Ok(vec![Statistic::Topk])
+        );
+    }
+
+    #[test]
+    fn topk_of_sum_without_buckets_within_the_inner_sum_labels() {
+        let all = labels(&["instance", "job", "label_0"]);
+        let result = match_topk_of_sum(
+            "topk without (label_0) (3, sum by (job, label_0) (sum_over_time(data[5m])))",
+        );
+
+        assert_eq!(
+            get_spatial_aggregation_output_labels(&result, &all),
+            labels(&["job", "label_0"])
+        );
+        // Only `job` is left of the inner sum's labels, not `instance`.
+        assert_eq!(get_topk_by_labels(&result, &all), Some(labels(&["job"])));
+    }
+
+    #[test]
+    fn topk_of_sum_without_inner_modifier_collapses_to_no_labels() {
+        let all = labels(&["instance", "job"]);
+        let result = match_topk_of_sum("topk(1, sum(sum_over_time(data[5m])))");
+
+        assert_eq!(
+            get_spatial_aggregation_output_labels(&result, &all),
+            KeyByLabelNames::empty()
+        );
     }
 }

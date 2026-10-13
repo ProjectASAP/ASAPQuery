@@ -44,8 +44,9 @@ pub struct QueryRequirements {
     /// for `topk by (job) (k, x)`. `None` for a bare `topk(k, x)` (single
     /// global ranking) and for every non-topk requirement. Deliberately
     /// separate from `grouping_labels`, which for topk always reports the
-    /// *output* label set (all labels, unaffected by any modifier) rather
-    /// than the bucketing labels (#714).
+    /// *output* label set (all labels, or an inner `sum by (...)`'s labels;
+    /// unaffected by topk's own modifier) rather than the bucketing labels
+    /// (#714).
     pub topk_by_labels: Option<KeyByLabelNames>,
 }
 
@@ -97,8 +98,9 @@ pub fn build_query_requirements_promql(
     let topk_by_labels = get_topk_by_labels(match_result, &all_labels);
 
     let grouping_labels = if has_aggregation {
-        // OnlySpatial and (collapsable, see #508) OneTemporalOneSpatial encode
-        // their output labels in the AST's `by (...)` / `without (...)` clause.
+        // OnlySpatial, (collapsable, see #508) OneTemporalOneSpatial and
+        // topk-of-sum encode their output labels in the AST's `by (...)` /
+        // `without (...)` clause.
         get_spatial_aggregation_output_labels(match_result, &all_labels)
     } else {
         // OnlyTemporal preserves all labels.
