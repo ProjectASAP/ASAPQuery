@@ -656,7 +656,8 @@ def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]
 class KeyPruningTest(unittest.TestCase):
     """ClickHouse 26.10 prunes `ts > <integer>` on a DateTime64 key as
     `ts >= <integer> + 1`, so a left-open window lost the samples in its first
-    second. Small granules let the index prune them here too."""
+    second. Small granules let the index prune them here too. The view's
+    DateTime `bucket` bounds are checked the same way."""
 
     def test_samples_just_after_window_start_are_kept(self):
         end_s = DATA_START_MS // 1000 + 3600
@@ -677,17 +678,29 @@ class KeyPruningTest(unittest.TestCase):
             ),
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            script = load_script(tmp, {"http": records, "data": series}).replace(
-                "ts);", "ts) SETTINGS index_granularity = 8;"
+            views = sbw.plan_views([q for q, _ in cases], METRICS)
+            rows = {"http": records, "data": series}
+            script = (
+                load_script(tmp, rows, list(views.values()))
+                .replace("ts);", "ts) SETTINGS index_granularity = 8;")
+                .replace(") AS SELECT ", ") SETTINGS index_granularity = 1 AS SELECT ")
             )
-            self.assertIn("index_granularity = 8", script)
+            self.assertEqual(script.count("index_granularity = 8"), len(METRICS))
+            self.assertEqual(script.count("index_granularity = 1 "), len(views))
             statements = [
-                (str(i), sbw.raw_sql(q, LABELS).replace(sbw.END, str(end_s)))
+                (f"{mode}/{i}", sql.replace(sbw.END, str(end_s)))
                 for i, (q, _) in enumerate(cases)
+                for mode, sql in [
+                    ("raw", sbw.raw_sql(q, LABELS)),
+                    ("mv", sbw.mv_sql(q, views, LABELS)),
+                ]
             ]
-            rows = run_clickhouse(script + query_script(statements), tmp)
-        got = {row["qid"]: row["value"] for row in rows}
-        self.assertEqual(got, {str(i): want for i, (_, want) in enumerate(cases)})
+            out = run_clickhouse(script + query_script(statements), tmp)
+        got = {row["qid"]: row["value"] for row in out}
+        want = {
+            f"{mode}/{i}": n for i, (_, n) in enumerate(cases) for mode in ("raw", "mv")
+        }
+        self.assertEqual(got, want)
 
 
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")

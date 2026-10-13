@@ -507,11 +507,12 @@ def mv_sql(q: Query, views: Dict[tuple, View], labels: Dict[str, List[str]]) -> 
         view.name,
         # Buckets b in (end - w, end] hold (end - w, end]; for a closed
         # window, the edge row of bucket end - w holds its left boundary.
+        # `bucket` is a DateTime, so its bounds are too (see raw_sql).
         lambda end, w: (
-            f"bucket > {end} - {w} AND bucket <= {end}"
+            f"bucket > toDateTime({end} - {w}) AND bucket <= toDateTime({end})"
             if q.left_open
-            else f"bucket >= {end} - {w} AND bucket <= {end} "
-            f"AND (edge OR bucket > {end} - {w})"
+            else f"bucket >= toDateTime({end} - {w}) AND bucket <= toDateTime({end}) "
+            f"AND (edge OR bucket > toDateTime({end} - {w}))"
         ),
         lambda stat, quantile: mv_agg(view, stat, quantile),
     )
