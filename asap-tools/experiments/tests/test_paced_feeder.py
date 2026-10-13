@@ -7,10 +7,17 @@ import tempfile
 import unittest
 from unittest import mock
 
+import yaml
+
 from omegaconf import OmegaConf
 
 import constants
-from experiment_utils.core import call_generate_prometheus_config, read_exporter_config
+import generate_prometheus_config
+from experiment_utils.core import (
+    GeneratePrometheusArgs,
+    call_generate_prometheus_config,
+    read_exporter_config,
+)
 from experiment_utils.services import create_prometheus_service
 from experiment_utils.services.docker_prometheus import DockerPrometheusService
 from experiment_utils.services.paced_feeder import (
@@ -361,6 +368,49 @@ class PrometheusForwardingTest(unittest.TestCase):
         )
         self.assertEqual(args.remote_write_url, QE_URL)
         self.assertEqual(args.remote_write_metric_names, ["node_cpu"])
+
+
+class PrometheusOutOfOrderWindowTest(unittest.TestCase):
+    """The feeder sends a tick's requests concurrently, so Prometheus' receiver
+    sees a series' samples out of order within a second and, without an
+    out-of-order window, rejects them (400 "out of order sample"). Bare-metal
+    and containerized Prometheus both read this generated prometheus.yml."""
+
+    def storage(self, exporter_list):
+        with tempfile.TemporaryDirectory() as out:
+            prometheus_config = OmegaConf.create(
+                {
+                    "scrape_interval": "1s",
+                    "evaluation_interval": "10s",
+                    "recording_rules": {"interval": "5s"},
+                }
+            )
+            args = GeneratePrometheusArgs(
+                1, out, out, prometheus_config, "10.10.1.1", "10.10.1", 0
+            )
+            generate_prometheus_config.main(
+                args,
+                {
+                    "exporters": {
+                        "only_start_if_queries_exist": False,
+                        "exporter_list": exporter_list,
+                    },
+                    "query_groups": [],
+                    "metrics": [],
+                },
+            )
+            with open(os.path.join(out, constants.PROMETHEUS_CONFIG_FILE)) as f:
+                return yaml.safe_load(f).get("storage")
+
+    def test_window_set_when_the_feeder_targets_prometheus(self):
+        feeder = {"workload_table": "t", "metrics": [], "seed": 1, "duration_secs": 1}
+        self.assertEqual(
+            self.storage({"paced_feeder": feeder}),
+            {"tsdb": {"out_of_order_time_window": "5s"}},
+        )
+
+    def test_no_window_without_the_feeder(self):
+        self.assertIsNone(self.storage({}))
 
 
 if __name__ == "__main__":
