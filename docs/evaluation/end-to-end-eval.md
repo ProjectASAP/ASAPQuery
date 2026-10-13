@@ -152,9 +152,9 @@ plans exactly with the same binary):
   0.13) and is now half or more of its cost. Memory hardly moves (ASAP 21.4 →
   15.3 GiB), so Fargate costs fall only about 2×. AutoSketch, almost all
   ingest, falls the full 20×.
-- **Files.** The 10/s tables, plan files and runner output are in
-  `/mydata/rate10-plans/` (tables, plans, results, scripts), to be committed
-  to sketch-bench as their own results directory before the runs.
+- **Files.** The 10/s tables, plan files and runner output are in sketch-bench
+  [#212](https://github.com/ProjectASAP/sketch-bench/issues/212), `rqe-optimizer/results/e2e-rate10/` (export with `--samples-per-sec 10`;
+  the two unservable RQEs are left out of the tables and their e2e queries).
 
 ## 7. Semantics and ground truth
 
@@ -265,7 +265,7 @@ between rounds.
 | ClickHouse SQL and exact MV arms from the tables | [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844) → [#845](https://github.com/ProjectASAP/ASAPQuery/issues/845) | open (base was [#837](https://github.com/ProjectASAP/ASAPQuery/issues/837), merged: retarget to `main`) |
 | Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841) | open (base was [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), merged: retarget to `main`) |
 | `--planner saved`; prebuilt configs in both runners | [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), [#860](https://github.com/ProjectASAP/ASAPQuery/issues/860) | merged |
-| Tables and plans at 10 samples/s | `/mydata/rate10-plans/`; sketch-bench, new PR | generated (§6); to commit |
+| Tables and plans at 10 samples/s | sketch-bench [#212](https://github.com/ProjectASAP/sketch-bench/issues/212) | open |
 | Feeder → VictoriaMetrics (remote write into vmsingle) | `experiment_run_e2e.py` | to do |
 | Feeder → ClickHouse live ingest, tables/views before data, server CPU/memory monitoring | `experiment_run_clickhouse.py` | to do |
 | No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | [#861](https://github.com/ProjectASAP/ASAPQuery/issues/861) | open |
