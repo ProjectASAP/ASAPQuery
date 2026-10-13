@@ -192,21 +192,22 @@ def main(cfg: DictConfig):
         cfg.experiment_params
     )
 
+    modes_by_name = {
+        m["mode"]: m
+        for m in OmegaConf.to_container(cfg.experiment_params.experiment, resolve=True)
+    }
     paced_feeder_service = None
     paced_feeder_config = exporter_config["exporter_list"].get(PACED_FEEDER_EXPORTER)
     if paced_feeder_config is not None:
         paced_feeder_config = OmegaConf.to_container(paced_feeder_config, resolve=True)
         check_paced_feeder_config(
             paced_feeder_config,
+            modes=list(modes_by_name.values()),
             parallelism=args.parallelism,
             min_feed_secs=(0 if skip_querying else args.steady_state_wait)
             + minimum_experiment_running_time,
         )
         paced_feeder_service = PacedFeederService(provider, args)
-    modes_by_name = {
-        m["mode"]: m
-        for m in OmegaConf.to_container(cfg.experiment_params.experiment, resolve=True)
-    }
 
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")

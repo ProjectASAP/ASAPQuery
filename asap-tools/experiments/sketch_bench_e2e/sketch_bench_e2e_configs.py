@@ -10,8 +10,12 @@ metrics the paced feeder generates. The config has:
   groups, only when `--sql-queries` gives their SQL; otherwise they are
   skipped with a note. The file holds one `;`-terminated statement per
   structured entry, in table order.
-- the table's gauge and counter metrics, sent by the paced feeder (records
-  metrics are skipped with a note: remote write cannot carry them).
+- the table's gauge and counter metrics, sent by the paced feeder and listed
+  under `metrics`. Records metrics, which only the structured queries read,
+  are fed only with `--sql-queries`, and then only to ASAPQuery: the config
+  has no baseline (Prometheus) mode, and they are not listed under `metrics`
+  (with prebuilt planner configs that list only keeps fed metrics out of
+  Prometheus' forwarding, and records are never scraped).
 - `controller.prebuilt_output_dir`, when given, so ASAPQuery runs those
   planner configs (e.g. from `asap-planner --planner saved`).
 
@@ -41,7 +45,8 @@ from experiment_utils.config import (  # noqa: E402
 )
 from experiment_utils.services.paced_feeder import (  # noqa: E402
     PACED_FEEDER_EXPORTER,
-    REMOTE_WRITE_METRIC_TYPES,
+    PROMETHEUS_METRIC_TYPES,
+    RECORDS_METRIC_TYPE,
 )
 
 DEFAULT_OUTPUT_DIR = os.path.join(
@@ -51,10 +56,8 @@ SERVERS = [
     {"name": "prometheus", "url": "http://localhost:9090"},
     {"name": "sketchdb", "url": "http://localhost:8088"},
 ]
-MODES = [
-    {"mode": "sketchdb", "server": "sketchdb"},
-    {"mode": "baseline", "server": "prometheus"},
-]
+SKETCHDB_MODE = {"mode": "sketchdb", "server": "sketchdb"}
+BASELINE_MODE = {"mode": "baseline", "server": "prometheus"}
 # Seconds the window ending at an evaluation time gets for its data to arrive.
 DEFAULT_QUERY_TIME_OFFSET_SECS = 10
 # Feeder time beyond the query phase: covers flow.steady_state_wait (60 s in
@@ -134,10 +137,18 @@ def build_config(
         raise ValueError(f"{table_path}: no queries to run")
 
     metrics = []
+    records_metrics = []
     for name, desc in e2e["metrics"].items():
-        if desc["type"] not in REMOTE_WRITE_METRIC_TYPES:
-            notes.append(f"skipped {desc['type']} metric {name!r}: not remote-writable")
+        if desc["type"] == RECORDS_METRIC_TYPE:
+            if sql:
+                records_metrics.append(name)
+            else:
+                notes.append(
+                    f"skipped records metric {name!r}: only structured queries read it"
+                )
             continue
+        if desc["type"] not in PROMETHEUS_METRIC_TYPES:
+            raise ValueError(f"metric {name!r} has unknown type {desc['type']!r}")
         metrics.append(
             {
                 "metric": name,
@@ -148,7 +159,7 @@ def build_config(
 
     feeder = {
         "workload_table": os.path.abspath(table_path),
-        "metrics": [m["metric"] for m in metrics],
+        "metrics": [m["metric"] for m in metrics] + records_metrics,
         "seed": seed,
         "duration_secs": (
             feeder_duration_secs
@@ -159,9 +170,18 @@ def build_config(
     if samples_per_sec is not None:
         feeder["samples_per_sec"] = samples_per_sec
 
+    modes = [SKETCHDB_MODE]
+    if records_metrics:
+        notes.append(
+            "no baseline mode: records metrics "
+            f"{records_metrics} go to ASAPQuery only"
+        )
+    else:
+        modes.append(BASELINE_MODE)
+
     config: dict = {
         "experiment_params": {
-            "experiment": MODES,
+            "experiment": modes,
             "monitoring": {"tool": "prometheus", "deployment_mode": "bare_metal"},
             "servers": SERVERS,
             "exporters": {

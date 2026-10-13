@@ -21,8 +21,11 @@ from experiment_utils.providers.base import InfrastructureProvider
 
 PACED_FEEDER_EXPORTER = "paced_feeder"
 PACED_FEEDER_REQUIRED_KEYS = ("workload_table", "metrics", "seed", "duration_secs")
-# Metric types a remote-write sink (ASAPQuery ingest, Prometheus) accepts.
-REMOTE_WRITE_METRIC_TYPES = ("gauge", "counter")
+# Metric types Prometheus' remote-write receiver accepts.
+PROMETHEUS_METRIC_TYPES = ("gauge", "counter")
+# Streams of records, sent as one sample per value field (`http.latency`).
+# Many records share a series and timestamp, so only ASAPQuery takes them.
+RECORDS_METRIC_TYPE = "records"
 
 PACED_FEEDER_BINARY = "./target/release/paced_feeder"
 # The brackets keep pgrep/pkill from matching the shell that runs them.
@@ -47,11 +50,23 @@ def paced_feeder_metric_names(experiment_params) -> List[str]:
     ]
 
 
+def feeds_prometheus(mode: Dict[str, Any]) -> bool:
+    """Whether the feeder sends to Prometheus in this experiment mode."""
+    return mode["mode"] != constants.SKETCHDB_EXPERIMENT_NAME or mode.get(
+        "query_prometheus_too", False
+    )
+
+
 def check_paced_feeder_config(
-    config: Dict[str, Any], parallelism: int, min_feed_secs: float
+    config: Dict[str, Any],
+    modes: List[Dict[str, Any]],
+    parallelism: int,
+    min_feed_secs: float,
 ) -> None:
-    """Fail before the experiment starts on a config the feeder would reject
-    or one that stops sending before the queries end."""
+    """Fail before the experiment starts on a config the feeder would reject,
+    one sending records to Prometheus, or one that stops sending before the
+    queries end."""
+    prometheus_modes = [m["mode"] for m in modes if feeds_prometheus(m)]
     with open(config["workload_table"]) as f:
         (workload,) = json.load(f)["workloads"]
     table_metrics = workload["e2e"]["metrics"]
@@ -62,10 +77,16 @@ def check_paced_feeder_config(
                 f"{config['workload_table']} (has {sorted(table_metrics)})"
             )
         metric_type = table_metrics[metric]["type"]
-        if metric_type not in REMOTE_WRITE_METRIC_TYPES:
+        if metric_type == RECORDS_METRIC_TYPE:
+            if prometheus_modes:
+                raise ValueError(
+                    f"paced_feeder metric {metric!r} is a records metric, which "
+                    f"only ASAPQuery takes, but modes {prometheus_modes} feed "
+                    "Prometheus (baseline or query_prometheus_too)"
+                )
+        elif metric_type not in PROMETHEUS_METRIC_TYPES:
             raise ValueError(
-                f"paced_feeder metric {metric!r} has type {metric_type!r}; "
-                f"remote write takes only {REMOTE_WRITE_METRIC_TYPES}"
+                f"paced_feeder metric {metric!r} has unknown type {metric_type!r}"
             )
     if parallelism != 1:
         raise ValueError(
@@ -87,10 +108,10 @@ def paced_feeder_sinks(
     sketchdb feeds ASAPQuery's ingest, plus Prometheus when the mode also
     queries it; every other mode queries Prometheus only.
     """
-    if mode["mode"] != constants.SKETCHDB_EXPERIMENT_NAME:
-        return {SINK_PROMETHEUS: prometheus_url}
-    sinks = {SINK_QUERY_ENGINE: query_engine_url}
-    if mode.get("query_prometheus_too", False):
+    sinks = {}
+    if mode["mode"] == constants.SKETCHDB_EXPERIMENT_NAME:
+        sinks[SINK_QUERY_ENGINE] = query_engine_url
+    if feeds_prometheus(mode):
         sinks[SINK_PROMETHEUS] = prometheus_url
     return sinks
 

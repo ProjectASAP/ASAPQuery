@@ -29,6 +29,9 @@ from experiment_utils.services.paced_feeder import (
 from experiment_utils.services.prometheus import PrometheusService
 
 QE_URL = "http://10.10.1.1:8080/api/v1/write"
+SKETCHDB = {"mode": "sketchdb", "server": "sketchdb"}
+BASELINE = {"mode": "baseline", "server": "prometheus"}
+BOTH_MODES = [SKETCHDB, BASELINE]
 PROM_URL = "http://10.10.1.1:9090/api/v1/write"
 
 # workloads[0].e2e.metrics of synthetic-templatesclassic-shared1.json, plus a
@@ -139,27 +142,46 @@ class CheckPacedFeederConfigTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_valid_config(self):
-        check_paced_feeder_config(feeder_config(self.table), 1, 600)
+        check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 1, 600)
 
     def test_unknown_metric(self):
         with self.assertRaisesRegex(ValueError, "'cpu' is not in"):
             check_paced_feeder_config(
-                feeder_config(self.table, metrics=["cpu"]), 1, 600
+                feeder_config(self.table, metrics=["cpu"]), BOTH_MODES, 1, 600
             )
 
-    def test_records_metric(self):
-        with self.assertRaisesRegex(ValueError, "type 'records'"):
+    def test_records_metric_to_query_engine_only(self):
+        check_paced_feeder_config(
+            feeder_config(self.table, metrics=["data", "flows"]), [SKETCHDB], 1, 600
+        )
+
+    def test_records_metric_refused_for_prometheus(self):
+        # Many records share a series and timestamp; Prometheus' receiver
+        # rejects those duplicates.
+        records = feeder_config(self.table, metrics=["flows"])
+        with self.assertRaisesRegex(ValueError, r"records metric.*\['baseline'\]"):
+            check_paced_feeder_config(records, BOTH_MODES, 1, 600)
+        with self.assertRaisesRegex(ValueError, r"query_prometheus_too"):
             check_paced_feeder_config(
-                feeder_config(self.table, metrics=["flows"]), 1, 600
+                records, [{**SKETCHDB, "query_prometheus_too": True}], 1, 600
             )
+
+    def test_unknown_metric_type(self):
+        with open(self.table) as f:
+            table = json.load(f)
+        table["workloads"][0]["e2e"]["metrics"]["data"]["type"] = "histogram"
+        with open(self.table, "w") as f:
+            json.dump(table, f)
+        with self.assertRaisesRegex(ValueError, "unknown type 'histogram'"):
+            check_paced_feeder_config(feeder_config(self.table), [SKETCHDB], 1, 600)
 
     def test_sharded_ingest(self):
         with self.assertRaisesRegex(ValueError, "parallelism=1"):
-            check_paced_feeder_config(feeder_config(self.table), 2, 600)
+            check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 2, 600)
 
     def test_feeder_ending_before_the_queries(self):
         with self.assertRaisesRegex(ValueError, "at least 601"):
-            check_paced_feeder_config(feeder_config(self.table), 1, 601)
+            check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 1, 601)
 
     def test_missing_keys_rejected_with_the_other_exporters(self):
         params = OmegaConf.create(

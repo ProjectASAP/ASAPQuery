@@ -98,7 +98,7 @@ class BuildConfigTest(unittest.TestCase):
             ],
         )
 
-    def test_feeder_sends_the_remote_writable_metrics(self):
+    def test_feeder_sends_the_classic_metrics_without_sql(self):
         config, notes = self.build()
         params = config["experiment_params"]
         self.assertEqual(
@@ -125,7 +125,12 @@ class BuildConfigTest(unittest.TestCase):
                 "duration_secs": 120 + 600 + sbe.FEEDER_SLACK_SECS,
             },
         )
-        self.assertIn("skipped records metric 'flows': not remote-writable", notes)
+        self.assertIn(
+            "skipped records metric 'flows': only structured queries read it", notes
+        )
+        self.assertEqual(
+            [m["mode"] for m in params["experiment"]], ["sketchdb", "baseline"]
+        )
 
     def test_structured_queries_skipped_without_sql(self):
         config, notes = self.build()
@@ -148,6 +153,20 @@ class BuildConfigTest(unittest.TestCase):
             ["SELECT dst_subnet, uniq(src_ip) FROM flows GROUP BY dst_subnet"],
         )
         self.assertFalse(any("structured" in n for n in notes))
+        # The records metric goes to ASAPQuery only: fed, but no baseline
+        # mode and not under `metrics`.
+        params = config["experiment_params"]
+        self.assertEqual(
+            params["exporters"]["exporter_list"]["paced_feeder"]["metrics"],
+            ["data", "data_total", "flows"],
+        )
+        self.assertEqual([m["mode"] for m in params["experiment"]], ["sketchdb"])
+        self.assertEqual(
+            [m["metric"] for m in params["metrics"]], ["data", "data_total"]
+        )
+        self.assertIn(
+            "no baseline mode: records metrics ['flows'] go to ASAPQuery only", notes
+        )
 
     def test_sql_file_must_match_the_structured_queries(self):
         sql = os.path.join(self.tmp.name, "multigroup.sql")
@@ -172,13 +191,13 @@ class BuildConfigTest(unittest.TestCase):
         config, _ = self.build(prebuilt_output_dir=prebuilt)
         self.assertEqual(config["controller"], {"prebuilt_output_dir": prebuilt})
 
-    def test_generated_config_composes_and_validates(self):
+    def compose_and_validate(self, config):
         # A dry run of what experiment_run_e2e.py does with the file before it
-        # starts any service.
+        # starts any service; returns the experiment modes.
         config_dir = os.path.join(self.tmp.name, "config")
         shutil.copytree(CONFIG_DIR, config_dir)
         sbe.write_config(
-            self.build()[0],
+            config,
             self.table,
             os.path.join(config_dir, "experiment_type", "sketch_bench_e2e", "t.yaml"),
         )
@@ -190,6 +209,7 @@ class BuildConfigTest(unittest.TestCase):
         self.assertIsNotNone(exporter_config, reason)
         check_paced_feeder_config(
             OmegaConf.to_container(exporter_config.exporter_list.paced_feeder),
+            modes=OmegaConf.to_container(params.experiment),
             parallelism=cfg.streaming.parallelism,
             min_feed_secs=cfg.flow.steady_state_wait
             + experiment_config.get_minimum_experiment_running_time(params),
@@ -197,7 +217,19 @@ class BuildConfigTest(unittest.TestCase):
         modes, _ = experiment_config.generate_controller_client_configs(
             params, self.tmp.name
         )
-        self.assertEqual(modes, ["sketchdb", "baseline"])
+        return modes
+
+    def test_generated_config_composes_and_validates(self):
+        self.assertEqual(
+            self.compose_and_validate(self.build()[0]), ["sketchdb", "baseline"]
+        )
+
+    def test_generated_config_with_records_validates(self):
+        sql = os.path.join(self.tmp.name, "multigroup.sql")
+        with open(sql, "w") as f:
+            f.write("SELECT 1;\n")
+        config, _ = self.build(sql_queries_file=sql)
+        self.assertEqual(self.compose_and_validate(config), ["sketchdb"])
 
 
 if __name__ == "__main__":

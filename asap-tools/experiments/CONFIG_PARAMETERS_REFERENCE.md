@@ -478,7 +478,7 @@ table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
 - **Example**: `/path/to/synthetic-templatesclassic-shared1.json`
 
 #### `experiment_params.exporters.exporter_list.paced_feeder.metrics` (list, required)
-- **Description**: Metrics of the table's `workloads[0].e2e.metrics` to send; gauge or counter only
+- **Description**: Metrics of the table's `workloads[0].e2e.metrics` to send. Gauge and counter metrics go to every sink; `records` metrics (one sample per value field, `<metric>.<field>`) only to ASAPQuery, so they are refused when any mode feeds Prometheus (baseline, or `query_prometheus_too`)
 - **Example**: `[data, data_total]`
 
 #### `experiment_params.exporters.exporter_list.paced_feeder.seed` (int, required)
