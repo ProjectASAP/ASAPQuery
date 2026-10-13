@@ -1,10 +1,10 @@
 use asap_planner::optimizer::{
     parse_weight, plan_milp, plan_to_planner_output, reject_unwritable_queries, saved_plan_output,
-    MilpInputs, PlanSelector,
+    MilpConfig, MilpInputs, PlanSelector,
 };
 use asap_planner::{
     Controller, ControllerConfig, ElasticController, ElasticRuntimeOptions, RuntimeOptions,
-    SQLController, SQLRuntimeOptions, StreamingEngine,
+    SQLController, SQLControllerConfig, SQLRuntimeOptions, StreamingEngine,
 };
 use asap_types::enums::QueryLanguage;
 use clap::Parser;
@@ -57,9 +57,10 @@ struct Args {
     #[arg(long = "clickhouse-database", required = false)]
     clickhouse_database: Option<String>,
 
-    /// `milp` plans with sketch-bench's rqe-optimizer: PromQL with
-    /// --input_config only, labels from its `metrics:` hints. `saved` writes
-    /// a plan sketch-bench's `autosketch_vs_asap` already solved.
+    /// `milp` plans with sketch-bench's rqe-optimizer: PromQL or SQL with
+    /// --input_config only, labels from its `metrics:` hints or tables'
+    /// `metadata_columns`. `saved` writes a PromQL plan sketch-bench's
+    /// `autosketch_vs_asap` already solved.
     #[arg(long, value_enum, default_value = "legacy")]
     planner: PlannerArg,
 
@@ -253,21 +254,17 @@ fn run_legacy(args: Args, engine: StreamingEngine) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Checks the flags `--planner milp` and `--planner saved` share: PromQL
-/// with labels from `metrics:` hints, no legacy-only flags. Returns the
+/// Checks the flags `--planner milp` and `--planner saved` share: labels from
+/// the config, no legacy-only flags. Returns the
 /// positive scrape interval, which per-series sample rates divide by.
 fn check_optimizer_flags(args: &Args, planner: &str) -> anyhow::Result<u64> {
     anyhow::ensure!(
-        matches!(args.query_language, QueryLanguage::promql),
-        "--planner {planner} supports only --query-language promql"
-    );
-    anyhow::ensure!(
         args.query_log.is_none(),
-        "--planner {planner} doesn't take --query-log: query logs have no `metrics:` hints"
+        "--planner {planner} doesn't take --query-log: query logs have no label hints"
     );
     anyhow::ensure!(
         args.prometheus_url.is_none(),
-        "--planner {planner} takes labels from `metrics:` hints, not --prometheus-url"
+        "--planner {planner} takes labels from the config, not --prometheus-url"
     );
     anyhow::ensure!(
         !args.enable_punting && args.range_duration_ms == 0 && args.step_ms == 0,
@@ -285,16 +282,31 @@ fn check_optimizer_flags(args: &Args, planner: &str) -> anyhow::Result<u64> {
 }
 
 fn run_milp(args: &Args) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(
+            args.query_language,
+            QueryLanguage::promql | QueryLanguage::sql
+        ),
+        "--planner milp supports only --query-language promql or sql"
+    );
     let scrape_interval_ms = check_optimizer_flags(args, "milp")?;
     let config_path = args
         .input_config
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("--planner milp requires --input_config"))?;
-    let config: ControllerConfig = serde_yaml::from_str(&std::fs::read_to_string(config_path)?)?;
+    let yaml = std::fs::read_to_string(config_path)?;
+    let (promql, sql): (ControllerConfig, SQLControllerConfig);
+    let config = if args.query_language == QueryLanguage::sql {
+        sql = serde_yaml::from_str(&yaml)?;
+        MilpConfig::Sql(&sql)
+    } else {
+        promql = serde_yaml::from_str(&yaml)?;
+        MilpConfig::Promql(&promql)
+    };
     // Fail before solving: the plan is always written.
-    reject_unwritable_queries(&config)?;
+    reject_unwritable_queries(config)?;
     let plan = plan_milp(
-        &config,
+        config,
         &MilpInputs {
             workload_facts: args
                 .workload_facts
@@ -314,12 +326,16 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
             allow_undeployable_families: false,
         },
     )?;
-    plan_to_planner_output(&config, &plan.workload, &plan.solution)?
+    plan_to_planner_output(config, &plan.workload, &plan.solution)?
         .write_to_dir(&args.output_dir)?;
     Ok(())
 }
 
 fn run_saved(args: &Args) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.query_language == QueryLanguage::promql,
+        "--planner saved supports only --query-language promql"
+    );
     let scrape_interval_ms = check_optimizer_flags(args, "saved")?;
     anyhow::ensure!(
         args.input_config.is_none(),

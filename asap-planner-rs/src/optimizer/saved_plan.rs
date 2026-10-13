@@ -16,7 +16,7 @@ use crate::config::input::ControllerConfig;
 use crate::planner_output::PlannerOutput;
 
 use super::aqe_extractor::decompose_to_leaves;
-use super::milp::workload_from_config;
+use super::milp::{workload_from_config, MilpConfig};
 use super::milp_output::{deployments_to_planner_output, reject_unwritable_queries};
 
 #[derive(Deserialize)]
@@ -173,9 +173,10 @@ pub fn saved_plan_output(
             c.rqe
         );
     }
-    let config = e2e_config(e2e)?;
+    let promql = e2e_config(e2e)?;
+    let config = MilpConfig::Promql(&promql);
     // Before the leaf split, which turns an avg into two leaves.
-    reject_unwritable_queries(&config)?;
+    reject_unwritable_queries(config)?;
 
     // Leaf query string and repeat interval -> the plan RQE it reads.
     let mut rqe_of: HashMap<(String, u64), &str> = HashMap::new();
@@ -201,7 +202,7 @@ pub fn saved_plan_output(
         }
     }
 
-    let workload = workload_from_config(&config, scrape_interval_ms)?;
+    let workload = workload_from_config(config, scrape_interval_ms)?;
 
     // Plan deployment index -> its position in `deployments`, in order of
     // the first Raqe each serves.
@@ -265,7 +266,7 @@ pub fn saved_plan_output(
         served_by.push(index);
     }
     Ok(deployments_to_planner_output(
-        &config,
+        config,
         &workload,
         &deployments,
         &served_by,
