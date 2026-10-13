@@ -246,7 +246,7 @@ fn normalized_f64_bits(value: f64) -> u64 {
 /// dropped — they contribute no AQE. Only arithmetic operators are split;
 /// comparison and set operators are left as-is (treated as opaque leaves).
 /// An `avg` leaf becomes its sum and count leaves (see `rewrite_avg`).
-fn decompose_to_leaves(query: &str) -> Vec<String> {
+pub(crate) fn decompose_to_leaves(query: &str) -> Vec<String> {
     let (lhs, rhs) = match parse_binary_arms(query) {
         Some(arms) => arms,
         None => return rewrite_avg(query),

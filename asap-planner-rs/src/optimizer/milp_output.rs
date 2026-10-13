@@ -94,14 +94,36 @@ pub fn plan_to_planner_output(
     workload: &MilpWorkload,
     solution: &MilpSolution,
 ) -> Result<PlannerOutput, MilpOutputError> {
+    let deployments: Vec<Deployment> = solution
+        .deployments
+        .iter()
+        .map(|planned| planned.deployment.clone())
+        .collect();
+    let served_by: Vec<usize> = solution.raqes.iter().map(|r| r.deployment).collect();
+    deployments_to_planner_output(config, workload, &deployments, &served_by)
+}
+
+/// [`plan_to_planner_output`] for a plan given as its deployments and, per
+/// Raqe of `workload`, the index of the deployment serving it.
+pub fn deployments_to_planner_output(
+    config: MilpConfig,
+    workload: &MilpWorkload,
+    deployments: &[Deployment],
+    served_by: &[usize],
+) -> Result<PlannerOutput, MilpOutputError> {
+    assert_eq!(
+        served_by.len(),
+        workload.raqes.len(),
+        "one deployment per Raqe"
+    );
     reject_unwritable_queries(config)?;
     // sketch-bench lets a deployment serve a RAQE grouped by a subset of its
     // grouping (a roll-up, sketch-bench#190). The engine reads a deployment
     // only at its own grouping, and `aggregation_config` takes the labels
     // from the first RAQE served, so refuse a roll-up rather than write
     // configs at the wrong grouping.
-    for (raqe, planned) in workload.raqes.iter().zip(&solution.raqes) {
-        let deployment = &solution.deployments[planned.deployment].deployment;
+    for (raqe, &index) in workload.raqes.iter().zip(served_by) {
+        let deployment = &deployments[index];
         if raqe.grouping_labels != deployment.grouping_labels {
             return Err(MilpOutputError::RollupUnsupported {
                 query: raqe.id.clone(),
@@ -113,11 +135,11 @@ pub fn plan_to_planner_output(
 
     let item_of = |raqe: usize| &workload.items[workload.raqe_items[raqe]];
     // Each item once per deployment, however many occurrences it has.
-    let mut served: Vec<Vec<&OptimizerItem>> = vec![Vec::new(); solution.deployments.len()];
+    let mut served: Vec<Vec<&OptimizerItem>> = vec![Vec::new(); deployments.len()];
     let mut seen = HashSet::new();
-    for (raqe, planned) in solution.raqes.iter().enumerate() {
-        if seen.insert((planned.deployment, workload.raqe_items[raqe])) {
-            served[planned.deployment].push(item_of(raqe));
+    for (raqe, &index) in served_by.iter().enumerate() {
+        if seen.insert((index, workload.raqe_items[raqe])) {
+            served[index].push(item_of(raqe));
         }
     }
 
@@ -131,8 +153,8 @@ pub fn plan_to_planner_output(
 
     let mut aggregations: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
     let mut deployment_keys = Vec::with_capacity(served.len());
-    for (planned, items) in solution.deployments.iter().zip(&served) {
-        let mut aggregation = aggregation_config(&planned.deployment, items)?;
+    for (deployment, items) in deployments.iter().zip(&served) {
+        let mut aggregation = aggregation_config(deployment, items)?;
         if let Some(&(table, column)) = sql_columns.get(&aggregation.metric) {
             aggregation.metric = table.to_string();
             aggregation.table_name = Some(table.to_string());
@@ -144,8 +166,8 @@ pub fn plan_to_planner_output(
     }
 
     let mut queries: IndexMap<String, QueryPlanEntry> = IndexMap::new();
-    for (raqe, planned) in solution.raqes.iter().enumerate() {
-        let key = &deployment_keys[planned.deployment];
+    for (raqe, &index) in served_by.iter().enumerate() {
+        let key = &deployment_keys[index];
         for query in &item_of(raqe).query_strings {
             match queries.entry(query.clone()) {
                 Entry::Vacant(entry) => {

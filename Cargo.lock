@@ -166,6 +166,7 @@ dependencies = [
  "chrono",
  "clap 4.6.1",
  "elastic_dsl_utilities",
+ "flate2",
  "indexmap 2.14.0",
  "pretty_assertions",
  "promql-parser",
