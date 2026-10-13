@@ -15,7 +15,9 @@ class ClickHouseQueryClient(QueryClient):
         database: str = "default",
         user: str = "default",
         password: str = "",
-        timeout: int = 30,
+        # None waits for the query to finish; long-window baseline queries
+        # can take minutes.
+        timeout: Optional[float] = None,
         **kwargs: Any,
     ):
         super().__init__(server_url, server_name)

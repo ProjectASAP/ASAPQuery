@@ -8,7 +8,11 @@ import subprocess
 
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
-from constants import PROMETHEUS_CONFIG_DIR, PROMETHEUS_CONFIG_FILE
+from constants import (
+    PROMETHEUS_CONFIG_DIR,
+    PROMETHEUS_CONFIG_FILE,
+    PROMETHEUS_QUERY_TIMEOUT,
+)
 
 
 class PrometheusService(BaseService):
@@ -89,7 +93,11 @@ class PrometheusService(BaseService):
             time.sleep(3)
 
         # Start prometheus
-        cmd = f"./prometheus --config.file={PROMETHEUS_CONFIG_FILE} > /dev/null 2>&1 < /dev/null &"
+        cmd = (
+            f"./prometheus --config.file={PROMETHEUS_CONFIG_FILE}"
+            f" --query.timeout={PROMETHEUS_QUERY_TIMEOUT}"
+            " > /dev/null 2>&1 < /dev/null &"
+        )
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,
