@@ -391,6 +391,47 @@ mod tests {
         assert!(yaml.contains("alpha: 0.02"), "{yaml}");
     }
 
+    /// A DDSketch grouped by (job, label_0) serves `quantile by (job)` as a
+    /// roll-up: one aggregation at the deployment's grouping.
+    #[test]
+    fn writes_a_sketch_roll_up_at_the_deployment_grouping() {
+        let table = r#"{"workloads": [{"e2e": {
+            "queries": [
+                {"promql": "quantile by (job) (0.5, data)", "interval_secs": 1, "rqes": ["p50"]}
+            ],
+            "metrics": {"data": {"type": "gauge", "labels": [
+                {"name": "job", "cardinality": 10},
+                {"name": "label_0", "cardinality": 1000, "child_of": "job"}
+            ]}}
+        }}]}"#;
+        let mut p50 = pick("p50", 0, "dd", json!({"alpha": 0.02}), 1);
+        p50["deployment_grouping"] = json!(["job", "label_0"]);
+        let plan = json!({"plans": [
+            {"method": "asap", "weights": "cpu", "kind": "cheapest", "chosen": [p50]},
+        ]});
+
+        let output = run_on(table, plan.to_string().as_bytes(), None).unwrap();
+
+        let streaming = output
+            .to_streaming_config(asap_types::enums::QueryLanguage::promql)
+            .unwrap();
+        let aggregations: Vec<_> = streaming.aggregation_configs.values().collect();
+        let [aggregation] = aggregations.as_slice() else {
+            panic!("expected one aggregation, got {aggregations:?}");
+        };
+        assert_eq!(
+            aggregation.aggregation_type,
+            promql_utilities::query_logics::enums::AggregationType::DDSketch
+        );
+        assert_eq!(
+            aggregation.grouping_labels,
+            promql_utilities::data_model::KeyByLabelNames::new(vec![
+                "job".into(),
+                "label_0".into()
+            ])
+        );
+    }
+
     #[test]
     fn sla_ms_selects_the_plan_at_that_sla() {
         let yaml = run(plans(shared_p50()), Some(100.0))
@@ -408,7 +449,7 @@ mod tests {
         let mut plan = plans(shared_p50());
         plan["plans"][0]["chosen"][0]["deployment_grouping"] = json!(["job", "label_0"]);
         let err = refusal(plan, None);
-        assert!(err.contains("rolls up only"), "{err}");
+        assert!(err.contains("merge across groups"), "{err}");
     }
 
     #[test]
