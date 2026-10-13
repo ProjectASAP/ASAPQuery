@@ -261,7 +261,7 @@ between rounds.
 | Feeder → ClickHouse live ingest, tables/views before data, server CPU/memory monitoring | `experiment_run_clickhouse.py` | to do |
 | No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | [#861](https://github.com/ProjectASAP/ASAPQuery/issues/861) | open |
 | Analysis: per-system CPU/memory/latency/accuracy, planner cost, scatter, table | `asap-tools/experiments/post_experiment/` | to do |
-| ASAPQuery multi-grouping (all): `--planner saved` for SQL | [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856), sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209) comment | Milind |
+| ASAPQuery multi-grouping (all): `--planner saved` for SQL | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209) (each structured entry carries its ASAPQuery `sql`, cd51be9); [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856) | SQL strings in the tables: done (Milind). Planner reads them: Milind, no PR yet. [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844) switches to the table's `sql` (only `NOW()` substituted). |
 | Sending SQL to ASAPQuery from a runner | — | run the multi-grouping part through `experiment_run_clickhouse.py`'s sketchdb mode (one language per engine process) |
 
 ## 12. Open questions (proposed answers)
@@ -295,7 +295,7 @@ between rounds.
 | Item | Owner | Blocks |
 |---|---|---|
 | [#800](https://github.com/ProjectASAP/ASAPQuery/issues/800): MILP output uses `NoCleanup` (`milp_output.rs:230`), so planner YAML carries no retention and every window is kept | Milind. Agreed design (§7, "ASAPQuery's retention"): CircularBuffer with `num_aggregates_to_retain = retained_instance_count`, then evicted windows spilled to disk instead of dropped | CircularBuffer: needed before the long runs, since ASAPQuery's memory otherwise grows for 25 h and stops matching the plan. Disk tier: separate PR, ideally before the runs too. |
-| [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856): `--planner saved` for SQL (with sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209)'s proposed SQL strings) | Milind | ASAPQuery on all's multi-grouping queries |
+| [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856): `--planner saved` for SQL, reading the tables' `sql` strings (sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209), done) | Milind | ASAPQuery on all's multi-grouping queries |
 | Engine roll-ups for keyed aggregations ([#846](https://github.com/ProjectASAP/ASAPQuery/issues/846)) | Milind | the all plan's 52 rolled-up multi-grouping queries, if [#851](https://github.com/ProjectASAP/ASAPQuery/issues/851)/[#852](https://github.com/ProjectASAP/ASAPQuery/issues/852) don't cover them |
 
 Not blocking, reported on [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828): `IncreaseAccumulator` treats an out-of-order
