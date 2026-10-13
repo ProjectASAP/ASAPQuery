@@ -402,12 +402,13 @@ mod tests {
         assert!(err.contains("0 plans match"), "{err}");
     }
 
+    /// The exact sum is a keyed MultipleSum, which the engine doesn't roll up.
     #[test]
-    fn refuses_a_roll_up() {
+    fn refuses_an_exact_sum_roll_up() {
         let mut plan = plans(shared_p50());
         plan["plans"][0]["chosen"][0]["deployment_grouping"] = json!(["job", "label_0"]);
         let err = refusal(plan, None);
-        assert!(err.contains("roll-up"), "{err}");
+        assert!(err.contains("rolls up only"), "{err}");
     }
 
     #[test]
