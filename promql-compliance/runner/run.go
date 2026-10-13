@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,7 +37,8 @@ const (
 // fixedPlannerOutputCompose overrides the base Compose file for suites with a
 // planner_output_dir: the planner sits behind a never-activated profile so it
 // does not run, and the query engine mounts the fixed directory where the
-// planner's output volume would be.
+// planner's output volume would be. The bind uses long syntax so a host path
+// containing ':' stays one source.
 const fixedPlannerOutputCompose = `services:
   planner:
     profiles: ["generated-planner-output"]
@@ -45,8 +47,15 @@ const fixedPlannerOutputCompose = `services:
       prometheus:
         condition: service_healthy
     volumes:
-      - "${` + fixedPlannerOutputDirEnv + `:?` + fixedPlannerOutputDirEnv + ` is required}:` + plannerOutputMountPath + `:ro"
+      - type: bind
+        source: "${` + fixedPlannerOutputDirEnv + `:?` + fixedPlannerOutputDirEnv + ` is required}"
+        target: ` + plannerOutputMountPath + `
+        read_only: true
 `
+
+// The override's `!override` tag needs this Compose release or later; older
+// ones merge depends_on and fail on the disabled planner.
+var minComposeVersionForOverride = [3]int{2, 24, 4}
 
 type RunOptions struct {
 	DatasetPath       string
@@ -89,7 +98,15 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 		return Report{}, fmt.Errorf("create run directory: %w", err)
 	}
 	defer os.RemoveAll(runDirectory)
-	if err := writeGeneratedConfigs(runDirectory, fixture, suite); err != nil {
+	// Fixed planner output only replaces the planner inside a Compose project;
+	// with caller-owned targets the planner input is still generated.
+	fixedPlannerOutput := suite.PlannerOutputDir != "" && len(options.ComposeFiles) > 0
+	if fixedPlannerOutput {
+		if err := requireComposeOverrideSupport(ctx); err != nil {
+			return Report{}, err
+		}
+	}
+	if err := writeGeneratedConfigs(runDirectory, fixture, suite, fixedPlannerOutput); err != nil {
 		return Report{}, err
 	}
 
@@ -98,12 +115,17 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 		project: options.ComposeProject,
 		env:     []string{"ASAP_TEST_CONFIG_DIR=" + runDirectory},
 	}
-	if suite.PlannerOutputDir != "" {
+	if fixedPlannerOutput {
 		lifecycle.files = append(
 			append([]string(nil), options.ComposeFiles...),
 			filepath.Join(runDirectory, fixedPlannerOutputComposeFile),
 		)
-		lifecycle.env = append(lifecycle.env, fixedPlannerOutputDirEnv+"="+suite.PlannerOutputDir)
+		lifecycle.env = append(
+			lifecycle.env,
+			fixedPlannerOutputDirEnv+"="+suite.PlannerOutputDir,
+			// An inherited COMPOSE_PROFILES could re-enable the planner.
+			"COMPOSE_PROFILES=",
+		)
 	}
 	if len(options.ComposeFiles) > 0 {
 		if err := lifecycle.Start(ctx); err != nil {
@@ -372,20 +394,68 @@ type plannerCleanup struct {
 }
 
 // writeGeneratedConfigs writes the engine config plus either the planner input
-// or, for a suite with fixed planner output, the Compose override that skips
-// the planner. The planner input is not generated in the fixed case, so its
-// timing derivation cannot reject queries the planner never sees.
-func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite) error {
+// or, with fixed planner output, the Compose override that skips the planner.
+// The planner input is not generated in the fixed case, so its timing
+// derivation cannot reject queries the planner never sees.
+func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite, fixedPlannerOutput bool) error {
 	if err := writeEngineConfig(directory); err != nil {
 		return err
 	}
-	if suite.PlannerOutputDir != "" {
+	if fixedPlannerOutput {
 		if err := os.WriteFile(filepath.Join(directory, fixedPlannerOutputComposeFile), []byte(fixedPlannerOutputCompose), 0o600); err != nil {
 			return fmt.Errorf("write fixed planner output compose override: %w", err)
 		}
 		return nil
 	}
 	return writePlannerConfig(directory, fixture, suite)
+}
+
+// requireComposeOverrideSupport fails unless `docker compose` understands the
+// fixed-output override's `!override` tag.
+func requireComposeOverrideSupport(ctx context.Context) error {
+	output, err := exec.CommandContext(ctx, "docker", "compose", "version", "--short").Output()
+	if err != nil {
+		return fmt.Errorf("check docker compose version for planner_output_dir: %w", err)
+	}
+	version := strings.TrimSpace(string(output))
+	ok, err := composeVersionAtLeast(version, minComposeVersionForOverride)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf(
+			"planner_output_dir needs docker compose >= %d.%d.%d, found %s",
+			minComposeVersionForOverride[0],
+			minComposeVersionForOverride[1],
+			minComposeVersionForOverride[2],
+			version,
+		)
+	}
+	return nil
+}
+
+// composeVersionAtLeast compares a `docker compose version --short` string
+// such as "2.29.1" or "v2.24.4-desktop.1" against minimum.
+func composeVersionAtLeast(version string, minimum [3]int) (bool, error) {
+	core := strings.SplitN(strings.TrimPrefix(version, "v"), "-", 2)[0]
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return false, fmt.Errorf("unrecognized docker compose version %q", version)
+	}
+	var got [3]int
+	for i, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil {
+			return false, fmt.Errorf("unrecognized docker compose version %q", version)
+		}
+		got[i] = number
+	}
+	for i := range got {
+		if got[i] != minimum[i] {
+			return got[i] > minimum[i], nil
+		}
+	}
+	return true, nil
 }
 
 func writePlannerConfig(directory string, fixture seeder.Fixture, suite Suite) error {
