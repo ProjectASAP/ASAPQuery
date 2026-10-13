@@ -23,9 +23,9 @@ baseline_mv keeps exact mergeable states, no sketches: one view per (metric,
 value, statistic, T) holds per T-second bucket and group the state of sums,
 counts, exact distinct counts, exact quantiles, each series' latest sample (instant vectors) or each
 series' first/last sample, sample times and count (rate, increase). A query
-merges the W/T buckets of its window plus the samples at exactly T - W (kept
-apart in each bucket's `edge` rows), so W must be a multiple of T; instant
-vectors read [T - 1s, T], which is bucket-aligned only when T = 1 s.
+merges the W/T buckets of its window, plus for PromQL the samples at exactly
+T - W (kept apart in each bucket's `edge` rows), so W must be a multiple of
+T; instant vectors read [T - 1s, T], which is bucket-aligned only when T = 1 s.
 
 Semantics are those of Prometheus 2.53 (the version installation/prometheus
 installs for bare-metal runs), whose windows are closed on both ends: range
@@ -482,10 +482,12 @@ def mv_sql(q: Query, views: Dict[tuple, View], labels: Dict[str, List[str]]) -> 
         q,
         tuple(labels[q.table]),
         view.name,
-        # Buckets b in (end - w, end] hold (end - w, end]; the edge row of
-        # bucket end - w holds the window's left boundary instant.
+        # Buckets b in (end - w, end] hold (end - w, end]; for a closed
+        # window, the edge row of bucket end - w holds its left boundary.
         lambda end, w: (
-            f"bucket >= {end} - {w} AND bucket <= {end} "
+            f"bucket > {end} - {w} AND bucket <= {end}"
+            if q.left_open
+            else f"bucket >= {end} - {w} AND bucket <= {end} "
             f"AND (edge OR bucket > {end} - {w})"
         ),
         lambda stat, quantile: mv_agg(view, stat, quantile),
