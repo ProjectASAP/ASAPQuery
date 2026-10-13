@@ -1,7 +1,7 @@
 # Evaluation plan: end-to-end cost and latency (paper §6.2)
 
-Status: draft 2026-10-13. Reuses the §6.3 workloads (#777) at 1/20 of their
-data rate, on the plumbing from #840–#845, #841 and #828. The plans re-solved
+Status: draft 2026-10-13. Reuses the §6.3 workloads ([#777](https://github.com/ProjectASAP/ASAPQuery/issues/777)) at 1/20 of their
+data rate, on the plumbing from [#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)–[#845](https://github.com/ProjectASAP/ASAPQuery/issues/845), [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841) and [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828). The plans re-solved
 at 10 samples/s are in §6. Open decisions are in §12.
 
 ## 1. Question
@@ -17,12 +17,12 @@ the way the planner defines it (§9).
 - **The set of RQEs is the workload.** The workloads are the §6.3 ones: their
   sketch-bench tables already hold the RQEs, the PromQL (classic) or the
   structured query fields (multi-grouping), and the data description
-  (`workloads[0].e2e`, sketch-bench #208, #209, #210).
+  (`workloads[0].e2e`, sketch-bench [#208](https://github.com/ProjectASAP/sketch-bench/issues/208), [#209](https://github.com/ProjectASAP/sketch-bench/issues/209), [#210](https://github.com/ProjectASAP/sketch-bench/issues/210)).
 - **ASAPQuery runs the §6.3 planner's plan**, converted with
-  `asap-planner --planner saved` (#828). The planner is not re-run inside the
+  `asap-planner --planner saved` ([#828](https://github.com/ProjectASAP/ASAPQuery/issues/828)). The planner is not re-run inside the
   experiment.
 - **Every system gets identical data**: one paced feeder per system, same seed
-  and start time (#840–#843).
+  and start time ([#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)–[#843](https://github.com/ProjectASAP/ASAPQuery/issues/843)).
 - **One system per CloudLab node**, so each system's CPU and memory are measured
   alone.
 - **At 1/20 of the §6.3 rate** (§5), so that every system can ingest it on one
@@ -33,11 +33,11 @@ the way the planner defines it (§9).
 
 | System | Version | Queries | Data path | Runner |
 |---|---|---|---|---|
-| ASAPQuery | `main` + this plan's PRs | PromQL (classic); SQL frontend (multi-grouping) | remote write from the feeder | `experiment_run_e2e.py` with `controller.prebuilt_output_dir` (#828, #841) |
-| Prometheus | 2.53.2 (bare metal) | PromQL | remote-write receiver | `experiment_run_e2e.py` (#841) |
+| ASAPQuery | `main` + this plan's PRs | PromQL (classic); SQL frontend (multi-grouping) | remote write from the feeder | `experiment_run_e2e.py` with `controller.prebuilt_output_dir` ([#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841)) |
+| Prometheus | 2.53.2 (bare metal) | PromQL | remote-write receiver | `experiment_run_e2e.py` ([#841](https://github.com/ProjectASAP/ASAPQuery/issues/841)) |
 | VictoriaMetrics | vmsingle | PromQL (MetricsQL-compatible subset) | remote write into vmsingle | `experiment_run_e2e.py` (feeder sink: to do, §11) |
-| ClickHouse | 26.10 | SQL with Prometheus 2.53 semantics (#844) | `INSERT … RowBinary` from the feeder | `experiment_run_clickhouse.py` (live feed: to do, §11) |
-| ClickHouse + MV | 26.10 | SQL over exact materialized views, bucket = T (#845) | same, views created before data | same, `baseline_mv` arm |
+| ClickHouse | 26.10 | SQL with Prometheus 2.53 semantics ([#844](https://github.com/ProjectASAP/ASAPQuery/issues/844)) | `INSERT … RowBinary` from the feeder | `experiment_run_clickhouse.py` (live feed: to do, §11) |
+| ClickHouse + MV | 26.10 | SQL over exact materialized views, bucket = T ([#845](https://github.com/ProjectASAP/ASAPQuery/issues/845)) | same, views created before data | same, `baseline_mv` arm |
 
 PilotDB (the AQP comparison in the paper) is out of scope here; it needs its
 own plan (PromQL→SQL for PilotDB, its sampling modes).
@@ -51,7 +51,7 @@ own plan (PromQL→SQL for PilotDB, its sampling modes).
 
 - **mixed** is the paper's \WorkloadAggregations: one gauge `data` and one
   counter `data_total`, labels `job` (10) → `label_0` (1,000 per job), 1e4
-  series. Templates 1–6, 8, 10 (7 and 9 dropped in sketch-bench #210; template
+  series. Templates 1–6, 8, 10 (7 and 9 dropped in sketch-bench [#210](https://github.com/ProjectASAP/sketch-bench/issues/210); template
   2's PromQL is `topk(32, sum_over_time(data[w]))`, same RQE).
 - **all** adds the multi-grouping templates (11–17) on two records tables,
   `http` (region × service × endpoint × status; `user_id`, `latency`) and
@@ -87,7 +87,7 @@ own plan (PromQL→SQL for PilotDB, its sampling modes).
   subset's cardinality before a run.
 - **Order.** Ticks start on whole seconds and hold samples in `(t, t+1s]`;
   each series' samples of a tick go in one request, in timestamp order, and
-  requests run concurrently (#840). ASAPQuery's allowed lateness stays at its
+  requests run concurrently ([#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)). ASAPQuery's allowed lateness stays at its
   5 s default. Prometheus needs no out-of-order window.
 
 ## 6. Planner at 10 samples/s
@@ -106,7 +106,7 @@ regenerated at 10 samples/s (`SYNTHETIC_SAMPLES_PER_SEC`). Constraints:
 - **Settings.** ASAP method, cheapest plan (no latency SLA), p95 accuracy as in
   §6.3, cpu weights and Fargate weights.
 
-**Feasibility run** (sketch-bench runner on the #210 tables with
+**Feasibility run** (sketch-bench runner on the [#210](https://github.com/ProjectASAP/sketch-bench/issues/210) tables with
 `SYNTHETIC_SAMPLES_PER_SEC = 10`; the 200/s tables reproduce the committed
 plans exactly with the same binary):
 
@@ -152,8 +152,8 @@ plans exactly with the same binary):
 | | Window | Instant query (`sum by (job) (data)`, T = 1 s) |
 |---|---|---|
 | Prometheus 2.53 | closed `[E−W, E]` | latest sample per series within the lookback |
-| ClickHouse (#844) | closed (classic), `toDateTime64` bounds | same as Prometheus |
-| ClickHouse + MV (#845) | same as raw, exactly | same |
+| ClickHouse ([#844](https://github.com/ProjectASAP/ASAPQuery/issues/844)) | closed (classic), `toDateTime64` bounds | same as Prometheus |
+| ClickHouse + MV ([#845](https://github.com/ProjectASAP/ASAPQuery/issues/845)) | same as raw, exactly | same |
 | ASAPQuery | left-open `(E−W, E]` | every sample of the last second (≈10× Prometheus's sum at 10 samples/s) |
 | Multi-grouping (all systems) | left-open `(E−W, E]` | — |
 
@@ -165,13 +165,13 @@ plans exactly with the same binary):
   systems, not an error; the paper should say ASAPQuery answers instant
   queries over the whole last interval.
 - **Evaluation times** are aligned to multiples of T on every system
-  (`align_to_interval`, #841; floored in the ClickHouse SQL, #844), with a 10 s
+  (`align_to_interval`, [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841); floored in the ClickHouse SQL, [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844)), with a 10 s
   offset for ingestion to settle.
 
 ### ASAPQuery's retention: memory, then disk
 
 The baselines keep their whole history on disk and can answer any range.
-ASAPQuery keeps sketch windows instead, in two tiers (#800):
+ASAPQuery keeps sketch windows instead, in two tiers ([#800](https://github.com/ProjectASAP/ASAPQuery/issues/800)):
 
 - **Memory: CircularBuffer.** Each aggregation keeps its last
   `retained_instance_count` windows (`num_aggregates_to_retain`), which is
@@ -198,7 +198,7 @@ ASAPQuery keeps sketch windows instead, in two tiers (#800):
    the largest window (24 h; sliding-window queries answer only once every
    sub-window is present) plus a measurement hour, querying throughout. Only
    the measurement hour is reported.
-4. **No timeouts.** Baseline queries run to completion: #861 lifts
+4. **No timeouts.** Baseline queries run to completion: [#861](https://github.com/ProjectASAP/ASAPQuery/issues/861) lifts
    Prometheus' 2-minute `--query.timeout`, VictoriaMetrics' 30 s query limit
    and the ClickHouse client's 30 s timeout. A query still running when its
    next firing is due is reported as late, with its full latency (§12, Q3).
@@ -216,7 +216,7 @@ Per (system, workload), over the measurement hour:
 - **Results**: every answer saved; accuracy for ASAPQuery per §7
   (quantile rank error / relative error, top-k precision, relative error for
   exact accumulators).
-- **Cost**, as the planner defines it (cost by use, sketch-bench #188):
+- **Cost**, as the planner defines it (cost by use, sketch-bench [#188](https://github.com/ProjectASAP/sketch-bench/issues/188)):
   `w_cpu · mean vCPU + w_mem · mean GiB`, reported with cpu weights (vCPU) and
   with Fargate prices (0.0405 $/vCPU-h, 0.00445 $/GB-h). Absolute costs per
   system, not ratios.
@@ -251,17 +251,17 @@ between rounds.
 
 | Piece | Where | Status |
 |---|---|---|
-| Workload tables with e2e blocks; templates 7/9 dropped; §6.3 rerun | sketch-bench #209, #210 | open |
-| Paced feeder: facts-driven classic data, records, per-series order | #840 → #842 → #843 | open |
-| ClickHouse SQL and exact MV arms from the tables | #844 → #845 | open (base was #837, merged: retarget to `main`) |
-| Feeder + aligned query client in `experiment_run_e2e.py` | #841 | open (base was #828, merged: retarget to `main`) |
-| `--planner saved`; prebuilt configs in both runners | #828, #860 | merged |
+| Workload tables with e2e blocks; templates 7/9 dropped; §6.3 rerun | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209), [#210](https://github.com/ProjectASAP/sketch-bench/issues/210) | open |
+| Paced feeder: facts-driven classic data, records, per-series order | [#840](https://github.com/ProjectASAP/ASAPQuery/issues/840) → [#842](https://github.com/ProjectASAP/ASAPQuery/issues/842) → [#843](https://github.com/ProjectASAP/ASAPQuery/issues/843) | open |
+| ClickHouse SQL and exact MV arms from the tables | [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844) → [#845](https://github.com/ProjectASAP/ASAPQuery/issues/845) | open (base was [#837](https://github.com/ProjectASAP/ASAPQuery/issues/837), merged: retarget to `main`) |
+| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841) | open (base was [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), merged: retarget to `main`) |
+| `--planner saved`; prebuilt configs in both runners | [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), [#860](https://github.com/ProjectASAP/ASAPQuery/issues/860) | merged |
 | Tables and plans at 10 samples/s | `/mydata/rate10-plans/`; sketch-bench, new PR | generated (§6); to commit |
 | Feeder → VictoriaMetrics (remote write into vmsingle) | `experiment_run_e2e.py` | to do |
 | Feeder → ClickHouse live ingest, tables/views before data, server CPU/memory monitoring | `experiment_run_clickhouse.py` | to do |
-| No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | #861 | open |
+| No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | [#861](https://github.com/ProjectASAP/ASAPQuery/issues/861) | open |
 | Analysis: per-system CPU/memory/latency/accuracy, planner cost, scatter, table | `asap-tools/experiments/post_experiment/` | to do |
-| ASAPQuery multi-grouping (all): `--planner saved` for SQL | #856, sketch-bench #209 comment | Milind |
+| ASAPQuery multi-grouping (all): `--planner saved` for SQL | [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856), sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209) comment | Milind |
 | Sending SQL to ASAPQuery from a runner | — | run the multi-grouping part through `experiment_run_clickhouse.py`'s sketchdb mode (one language per engine process) |
 
 ## 12. Open questions (proposed answers)
@@ -282,8 +282,8 @@ between rounds.
    (all samples of the last second) and state it; accuracy is measured in its
    semantics.*
 6. **Q6, top-k accuracy.** The plan's CMS reaches precision 0.9375 on two of
-   three data seeds (sketch-bench #211). *Proposed: run with the plan as
-   solved, report precision per query; revisit if #211 changes the accuracy
+   three data seeds (sketch-bench [#211](https://github.com/ProjectASAP/sketch-bench/issues/211)). *Proposed: run with the plan as
+   solved, report precision per query; revisit if [#211](https://github.com/ProjectASAP/sketch-bench/issues/211) changes the accuracy
    check.*
 7. **Q7, the disk tier is not ready when the runs start.** *Proposed: run
    with CircularBuffer alone and say in the paper that ASAPQuery keeps only the
@@ -294,17 +294,17 @@ between rounds.
 
 | Item | Owner | Blocks |
 |---|---|---|
-| #800: MILP output uses `NoCleanup` (`milp_output.rs:230`), so planner YAML carries no retention and every window is kept | Milind. Agreed design (§7, "ASAPQuery's retention"): CircularBuffer with `num_aggregates_to_retain = retained_instance_count`, then evicted windows spilled to disk instead of dropped | CircularBuffer: needed before the long runs, since ASAPQuery's memory otherwise grows for 25 h and stops matching the plan. Disk tier: separate PR, ideally before the runs too. |
-| #856: `--planner saved` for SQL (with sketch-bench #209's proposed SQL strings) | Milind | ASAPQuery on all's multi-grouping queries |
-| Engine roll-ups for keyed aggregations (#846) | Milind | the all plan's 52 rolled-up multi-grouping queries, if #851/#852 don't cover them |
+| [#800](https://github.com/ProjectASAP/ASAPQuery/issues/800): MILP output uses `NoCleanup` (`milp_output.rs:230`), so planner YAML carries no retention and every window is kept | Milind. Agreed design (§7, "ASAPQuery's retention"): CircularBuffer with `num_aggregates_to_retain = retained_instance_count`, then evicted windows spilled to disk instead of dropped | CircularBuffer: needed before the long runs, since ASAPQuery's memory otherwise grows for 25 h and stops matching the plan. Disk tier: separate PR, ideally before the runs too. |
+| [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856): `--planner saved` for SQL (with sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209)'s proposed SQL strings) | Milind | ASAPQuery on all's multi-grouping queries |
+| Engine roll-ups for keyed aggregations ([#846](https://github.com/ProjectASAP/ASAPQuery/issues/846)) | Milind | the all plan's 52 rolled-up multi-grouping queries, if [#851](https://github.com/ProjectASAP/ASAPQuery/issues/851)/[#852](https://github.com/ProjectASAP/ASAPQuery/issues/852) don't cover them |
 
-Not blocking, reported on #828: `IncreaseAccumulator` treats an out-of-order
+Not blocking, reported on [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828): `IncreaseAccumulator` treats an out-of-order
 sample as a counter reset (the feeder now keeps per-series order), and sliding
 windows don't answer on partial data (the 24 h fill avoids it).
 
 ## 14. Known limitations
 
-- One data seed per run; the top-k result depends on the seed (#211).
+- One data seed per run; the top-k result depends on the seed ([#211](https://github.com/ProjectASAP/sketch-bench/issues/211)).
 - 1/20 of the §6.3 rate; costs are not the §6.3 numbers scaled.
 - The feeder shares the node with the system it feeds; only the system's own
   processes are measured.
