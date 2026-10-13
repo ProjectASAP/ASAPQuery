@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use asap_types::query_requirements::{build_query_requirements_promql, QueryRequirements};
 use asap_types::utils::normalize_spatial_filter;
@@ -82,7 +81,9 @@ pub fn extract_aqes(
                     reason,
                 },
             )?;
-            let k = topk_k(&leaf);
+            let k = (req.statistics == [Statistic::Topk])
+                .then(|| topk_k(&leaf))
+                .flatten();
             leaves.push((req, leaf, k, rqe));
         }
     }
@@ -96,23 +97,17 @@ pub fn extract_sql_aqes(
     tables: &[TableDefinition],
     scrape_interval_ms: u64,
 ) -> Result<Vec<OptimizerItem>, OptimizerError> {
-    // Only the queries' durations are used, which don't depend on it.
-    let eval_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock after 1970")
-        .as_secs_f64();
     let mut leaves = Vec::new();
     for rqe in rqes {
         check_repeat_interval(rqe)?;
         let query = &rqe.query_string;
-        let (req, k) =
-            sql_requirements(query, tables, scrape_interval_ms, eval_time).map_err(|reason| {
-                OptimizerError::UnsupportedLeaf {
-                    query: query.clone(),
-                    leaf: query.clone(),
-                    reason,
-                }
-            })?;
+        let (req, k) = sql_requirements(query, tables, scrape_interval_ms, SQL_EVAL_TIME).map_err(
+            |reason| OptimizerError::UnsupportedLeaf {
+                query: query.clone(),
+                leaf: query.clone(),
+                reason,
+            },
+        )?;
         leaves.push((req, query.clone(), k, rqe));
     }
     Ok(merge_leaves(leaves))
@@ -167,6 +162,10 @@ fn merge_leaves(leaves: Vec<(QueryRequirements, String, Option<u64>, &RQE)>) -> 
         .collect()
 }
 
+/// The time `NOW()` means when SQL queries are planned: fixed, so plans
+/// don't depend on the clock.
+const SQL_EVAL_TIME: f64 = 1_700_000_000.0;
+
 /// The MILP's name for a SQL value column.
 pub(crate) fn sql_metric(table: &str, value_column: &str) -> String {
     format!("{table}.{value_column}")
@@ -184,10 +183,21 @@ fn sql_requirements(
     let (data, topk) = parse_sql_query(query, tables, scrape_interval_ms, eval_time)
         .map_err(|error| error.to_string())?;
     let statistics = sql_statistics(&data, topk).map_err(|error| error.to_string())?;
+    let aggregation = data.aggregation_info.get_name();
+    if statistics.len() > 1 {
+        return Err(format!("{aggregation} is not supported by --planner milp"));
+    }
     let table = tables
         .iter()
         .find(|table| table.name == data.metric)
         .ok_or_else(|| format!("unknown table {:?}", data.metric))?;
+    let column = data.aggregation_info.get_value_column_name();
+    if !table.value_columns.iter().any(|c| c == column) {
+        return Err(format!(
+            "{aggregation} reads {column:?}, which is not a value column of {}",
+            table.name
+        ));
+    }
     let grouping_labels = KeyByLabelNames::new(data.labels.iter().cloned().collect());
     if topk.is_some() && grouping_labels != KeyByLabelNames::new(table.metadata_columns.clone()) {
         return Err(format!(
@@ -196,7 +206,7 @@ fn sql_requirements(
         ));
     }
     let requirements = QueryRequirements {
-        metric: sql_metric(&table.name, data.aggregation_info.get_value_column_name()),
+        metric: sql_metric(&table.name, column),
         statistics,
         data_range_ms: sql_data_range_ms(&data),
         grouping_labels,
@@ -362,6 +372,26 @@ mod tests {
             extract_sql_aqes(&[rqe(&topk("host"), 60_000)], &tables, 15_000),
             Err(OptimizerError::UnsupportedLeaf { reason, .. }) if reason.contains("top-k")
         ));
+    }
+
+    #[test]
+    fn sql_rejects_non_value_columns_and_avg() {
+        let tables: Vec<TableDefinition> = serde_yaml::from_str(
+            "[{name: t, time_column: time, value_columns: [v], metadata_columns: [host, region]}]",
+        )
+        .unwrap();
+        let reason = |select: &str| {
+            let query = format!(
+                "SELECT host, {select} FROM t WHERE time BETWEEN DATEADD(s, -60, NOW()) \
+                 AND NOW() GROUP BY host"
+            );
+            match extract_sql_aqes(&[rqe(&query, 60_000)], &tables, 15_000) {
+                Err(OptimizerError::UnsupportedLeaf { reason, .. }) => reason,
+                other => panic!("{select}: {other:?}"),
+            }
+        };
+        assert!(reason("COUNT(DISTINCT region)").contains("not a value column of t"));
+        assert!(reason("AVG(v)").contains("not supported by --planner milp"));
     }
 
     #[test]

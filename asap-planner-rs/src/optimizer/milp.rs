@@ -11,7 +11,9 @@ use rqe_optimizer::{
 };
 use thiserror::Error;
 
-use crate::config::input::{ControllerConfig, MetricDefinition, SQLControllerConfig};
+use crate::config::input::{
+    ControllerConfig, ControllerOptions, MetricDefinition, SQLControllerConfig, TableDefinition,
+};
 
 use std::path::Path;
 
@@ -130,64 +132,65 @@ pub enum MilpConfig<'a> {
     Sql(&'a SQLControllerConfig),
 }
 
-impl MilpConfig<'_> {
+impl<'a> MilpConfig<'a> {
     /// Each workload metric's labels. A SQL table's value columns are its
-    /// metrics (named by `sql_metric`), labelled by its metadata columns.
+    /// metrics, labelled by its metadata columns.
     pub(crate) fn hints(self) -> Result<Vec<MetricDefinition>, MilpError> {
-        match self {
-            MilpConfig::Promql(config) => {
-                config.metrics.clone().ok_or(MilpError::MissingMetricHints)
-            }
-            MilpConfig::Sql(config) => {
-                let mut hints: Vec<MetricDefinition> = Vec::new();
-                for table in &config.tables {
-                    if table.metadata_columns.is_empty() {
-                        return Err(MilpError::TableWithoutMetadataColumns(table.name.clone()));
-                    }
-                    for column in &table.value_columns {
-                        let metric = sql_metric(&table.name, column);
-                        if hints.iter().any(|hint| hint.metric == metric) {
-                            return Err(MilpError::DuplicateSqlMetric(metric));
-                        }
-                        hints.push(MetricDefinition {
-                            metric,
-                            labels: table.metadata_columns.clone(),
-                        });
-                    }
+        let MilpConfig::Promql(config) = self else {
+            let mut hints: Vec<MetricDefinition> = Vec::new();
+            for (metric, table, _) in self.sql_columns() {
+                if table.metadata_columns.is_empty() {
+                    return Err(MilpError::TableWithoutMetadataColumns(table.name.clone()));
                 }
-                Ok(hints)
+                if hints.iter().any(|hint| hint.metric == metric) {
+                    return Err(MilpError::DuplicateSqlMetric(metric));
+                }
+                hints.push(MetricDefinition {
+                    metric,
+                    labels: table.metadata_columns.clone(),
+                });
             }
-        }
+            return Ok(hints);
+        };
+        config.metrics.clone().ok_or(MilpError::MissingMetricHints)
+    }
+
+    /// Every SQL value column as `(metric, table, column)`; empty for PromQL.
+    pub(crate) fn sql_columns(self) -> Vec<(String, &'a TableDefinition, &'a str)> {
+        let MilpConfig::Sql(config) = self else {
+            return Vec::new();
+        };
+        config
+            .tables
+            .iter()
+            .flat_map(|table| {
+                table
+                    .value_columns
+                    .iter()
+                    .map(move |column| (sql_metric(&table.name, column), table, column.as_str()))
+            })
+            .collect()
     }
 
     fn items(self, scrape_interval_ms: u64) -> Result<Vec<OptimizerItem>, MilpError> {
+        let (windowing, sketch_parameters, aggregate_cleanup) = match self {
+            MilpConfig::Promql(c) => (&c.windowing, &c.sketch_parameters, &c.aggregate_cleanup),
+            MilpConfig::Sql(c) => (&c.windowing, &c.sketch_parameters, &c.aggregate_cleanup),
+        };
+        reject_fields([
+            ("windowing", windowing.is_some()),
+            ("sketch_parameters", sketch_parameters.is_some()),
+            ("aggregate_cleanup", aggregate_cleanup.is_some()),
+        ])?;
         match self {
-            MilpConfig::Promql(config) => {
-                reject_fields([
-                    ("windowing", config.windowing.is_some()),
-                    ("sketch_parameters", config.sketch_parameters.is_some()),
-                    ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
-                ])?;
-                extract_hinted_items(config, scrape_interval_ms)
-            }
+            MilpConfig::Promql(config) => extract_hinted_items(config, scrape_interval_ms),
             MilpConfig::Sql(config) => {
-                reject_fields([
-                    ("windowing", config.windowing.is_some()),
-                    ("sketch_parameters", config.sketch_parameters.is_some()),
-                    ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
-                ])?;
-                let rqes: Vec<RQE> = config
-                    .query_groups
-                    .iter()
-                    .flat_map(|qg| {
-                        qg.queries.iter().map(|q| RQE {
-                            query_string: q.clone(),
-                            t_repeat_ms: qg.repetition_delay_ms,
-                            accuracy_sla: qg.controller_options.accuracy_sla,
-                            latency_sla_ms: qg.controller_options.latency_sla_ms,
-                        })
-                    })
-                    .collect();
+                let rqes = config_to_rqes(
+                    config
+                        .query_groups
+                        .iter()
+                        .map(|qg| (&qg.queries, qg.repetition_delay_ms, &qg.controller_options)),
+                );
                 Ok(extract_sql_aqes(&rqes, &config.tables, scrape_interval_ms)?)
             }
         }
@@ -395,7 +398,12 @@ fn extract_hinted_items(
         return Err(MilpError::MissingMetricHints);
     }
     let schema = config.schema_from_hints();
-    let rqes = config_to_rqes(config);
+    let rqes = config_to_rqes(
+        config
+            .query_groups
+            .iter()
+            .map(|qg| (&qg.queries, qg.repetition_delay_ms, &qg.controller_options)),
+    );
     let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms)?;
 
     // Requirement extraction treats an unknown metric as having no labels,
@@ -413,18 +421,19 @@ fn extract_hinted_items(
     Ok(aqes)
 }
 
-/// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
-/// Each (query, repetition_delay_ms) pair becomes one RQE.
-fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
-    config
-        .query_groups
-        .iter()
-        .flat_map(|qg| {
-            qg.queries.iter().map(|q| RQE {
+/// Flattens query groups, each `(queries, repetition_delay_ms, options)`,
+/// into one RQE per query.
+fn config_to_rqes<'g>(
+    groups: impl IntoIterator<Item = (&'g Vec<String>, u64, &'g ControllerOptions)>,
+) -> Vec<RQE> {
+    groups
+        .into_iter()
+        .flat_map(|(queries, t_repeat_ms, options)| {
+            queries.iter().map(move |q| RQE {
                 query_string: q.clone(),
-                t_repeat_ms: qg.repetition_delay_ms,
-                accuracy_sla: qg.controller_options.accuracy_sla,
-                latency_sla_ms: qg.controller_options.latency_sla_ms,
+                t_repeat_ms,
+                accuracy_sla: options.accuracy_sla,
+                latency_sla_ms: options.latency_sla_ms,
             })
         })
         .collect()
@@ -1025,7 +1034,12 @@ metrics:
             group_at("sum_over_time(a[5m])", 60_000),
             group_at("sum_over_time(b[5m])", 30_000)
         ));
-        let rqes = config_to_rqes(&config);
+        let rqes = config_to_rqes(
+            config
+                .query_groups
+                .iter()
+                .map(|qg| (&qg.queries, qg.repetition_delay_ms, &qg.controller_options)),
+        );
         assert_eq!(rqes.len(), 2);
         assert_eq!(rqes[0].t_repeat_ms, 60_000);
         assert_eq!(rqes[1].t_repeat_ms, 30_000);

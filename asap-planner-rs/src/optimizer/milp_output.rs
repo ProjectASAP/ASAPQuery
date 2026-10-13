@@ -20,7 +20,7 @@ use crate::planner_output::PlannerOutput;
 use crate::promql::generator::{build_inference_yaml, build_streaming_yaml};
 use crate::sql::generator::{build_sql_inference_yaml, build_sql_streaming_yaml};
 
-use super::aqe_extractor::{contains_avg, sql_metric};
+use super::aqe_extractor::contains_avg;
 use super::milp::{MilpConfig, MilpWorkload};
 use super::solution::OptimizerItem;
 
@@ -123,21 +123,11 @@ pub fn plan_to_planner_output(
 
     // A SQL aggregation names its table and value column, and its metric is
     // the table.
-    let sql_columns: HashMap<String, (&str, &str)> = match config {
-        MilpConfig::Promql(_) => HashMap::new(),
-        MilpConfig::Sql(config) => config
-            .tables
-            .iter()
-            .flat_map(|table| {
-                table.value_columns.iter().map(move |column| {
-                    (
-                        sql_metric(&table.name, column),
-                        (table.name.as_str(), column.as_str()),
-                    )
-                })
-            })
-            .collect(),
-    };
+    let sql_columns: HashMap<String, (&str, &str)> = config
+        .sql_columns()
+        .into_iter()
+        .map(|(metric, table, column)| (metric, (table.name.as_str(), column)))
+        .collect();
 
     let mut aggregations: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
     let mut deployment_keys = Vec::with_capacity(served.len());
