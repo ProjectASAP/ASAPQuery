@@ -3,13 +3,11 @@
 use std::collections::HashMap;
 
 use asap_types::enums::{CleanupPolicy, WindowType};
-use asap_types::query_config::{
-    QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
-};
+use asap_types::query_config::QueryTimeAggregationOperator;
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use promql_parser::label::Labels;
-use promql_parser::parser::{Expr, LabelModifier};
+use promql_parser::parser::{AggregateExpr, Expr, LabelModifier};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
 use rqe_optimizer::milp::MilpSolution;
@@ -21,6 +19,7 @@ use crate::error::ControllerError;
 use crate::generator::{GeneratorOutput, QueryPlanEntry};
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::labels::set_subpopulation_labels;
+use crate::planner::promql::{aggregation_stage, strip_parens};
 use crate::planner_output::PlannerOutput;
 use crate::promql::generator::{build_inference_yaml, build_streaming_yaml};
 use crate::sql::generator::{build_sql_inference_yaml, build_sql_streaming_yaml};
@@ -248,22 +247,17 @@ fn query_plan_entry(
             deployment: labels(fine),
         });
     }
-    let operator = match (aggregation_type, deployment.capability) {
-        (
-            AggregationType::DatasketchesKLL | AggregationType::DDSketch | AggregationType::HLL,
-            _,
-        ) => {
-            return Ok(QueryPlanEntry::fully_planned(
-                query.to_string(),
-                aggregation_keys,
-            ))
-        }
-        // A coarse count is the sum of the fine counts.
-        (AggregationType::MultipleSum, Capability::Sum | Capability::Count) => {
-            QueryTimeAggregationOperator::Sum
-        }
-        (AggregationType::MultipleMinMax, Capability::Min) => QueryTimeAggregationOperator::Min,
-        (AggregationType::MultipleMinMax, Capability::Max) => QueryTimeAggregationOperator::Max,
+    if matches!(
+        aggregation_type,
+        AggregationType::DatasketchesKLL | AggregationType::DDSketch | AggregationType::HLL
+    ) {
+        return Ok(QueryPlanEntry::fully_planned(
+            query.to_string(),
+            aggregation_keys,
+        ));
+    }
+    match deployment.capability {
+        Capability::Sum | Capability::Count | Capability::Min | Capability::Max => {}
         _ => {
             return Err(MilpOutputError::RollupUnsupported {
                 query: raqe.id.clone(),
@@ -272,41 +266,37 @@ fn query_plan_entry(
                 deployment: labels(fine),
             })
         }
-    };
-    let grouping = if coarse.is_empty() {
-        QueryTimeGrouping {
-            mode: QueryTimeGroupingMode::All,
-            labels: Vec::new(),
-        }
-    } else {
-        QueryTimeGrouping {
-            mode: QueryTimeGroupingMode::By,
-            labels: labels(coarse),
-        }
-    };
+    }
+    let unregroupable = || MilpOutputError::UnregroupableQuery(query.to_string());
+    let aggregate = outer_aggregate(query).ok_or_else(unregroupable)?;
+    let mut stage = aggregation_stage(&aggregate).ok_or_else(unregroupable)?;
+    // A coarse count is the sum of the fine counts.
+    if matches!(stage.operator, QueryTimeAggregationOperator::Count) {
+        stage.operator = QueryTimeAggregationOperator::Sum;
+    }
     Ok(QueryPlanEntry {
         aggregation_keys,
-        planned_subquery: regrouped(query, fine)?,
-        query_time_aggregations: vec![QueryTimeAggregation {
-            operator,
-            grouping,
-            parameter: None,
-        }],
+        planned_subquery: regrouped(aggregate, fine),
+        query_time_aggregations: vec![stage],
     })
 }
 
-/// `query` with its outer aggregation grouped `by (grouping)`. Replacing a
-/// `without` clause is also right: the fine output is then `grouping`.
-fn regrouped(query: &str, grouping: &LabelSet) -> Result<String, MilpOutputError> {
-    let unregroupable = || MilpOutputError::UnregroupableQuery(query.to_string());
-    let mut expr = promql_parser::parser::parse(query).map_err(|_| unregroupable())?;
-    let Expr::Aggregate(aggregate) = &mut expr else {
-        return Err(unregroupable());
-    };
+/// The aggregation `query` applies last, inside any parentheses.
+fn outer_aggregate(query: &str) -> Option<AggregateExpr> {
+    let expr = promql_parser::parser::parse(query).ok()?;
+    match strip_parens(&expr) {
+        Expr::Aggregate(aggregate) => Some(aggregate.clone()),
+        _ => None,
+    }
+}
+
+/// `aggregate` grouped `by (grouping)`. Replacing a `without` clause is also
+/// right: the fine output is then `grouping`.
+fn regrouped(mut aggregate: AggregateExpr, grouping: &LabelSet) -> String {
     aggregate.modifier = Some(LabelModifier::Include(Labels::new(
         grouping.iter().map(String::as_str).collect(),
     )));
-    Ok(expr.to_string())
+    Expr::Aggregate(aggregate).to_string()
 }
 
 /// The aggregation `deployment` runs for `item`, one of the optimizer items
@@ -1010,39 +1000,53 @@ mod tests {
     /// regrouped to the query's at query time.
     #[test]
     fn exact_rollup_regroups_at_query_time() {
-        for (query, planned_subquery, operator, aggregation_type, sub_type) in [
+        let by_job = json!({"mode": "by", "labels": ["job"]});
+        for (query, planned_subquery, operator, grouping, aggregation_type, sub_type) in [
             (
                 "sum by (job) (http_requests_total)",
                 "sum by (instance, job) (http_requests_total)",
-                QueryTimeAggregationOperator::Sum,
+                "sum",
+                &by_job,
                 AggregationType::MultipleSum,
                 "sum",
             ),
             (
                 "sum by (job) (count_over_time(http_requests_total[1m]))",
                 "sum by (instance, job) (count_over_time(http_requests_total[1m]))",
-                QueryTimeAggregationOperator::Sum,
+                "sum",
+                &by_job,
+                AggregationType::MultipleSum,
+                "count",
+            ),
+            (
+                "count by (job) (http_requests_total)",
+                "count by (instance, job) (http_requests_total)",
+                "sum",
+                &by_job,
                 AggregationType::MultipleSum,
                 "count",
             ),
             (
                 "min by (job) (http_requests_total)",
                 "min by (instance, job) (http_requests_total)",
-                QueryTimeAggregationOperator::Min,
+                "min",
+                &by_job,
                 AggregationType::MultipleMinMax,
                 "min",
             ),
             (
                 "max by (job) (http_requests_total)",
                 "max by (instance, job) (http_requests_total)",
-                QueryTimeAggregationOperator::Max,
+                "max",
+                &by_job,
                 AggregationType::MultipleMinMax,
                 "max",
             ),
             (
                 "sum without (instance) (http_requests_total)",
                 "sum by (instance, job) (http_requests_total)",
-                QueryTimeAggregationOperator::Sum,
+                "sum",
+                &json!({"mode": "without", "labels": ["instance"]}),
                 AggregationType::MultipleSum,
                 "sum",
             ),
@@ -1064,18 +1068,41 @@ mod tests {
                 panic!("{query}: {:?}", query_config.query_time_aggregations);
             };
             assert_eq!(
-                std::mem::discriminant(&stage.operator),
-                std::mem::discriminant(&operator),
-                "{query}: {stage:?}"
+                serde_json::to_value(stage).unwrap(),
+                json!({"operator": operator, "grouping": grouping, "parameter": null}),
+                "{query}"
             );
-            assert!(
-                matches!(stage.grouping.mode, QueryTimeGroupingMode::By),
-                "{query}: {stage:?}"
-            );
-            assert_eq!(stage.grouping.labels, ["job"], "{query}");
-            assert!(stage.parameter.is_none(), "{query}");
             stage.validate().unwrap();
         }
+    }
+
+    /// Parentheses around the outer aggregation don't hide it. The extractor
+    /// rejects such a query, so the item's query string is swapped in.
+    #[test]
+    fn exact_rollup_regroups_a_parenthesized_aggregation() {
+        let query = "(sum by (job) (http_requests_total))";
+        let (config, mut workload, mut solution) =
+            plan(&group("sum by (job) (http_requests_total)", 0.99));
+        widen_to_instance_job(&mut solution);
+        workload.items[0].query_strings = vec![query.to_string()];
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+        let query_config = query_config_for(&output, query);
+        assert_eq!(
+            query_config.planned_subquery,
+            "sum by (instance, job) (http_requests_total)"
+        );
+        let [stage] = query_config.query_time_aggregations.as_slice() else {
+            panic!("{:?}", query_config.query_time_aggregations);
+        };
+        assert_eq!(
+            serde_json::to_value(stage).unwrap(),
+            json!({
+                "operator": "sum",
+                "grouping": {"mode": "by", "labels": ["job"]},
+                "parameter": null,
+            })
+        );
     }
 
     /// A query with no output labels regroups over everything.
@@ -1097,11 +1124,15 @@ mod tests {
             let [stage] = query_config.query_time_aggregations.as_slice() else {
                 panic!("{query}: {:?}", query_config.query_time_aggregations);
             };
-            assert!(
-                matches!(stage.grouping.mode, QueryTimeGroupingMode::All),
-                "{query}: {stage:?}"
+            assert_eq!(
+                serde_json::to_value(stage).unwrap(),
+                json!({
+                    "operator": "sum",
+                    "grouping": {"mode": "all", "labels": []},
+                    "parameter": null,
+                }),
+                "{query}"
             );
-            assert!(stage.grouping.labels.is_empty(), "{query}");
             stage.validate().unwrap();
         }
     }
@@ -1119,24 +1150,40 @@ mod tests {
     }
 
     /// An increase deployment's capability doesn't say which outer
-    /// aggregation would regroup it, so its roll-ups stay refused.
+    /// aggregation would regroup it, and a top-k heap can't be regrouped, so
+    /// their roll-ups stay refused.
     #[test]
-    fn exact_increase_rollup_is_refused() {
+    fn increase_and_topk_rollups_are_refused() {
         let query = "sum by (job) (http_requests_total)";
-        let (config, workload, mut solution) = plan(&group(query, 0.99));
-        widen_to_instance_job(&mut solution);
-        let deployment = &mut solution.deployments[0].deployment;
-        deployment.config.sketch = "exact-increase".into();
-        deployment.capability = Capability::RateOrIncrease;
-        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
-            .err()
-            .unwrap();
-        assert!(
-            matches!(&err, MilpOutputError::RollupUnsupported {
-                query: q, aggregation_type: AggregationType::MultipleIncrease, raqe, deployment
-            } if q.contains(query) && raqe == &["job"] && deployment == &["instance", "job"]),
-            "{err}"
-        );
+        let (config, workload, solution) = plan(&group(query, 0.99));
+        let mut increase = solution.deployments[0].deployment.clone();
+        increase.config.sketch = "exact-increase".into();
+        increase.capability = Capability::RateOrIncrease;
+        let (_, _, topk) = plan(&group(
+            "topk(5, sum_over_time(http_requests_total[1m]))",
+            0.99,
+        ));
+        let heap = topk.deployments[0].deployment.clone();
+        for (source, expected) in [
+            (increase, AggregationType::MultipleIncrease),
+            (heap, AggregationType::CountMinSketchWithHeap),
+        ] {
+            let mut solution = solution.clone();
+            widen_to_instance_job(&mut solution);
+            let deployment = &mut solution.deployments[0].deployment;
+            deployment.config = source.config;
+            deployment.capability = source.capability;
+            let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
+                .err()
+                .unwrap();
+            assert!(
+                matches!(&err, MilpOutputError::RollupUnsupported {
+                    query: q, aggregation_type, raqe, deployment
+                } if q.contains(query) && *aggregation_type == expected
+                    && raqe == &["job"] && deployment == &["instance", "job"]),
+                "{err}"
+            );
+        }
     }
 
     /// Both are global top-k Raqes on one metric, so the solver may give them
