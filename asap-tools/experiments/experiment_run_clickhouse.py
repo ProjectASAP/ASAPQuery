@@ -93,7 +93,7 @@ Baseline + sketchdb:
 import json
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import hydra
@@ -216,12 +216,21 @@ def _run_query_workload(
         )
 
 
+def _ingest_mode(experiment_modes: List[str]) -> str:
+    """The mode whose output dir and client config the ingest monitor uses:
+    baseline when the run has it, else the first mode (e.g. a baseline_mv-only
+    run, whose init SQL attaches views that a baseline run must not pay for)."""
+    if constants.BASELINE_EXPERIMENT_NAME in experiment_modes:
+        return constants.BASELINE_EXPERIMENT_NAME
+    return experiment_modes[0]
+
+
 def _run_clickhouse_ingest_with_monitor(
     provider,
     node_offset: int,
     remote_monitor_service: RemoteMonitorService,
-    baseline_output_dir: str,
-    local_baseline_dir: str,
+    ingest_output_dir: str,
+    local_ingest_dir: str,
     controller_client_config: str,
     data_loader: ClickHouseDataLoaderService,
     dataset_name: str,
@@ -233,10 +242,10 @@ def _run_clickhouse_ingest_with_monitor(
     monitor_interval_seconds: float = DEFAULT_MONITOR_INTERVAL_SECONDS,
 ) -> None:
     """Bulk-load netflow into ClickHouse while sampling ``clickhouse`` CPU/memory."""
-    os.makedirs(local_baseline_dir, exist_ok=True)
+    os.makedirs(local_ingest_dir, exist_ok=True)
     provider.execute_command(
         node_idx=node_offset,
-        cmd=f"mkdir -p {baseline_output_dir}",
+        cmd=f"mkdir -p {ingest_output_dir}",
         cmd_dir="",
         nohup=False,
         popen=False,
@@ -247,7 +256,7 @@ def _run_clickhouse_ingest_with_monitor(
         f"({monitor_interval_seconds}s samples)..."
     )
     ingest_monitor_remote = os.path.join(
-        baseline_output_dir,
+        ingest_output_dir,
         "remote_monitor_output",
         CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
     )
@@ -261,7 +270,7 @@ def _run_clickhouse_ingest_with_monitor(
     )
     remote_monitor_service.start_clickhouse_ingest_monitor(
         controller_client_config=controller_client_config,
-        experiment_output_dir=baseline_output_dir,
+        experiment_output_dir=ingest_output_dir,
         monitor_interval_seconds=monitor_interval_seconds,
         monitor_output_file=CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
         manual_mode=manual_remote_monitor,
@@ -271,7 +280,7 @@ def _run_clickhouse_ingest_with_monitor(
             timeout=constants.REMOTE_MONITOR_START_TIMEOUT_SECONDS,
             polling_interval=constants.REMOTE_MONITOR_START_POLL_INTERVAL_SECONDS,
             execution_mode="ingest",
-            experiment_output_dir=baseline_output_dir,
+            experiment_output_dir=ingest_output_dir,
         )
         time.sleep(constants.REMOTE_MONITOR_STARTUP_SETTLE_SECONDS)
 
@@ -286,24 +295,24 @@ def _run_clickhouse_ingest_with_monitor(
         )
     finally:
         print("Stopping ClickHouse ingest monitor...")
-        remote_monitor_service.signal_ingest_monitor_stop(baseline_output_dir)
+        remote_monitor_service.signal_ingest_monitor_stop(ingest_output_dir)
         try:
             remote_monitor_service.wait_for_remote_monitor_process_exit(
                 polling_interval=constants.REMOTE_MONITOR_EXIT_POLL_INTERVAL_SECONDS,
                 execution_mode="ingest",
-                experiment_output_dir=baseline_output_dir,
+                experiment_output_dir=ingest_output_dir,
             )
         finally:
-            remote_monitor_service.cleanup_ingest_monitor_stop_file(baseline_output_dir)
+            remote_monitor_service.cleanup_ingest_monitor_stop_file(ingest_output_dir)
 
     sync.rsync_experiment_data(
         provider,
-        baseline_output_dir,
-        local_baseline_dir,
+        ingest_output_dir,
+        local_ingest_dir,
         node_offset=node_offset,
     )
     ingest_monitor_path = os.path.join(
-        local_baseline_dir,
+        local_ingest_dir,
         "remote_monitor_output",
         CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
     )
@@ -313,14 +322,14 @@ def _run_clickhouse_ingest_with_monitor(
         if not ingest_data:
             raise RuntimeError(
                 f"ClickHouse ingest monitor wrote empty/null data to "
-                f"{ingest_monitor_path}. Check baseline/remote_monitor.out and "
-                "baseline/remote_monitor_output/remote_monitor.log on the node."
+                f"{ingest_monitor_path}. Check <ingest mode>/remote_monitor.out and "
+                "<ingest mode>/remote_monitor_output/remote_monitor.log on the node."
             )
     elif not manual_remote_monitor:
         raise RuntimeError(
             "ClickHouse ingest monitor output file was not created at "
             f"{ingest_monitor_path} (absent after stop timeout or write skip). "
-            "Check baseline/remote_monitor.out on the node."
+            "Check <ingest mode>/remote_monitor.out on the node."
         )
     print(f"ClickHouse ingest monitor output: {ingest_monitor_path}")
 
@@ -448,25 +457,22 @@ def main(cfg: DictConfig) -> None:
         node_offset=node_offset,
         clickhouse_http_port=clickhouse_http_port,
     )
-    baseline_client_config = os.path.join(
+    ingest_mode = _ingest_mode(experiment_modes)
+    ingest_client_config = os.path.join(
         experiment_root_output_dir,
         "controller_client_configs",
-        f"{constants.BASELINE_EXPERIMENT_NAME}.yaml",
+        f"{ingest_mode}.yaml",
     )
-    baseline_output_dir = os.path.join(
-        experiment_root_output_dir, constants.BASELINE_EXPERIMENT_NAME
-    )
-    local_baseline_dir = os.path.join(
-        local_experiment_root_dir, constants.BASELINE_EXPERIMENT_NAME
-    )
+    ingest_output_dir = os.path.join(experiment_root_output_dir, ingest_mode)
+    local_ingest_dir = os.path.join(local_experiment_root_dir, ingest_mode)
     remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
     _run_clickhouse_ingest_with_monitor(
         provider=provider,
         node_offset=node_offset,
         remote_monitor_service=remote_monitor_service,
-        baseline_output_dir=baseline_output_dir,
-        local_baseline_dir=local_baseline_dir,
-        controller_client_config=baseline_client_config,
+        ingest_output_dir=ingest_output_dir,
+        local_ingest_dir=local_ingest_dir,
+        controller_client_config=ingest_client_config,
         data_loader=data_loader,
         dataset_name=dataset_name,
         remote_data_file=remote_data_file,

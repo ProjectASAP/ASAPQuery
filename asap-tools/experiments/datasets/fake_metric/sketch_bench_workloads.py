@@ -9,12 +9,15 @@ String, then `value Float64`, or for a `records` metric one Float64 column per
 value field in description order.
 
 For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
-- <stem>/init.sql: the metric tables and the baseline_mv materialized views;
+- <stem>/init.sql: the metric tables (baseline);
+- <stem>/init_mv.sql: the metric tables and their materialized views
+  (baseline_mv);
 - <stem>/interval_<T>s_<mode>.sql: one statement per query that repeats every
   T s, for the baseline (raw table) and baseline_mv (views) arms;
 - <stem>/asapquery.sql: the structured queries in ASAPQuery's SQL dialect;
-- <stem>_clickhouse.yaml: an experiment_run_clickhouse.py config running both
-  arms, with one query group per T, repeating every T seconds.
+- <stem>_clickhouse.yaml, <stem>_clickhouse_mv.yaml: one
+  experiment_run_clickhouse.py config per arm, each loading data through its
+  own init SQL, with one query group per T, repeating every T seconds.
 
 baseline_mv keeps exact mergeable states, no sketches: one view per (metric,
 value, statistic, T) holds per T-second bucket and group the state of sums,
@@ -489,9 +492,11 @@ def mv_sql(q: Query, views: Dict[tuple, View], labels: Dict[str, List[str]]) -> 
     )
 
 
-def init_sql(metrics: dict, views: List[View]) -> str:
-    """The metric tables and their views. A view only aggregates rows
-    inserted after it exists, so this must run before any data arrives."""
+def init_sql(metrics: dict, views: List[View], create_views: bool) -> str:
+    """The metric tables, and with `create_views` their views. A view only
+    aggregates rows inserted after it exists, so this must run before any
+    data arrives. The views are dropped either way, so none left by an
+    earlier baseline_mv run feeds on the recreated tables."""
     statements = [f"DROP TABLE IF EXISTS {view.name}" for view in views]
     for table, desc in metrics.items():
         names = [label["name"] for label in desc["labels"]]
@@ -503,7 +508,8 @@ def init_sql(metrics: dict, views: List[View]) -> str:
             f"CREATE TABLE {table} (ts DateTime64(3), {', '.join(columns)}) "
             f"ENGINE = MergeTree ORDER BY ({', '.join(names)}, ts)",
         ]
-    statements += [view_ddl(view) for view in views]
+    if create_views:
+        statements += [view_ddl(view) for view in views]
     return ";\n\n".join(statements) + ";\n"
 
 
@@ -521,7 +527,8 @@ def write_statements(path: str, statements: List[str]) -> None:
 
 def convert(
     table_path: str, data_file: str, starting_delay_secs: int, duration_secs: int
-) -> str:
+) -> List[str]:
+    """Writes the SQL files and one config per arm; returns the config paths."""
     with open(table_path) as f:
         (workload,) = json.load(f)["workloads"]
     e2e = workload["e2e"]
@@ -533,9 +540,15 @@ def convert(
 
     entries = [(e, query_from_entry(e, metrics)) for e in e2e["queries"]]
     views = plan_views([q for _, q in entries], metrics)
-    init_path = os.path.join(sql_dir, "init.sql")
-    with open(init_path, "w") as f:
-        f.write(init_sql(metrics, list(views.values())))
+    # Each arm loads data through its own init SQL, so baseline ingest never
+    # feeds the views.
+    init_paths = {
+        BASELINE: os.path.join(sql_dir, "init.sql"),
+        BASELINE_MV: os.path.join(sql_dir, "init_mv.sql"),
+    }
+    for mode, path in init_paths.items():
+        with open(path, "w") as f:
+            f.write(init_sql(metrics, list(views.values()), mode == BASELINE_MV))
 
     by_interval: Dict[int, Dict[str, List[str]]] = {}
     asapquery: List[str] = []
@@ -570,28 +583,29 @@ def convert(
             }
         )
 
-    out = {
-        "experiment": [
-            {"mode": BASELINE, "server": "clickhouse"},
-            {"mode": BASELINE_MV, "server": "clickhouse"},
-        ],
-        "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],
-        "dataset": {
-            "name": "custom",
-            "local_data_file": data_file,
-            # The runner's loader fills one table; the paced feeder writes all.
-            "table": next(iter(labels)),
-            "init_sql_file": init_path,
-            "max_rows": 0,
-        },
-        "query_groups": query_groups,
-        "data_ingestion_interval_ms": SCRAPE_INTERVAL_SECONDS * 1000,
-    }
-    out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse.yaml")
-    with open(out_path, "w") as f:
-        f.write(f"# @package experiment_params\n# Generated from {table_path}\n")
-        yaml.safe_dump(out, f, sort_keys=False)
-    return out_path
+    out_paths = []
+    for mode, suffix in [(BASELINE, ""), (BASELINE_MV, "_mv")]:
+        out = {
+            "experiment": [{"mode": mode, "server": "clickhouse"}],
+            "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],
+            "dataset": {
+                "name": "custom",
+                "local_data_file": data_file,
+                # The runner's loader fills one table; the paced feeder writes all.
+                "table": next(iter(labels)),
+                "init_sql_file": init_paths[mode],
+                "max_rows": 0,
+            },
+            # Both arms' SQL, so the saved config labels queries by baseline's text.
+            "query_groups": query_groups,
+            "data_ingestion_interval_ms": SCRAPE_INTERVAL_SECONDS * 1000,
+        }
+        out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse{suffix}.yaml")
+        with open(out_path, "w") as f:
+            f.write(f"# @package experiment_params\n# Generated from {table_path}\n")
+            yaml.safe_dump(out, f, sort_keys=False)
+        out_paths.append(out_path)
+    return out_paths
 
 
 def main() -> None:
@@ -605,11 +619,10 @@ def main() -> None:
         "--duration-secs", type=int, required=True, help="query phase length"
     )
     args = parser.parse_args()
-    print(
-        convert(
-            args.table, args.data_file, args.starting_delay_secs, args.duration_secs
-        )
-    )
+    for path in convert(
+        args.table, args.data_file, args.starting_delay_secs, args.duration_secs
+    ):
+        print(path)
 
 
 if __name__ == "__main__":

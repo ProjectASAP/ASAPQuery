@@ -218,8 +218,16 @@ class ConvertTest(unittest.TestCase):
             cwd = os.getcwd()
             os.chdir(tmp)
             try:
-                with open(sbw.convert(table, "data.json", 30, 600)) as f:
-                    cfg = yaml.safe_load(f)
+                cfgs = {}
+                for path in sbw.convert(table, "data.json", 30, 600):
+                    with open(path) as f:
+                        cfg = yaml.safe_load(f)
+                    (arm,) = cfg["experiment"]
+                    with open(cfg["dataset"]["init_sql_file"]) as f:
+                        cfgs[arm["mode"]] = (cfg, f.read())
+                self.assertEqual(sorted(cfgs), ["baseline", "baseline_mv"])
+                cfg, init_mv = cfgs["baseline_mv"]
+                _, init = cfgs["baseline"]
                 groups = {g["name"]: g for g in cfg["query_groups"]}
                 self.assertEqual(sorted(groups), ["interval_1s", "interval_60s"])
                 g60 = groups["interval_60s"]
@@ -230,24 +238,26 @@ class ConvertTest(unittest.TestCase):
                 self.assertEqual(
                     groups["interval_1s"]["client_options"]["repetitions"], 600
                 )
-                modes = [m["mode"] for m in cfg["experiment"]]
-                self.assertEqual(modes, ["baseline", "baseline_mv"])
-                self.assertEqual(sorted(g60["sql_file"]), modes)
+                self.assertEqual(sorted(g60["sql_file"]), ["baseline", "baseline_mv"])
                 for path in g60["sql_file"].values():
                     with open(path) as f:
                         statements = [s for s in f.read().split(";") if s.strip()]
                     self.assertEqual(len(statements), 9)
-                with open(cfg["dataset"]["init_sql_file"]) as f:
-                    init = f.read()
                 self.assertIn(
                     "endpoint String, status String, latency Float64, "
                     "user_id Float64)",
                     init,
                 )
+                # Baseline ingest feeds no views, and drops any an earlier
+                # baseline_mv run left attached to the tables.
+                self.assertNotIn("CREATE MATERIALIZED VIEW", init)
+                self.assertIn("DROP TABLE IF EXISTS data_total_value_counter_60s", init)
                 # Views only see rows inserted after them: tables, then views.
                 self.assertLess(
-                    init.index("CREATE TABLE data_total (ts DateTime64(3)"),
-                    init.index("CREATE MATERIALIZED VIEW data_total_value_counter_60s"),
+                    init_mv.index("CREATE TABLE data_total (ts DateTime64(3)"),
+                    init_mv.index(
+                        "CREATE MATERIALIZED VIEW data_total_value_counter_60s"
+                    ),
                 )
                 sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
                 with open(os.path.join(sql_dir, "asapquery.sql")) as f:
@@ -537,7 +547,7 @@ def run_clickhouse(script: str, tmp: str) -> List[dict]:
 def load_script(tmp: str, rows: Dict[str, List[tuple]], views) -> str:
     """Init SQL, then each table's (ts ms, labels, values) rows inserted
     through it (and any views on it)."""
-    parts = [sbw.init_sql(METRICS, views)]
+    parts = [sbw.init_sql(METRICS, views, create_views=True)]
     for table, table_rows in rows.items():
         names = LABELS[table]
         values = sbw.value_columns(METRICS[table])

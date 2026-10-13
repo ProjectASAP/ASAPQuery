@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from omegaconf import OmegaConf
 
-from experiment_run_clickhouse import _start_clickhouse_controller
+from experiment_run_clickhouse import _ingest_mode, _start_clickhouse_controller
 
 
 class ClickHouseControllerConfigTest(unittest.TestCase):
@@ -25,6 +25,14 @@ class ClickHouseControllerConfigTest(unittest.TestCase):
             controller_input_file="planner_input.yaml",
             streaming_engine="precompute",
         )
+
+
+class IngestModeTest(unittest.TestCase):
+    def test_baseline_when_present_else_first_mode(self):
+        self.assertEqual(_ingest_mode(["baseline", "sketchdb"]), "baseline")
+        self.assertEqual(_ingest_mode(["sketchdb", "baseline"]), "baseline")
+        # A baseline_mv-only run monitors ingest under its own mode.
+        self.assertEqual(_ingest_mode(["baseline_mv"]), "baseline_mv")
 
 
 if __name__ == "__main__":
