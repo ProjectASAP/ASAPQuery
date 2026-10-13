@@ -324,7 +324,13 @@ def raw_sql(q: Query, labels: Dict[str, List[str]]) -> str:
         q,
         tuple(labels[q.table]),
         q.table,
-        lambda end, w: f"ts {'>' if q.left_open else '>='} {end} - {w} AND ts <= {end}",
+        # DateTime64 bounds: ClickHouse 26.10 prunes `ts > <integer>` on the
+        # DateTime64 key as `ts >= <integer> + 1`, dropping the samples in
+        # between from the result.
+        lambda end, w: (
+            f"ts {'>' if q.left_open else '>='} toDateTime64({end} - {w}, 3) "
+            f"AND ts <= toDateTime64({end}, 3)"
+        ),
         lambda stat, quantile: raw_agg(stat, quantile, q.value),
     )
 
