@@ -1,0 +1,569 @@
+name: rollup
+series:
+  # rollup_latency{service, endpoint}: 2 services x 10 endpoints at 60s
+  # cadence, plus endpoint e-late on service a that starts at offset 600 so
+  # roll-ups see a subpopulation appear mid-range.
+  #
+  # With i = endpoint*2 + service (e-late is i = 20), value = 1000 + 2*i +
+  # 10*(t/60). Within one service adjacent values are 4 apart (under 0.5%),
+  # which bounds the gap between ASAPQuery's nearest-rank quantile and
+  # Prometheus' interpolated one well inside the suite's sketch tolerance.
+  #
+  # Samples run to offset 1260, past the last evaluated offset (1200).
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e00
+    samples:
+      - {offset_seconds: 0, value: 1000}
+      - {offset_seconds: 60, value: 1010}
+      - {offset_seconds: 120, value: 1020}
+      - {offset_seconds: 180, value: 1030}
+      - {offset_seconds: 240, value: 1040}
+      - {offset_seconds: 300, value: 1050}
+      - {offset_seconds: 360, value: 1060}
+      - {offset_seconds: 420, value: 1070}
+      - {offset_seconds: 480, value: 1080}
+      - {offset_seconds: 540, value: 1090}
+      - {offset_seconds: 600, value: 1100}
+      - {offset_seconds: 660, value: 1110}
+      - {offset_seconds: 720, value: 1120}
+      - {offset_seconds: 780, value: 1130}
+      - {offset_seconds: 840, value: 1140}
+      - {offset_seconds: 900, value: 1150}
+      - {offset_seconds: 960, value: 1160}
+      - {offset_seconds: 1020, value: 1170}
+      - {offset_seconds: 1080, value: 1180}
+      - {offset_seconds: 1140, value: 1190}
+      - {offset_seconds: 1200, value: 1200}
+      - {offset_seconds: 1260, value: 1210}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e00
+    samples:
+      - {offset_seconds: 0, value: 1002}
+      - {offset_seconds: 60, value: 1012}
+      - {offset_seconds: 120, value: 1022}
+      - {offset_seconds: 180, value: 1032}
+      - {offset_seconds: 240, value: 1042}
+      - {offset_seconds: 300, value: 1052}
+      - {offset_seconds: 360, value: 1062}
+      - {offset_seconds: 420, value: 1072}
+      - {offset_seconds: 480, value: 1082}
+      - {offset_seconds: 540, value: 1092}
+      - {offset_seconds: 600, value: 1102}
+      - {offset_seconds: 660, value: 1112}
+      - {offset_seconds: 720, value: 1122}
+      - {offset_seconds: 780, value: 1132}
+      - {offset_seconds: 840, value: 1142}
+      - {offset_seconds: 900, value: 1152}
+      - {offset_seconds: 960, value: 1162}
+      - {offset_seconds: 1020, value: 1172}
+      - {offset_seconds: 1080, value: 1182}
+      - {offset_seconds: 1140, value: 1192}
+      - {offset_seconds: 1200, value: 1202}
+      - {offset_seconds: 1260, value: 1212}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e01
+    samples:
+      - {offset_seconds: 0, value: 1004}
+      - {offset_seconds: 60, value: 1014}
+      - {offset_seconds: 120, value: 1024}
+      - {offset_seconds: 180, value: 1034}
+      - {offset_seconds: 240, value: 1044}
+      - {offset_seconds: 300, value: 1054}
+      - {offset_seconds: 360, value: 1064}
+      - {offset_seconds: 420, value: 1074}
+      - {offset_seconds: 480, value: 1084}
+      - {offset_seconds: 540, value: 1094}
+      - {offset_seconds: 600, value: 1104}
+      - {offset_seconds: 660, value: 1114}
+      - {offset_seconds: 720, value: 1124}
+      - {offset_seconds: 780, value: 1134}
+      - {offset_seconds: 840, value: 1144}
+      - {offset_seconds: 900, value: 1154}
+      - {offset_seconds: 960, value: 1164}
+      - {offset_seconds: 1020, value: 1174}
+      - {offset_seconds: 1080, value: 1184}
+      - {offset_seconds: 1140, value: 1194}
+      - {offset_seconds: 1200, value: 1204}
+      - {offset_seconds: 1260, value: 1214}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e01
+    samples:
+      - {offset_seconds: 0, value: 1006}
+      - {offset_seconds: 60, value: 1016}
+      - {offset_seconds: 120, value: 1026}
+      - {offset_seconds: 180, value: 1036}
+      - {offset_seconds: 240, value: 1046}
+      - {offset_seconds: 300, value: 1056}
+      - {offset_seconds: 360, value: 1066}
+      - {offset_seconds: 420, value: 1076}
+      - {offset_seconds: 480, value: 1086}
+      - {offset_seconds: 540, value: 1096}
+      - {offset_seconds: 600, value: 1106}
+      - {offset_seconds: 660, value: 1116}
+      - {offset_seconds: 720, value: 1126}
+      - {offset_seconds: 780, value: 1136}
+      - {offset_seconds: 840, value: 1146}
+      - {offset_seconds: 900, value: 1156}
+      - {offset_seconds: 960, value: 1166}
+      - {offset_seconds: 1020, value: 1176}
+      - {offset_seconds: 1080, value: 1186}
+      - {offset_seconds: 1140, value: 1196}
+      - {offset_seconds: 1200, value: 1206}
+      - {offset_seconds: 1260, value: 1216}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e02
+    samples:
+      - {offset_seconds: 0, value: 1008}
+      - {offset_seconds: 60, value: 1018}
+      - {offset_seconds: 120, value: 1028}
+      - {offset_seconds: 180, value: 1038}
+      - {offset_seconds: 240, value: 1048}
+      - {offset_seconds: 300, value: 1058}
+      - {offset_seconds: 360, value: 1068}
+      - {offset_seconds: 420, value: 1078}
+      - {offset_seconds: 480, value: 1088}
+      - {offset_seconds: 540, value: 1098}
+      - {offset_seconds: 600, value: 1108}
+      - {offset_seconds: 660, value: 1118}
+      - {offset_seconds: 720, value: 1128}
+      - {offset_seconds: 780, value: 1138}
+      - {offset_seconds: 840, value: 1148}
+      - {offset_seconds: 900, value: 1158}
+      - {offset_seconds: 960, value: 1168}
+      - {offset_seconds: 1020, value: 1178}
+      - {offset_seconds: 1080, value: 1188}
+      - {offset_seconds: 1140, value: 1198}
+      - {offset_seconds: 1200, value: 1208}
+      - {offset_seconds: 1260, value: 1218}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e02
+    samples:
+      - {offset_seconds: 0, value: 1010}
+      - {offset_seconds: 60, value: 1020}
+      - {offset_seconds: 120, value: 1030}
+      - {offset_seconds: 180, value: 1040}
+      - {offset_seconds: 240, value: 1050}
+      - {offset_seconds: 300, value: 1060}
+      - {offset_seconds: 360, value: 1070}
+      - {offset_seconds: 420, value: 1080}
+      - {offset_seconds: 480, value: 1090}
+      - {offset_seconds: 540, value: 1100}
+      - {offset_seconds: 600, value: 1110}
+      - {offset_seconds: 660, value: 1120}
+      - {offset_seconds: 720, value: 1130}
+      - {offset_seconds: 780, value: 1140}
+      - {offset_seconds: 840, value: 1150}
+      - {offset_seconds: 900, value: 1160}
+      - {offset_seconds: 960, value: 1170}
+      - {offset_seconds: 1020, value: 1180}
+      - {offset_seconds: 1080, value: 1190}
+      - {offset_seconds: 1140, value: 1200}
+      - {offset_seconds: 1200, value: 1210}
+      - {offset_seconds: 1260, value: 1220}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e03
+    samples:
+      - {offset_seconds: 0, value: 1012}
+      - {offset_seconds: 60, value: 1022}
+      - {offset_seconds: 120, value: 1032}
+      - {offset_seconds: 180, value: 1042}
+      - {offset_seconds: 240, value: 1052}
+      - {offset_seconds: 300, value: 1062}
+      - {offset_seconds: 360, value: 1072}
+      - {offset_seconds: 420, value: 1082}
+      - {offset_seconds: 480, value: 1092}
+      - {offset_seconds: 540, value: 1102}
+      - {offset_seconds: 600, value: 1112}
+      - {offset_seconds: 660, value: 1122}
+      - {offset_seconds: 720, value: 1132}
+      - {offset_seconds: 780, value: 1142}
+      - {offset_seconds: 840, value: 1152}
+      - {offset_seconds: 900, value: 1162}
+      - {offset_seconds: 960, value: 1172}
+      - {offset_seconds: 1020, value: 1182}
+      - {offset_seconds: 1080, value: 1192}
+      - {offset_seconds: 1140, value: 1202}
+      - {offset_seconds: 1200, value: 1212}
+      - {offset_seconds: 1260, value: 1222}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e03
+    samples:
+      - {offset_seconds: 0, value: 1014}
+      - {offset_seconds: 60, value: 1024}
+      - {offset_seconds: 120, value: 1034}
+      - {offset_seconds: 180, value: 1044}
+      - {offset_seconds: 240, value: 1054}
+      - {offset_seconds: 300, value: 1064}
+      - {offset_seconds: 360, value: 1074}
+      - {offset_seconds: 420, value: 1084}
+      - {offset_seconds: 480, value: 1094}
+      - {offset_seconds: 540, value: 1104}
+      - {offset_seconds: 600, value: 1114}
+      - {offset_seconds: 660, value: 1124}
+      - {offset_seconds: 720, value: 1134}
+      - {offset_seconds: 780, value: 1144}
+      - {offset_seconds: 840, value: 1154}
+      - {offset_seconds: 900, value: 1164}
+      - {offset_seconds: 960, value: 1174}
+      - {offset_seconds: 1020, value: 1184}
+      - {offset_seconds: 1080, value: 1194}
+      - {offset_seconds: 1140, value: 1204}
+      - {offset_seconds: 1200, value: 1214}
+      - {offset_seconds: 1260, value: 1224}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e04
+    samples:
+      - {offset_seconds: 0, value: 1016}
+      - {offset_seconds: 60, value: 1026}
+      - {offset_seconds: 120, value: 1036}
+      - {offset_seconds: 180, value: 1046}
+      - {offset_seconds: 240, value: 1056}
+      - {offset_seconds: 300, value: 1066}
+      - {offset_seconds: 360, value: 1076}
+      - {offset_seconds: 420, value: 1086}
+      - {offset_seconds: 480, value: 1096}
+      - {offset_seconds: 540, value: 1106}
+      - {offset_seconds: 600, value: 1116}
+      - {offset_seconds: 660, value: 1126}
+      - {offset_seconds: 720, value: 1136}
+      - {offset_seconds: 780, value: 1146}
+      - {offset_seconds: 840, value: 1156}
+      - {offset_seconds: 900, value: 1166}
+      - {offset_seconds: 960, value: 1176}
+      - {offset_seconds: 1020, value: 1186}
+      - {offset_seconds: 1080, value: 1196}
+      - {offset_seconds: 1140, value: 1206}
+      - {offset_seconds: 1200, value: 1216}
+      - {offset_seconds: 1260, value: 1226}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e04
+    samples:
+      - {offset_seconds: 0, value: 1018}
+      - {offset_seconds: 60, value: 1028}
+      - {offset_seconds: 120, value: 1038}
+      - {offset_seconds: 180, value: 1048}
+      - {offset_seconds: 240, value: 1058}
+      - {offset_seconds: 300, value: 1068}
+      - {offset_seconds: 360, value: 1078}
+      - {offset_seconds: 420, value: 1088}
+      - {offset_seconds: 480, value: 1098}
+      - {offset_seconds: 540, value: 1108}
+      - {offset_seconds: 600, value: 1118}
+      - {offset_seconds: 660, value: 1128}
+      - {offset_seconds: 720, value: 1138}
+      - {offset_seconds: 780, value: 1148}
+      - {offset_seconds: 840, value: 1158}
+      - {offset_seconds: 900, value: 1168}
+      - {offset_seconds: 960, value: 1178}
+      - {offset_seconds: 1020, value: 1188}
+      - {offset_seconds: 1080, value: 1198}
+      - {offset_seconds: 1140, value: 1208}
+      - {offset_seconds: 1200, value: 1218}
+      - {offset_seconds: 1260, value: 1228}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e05
+    samples:
+      - {offset_seconds: 0, value: 1020}
+      - {offset_seconds: 60, value: 1030}
+      - {offset_seconds: 120, value: 1040}
+      - {offset_seconds: 180, value: 1050}
+      - {offset_seconds: 240, value: 1060}
+      - {offset_seconds: 300, value: 1070}
+      - {offset_seconds: 360, value: 1080}
+      - {offset_seconds: 420, value: 1090}
+      - {offset_seconds: 480, value: 1100}
+      - {offset_seconds: 540, value: 1110}
+      - {offset_seconds: 600, value: 1120}
+      - {offset_seconds: 660, value: 1130}
+      - {offset_seconds: 720, value: 1140}
+      - {offset_seconds: 780, value: 1150}
+      - {offset_seconds: 840, value: 1160}
+      - {offset_seconds: 900, value: 1170}
+      - {offset_seconds: 960, value: 1180}
+      - {offset_seconds: 1020, value: 1190}
+      - {offset_seconds: 1080, value: 1200}
+      - {offset_seconds: 1140, value: 1210}
+      - {offset_seconds: 1200, value: 1220}
+      - {offset_seconds: 1260, value: 1230}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e05
+    samples:
+      - {offset_seconds: 0, value: 1022}
+      - {offset_seconds: 60, value: 1032}
+      - {offset_seconds: 120, value: 1042}
+      - {offset_seconds: 180, value: 1052}
+      - {offset_seconds: 240, value: 1062}
+      - {offset_seconds: 300, value: 1072}
+      - {offset_seconds: 360, value: 1082}
+      - {offset_seconds: 420, value: 1092}
+      - {offset_seconds: 480, value: 1102}
+      - {offset_seconds: 540, value: 1112}
+      - {offset_seconds: 600, value: 1122}
+      - {offset_seconds: 660, value: 1132}
+      - {offset_seconds: 720, value: 1142}
+      - {offset_seconds: 780, value: 1152}
+      - {offset_seconds: 840, value: 1162}
+      - {offset_seconds: 900, value: 1172}
+      - {offset_seconds: 960, value: 1182}
+      - {offset_seconds: 1020, value: 1192}
+      - {offset_seconds: 1080, value: 1202}
+      - {offset_seconds: 1140, value: 1212}
+      - {offset_seconds: 1200, value: 1222}
+      - {offset_seconds: 1260, value: 1232}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e06
+    samples:
+      - {offset_seconds: 0, value: 1024}
+      - {offset_seconds: 60, value: 1034}
+      - {offset_seconds: 120, value: 1044}
+      - {offset_seconds: 180, value: 1054}
+      - {offset_seconds: 240, value: 1064}
+      - {offset_seconds: 300, value: 1074}
+      - {offset_seconds: 360, value: 1084}
+      - {offset_seconds: 420, value: 1094}
+      - {offset_seconds: 480, value: 1104}
+      - {offset_seconds: 540, value: 1114}
+      - {offset_seconds: 600, value: 1124}
+      - {offset_seconds: 660, value: 1134}
+      - {offset_seconds: 720, value: 1144}
+      - {offset_seconds: 780, value: 1154}
+      - {offset_seconds: 840, value: 1164}
+      - {offset_seconds: 900, value: 1174}
+      - {offset_seconds: 960, value: 1184}
+      - {offset_seconds: 1020, value: 1194}
+      - {offset_seconds: 1080, value: 1204}
+      - {offset_seconds: 1140, value: 1214}
+      - {offset_seconds: 1200, value: 1224}
+      - {offset_seconds: 1260, value: 1234}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e06
+    samples:
+      - {offset_seconds: 0, value: 1026}
+      - {offset_seconds: 60, value: 1036}
+      - {offset_seconds: 120, value: 1046}
+      - {offset_seconds: 180, value: 1056}
+      - {offset_seconds: 240, value: 1066}
+      - {offset_seconds: 300, value: 1076}
+      - {offset_seconds: 360, value: 1086}
+      - {offset_seconds: 420, value: 1096}
+      - {offset_seconds: 480, value: 1106}
+      - {offset_seconds: 540, value: 1116}
+      - {offset_seconds: 600, value: 1126}
+      - {offset_seconds: 660, value: 1136}
+      - {offset_seconds: 720, value: 1146}
+      - {offset_seconds: 780, value: 1156}
+      - {offset_seconds: 840, value: 1166}
+      - {offset_seconds: 900, value: 1176}
+      - {offset_seconds: 960, value: 1186}
+      - {offset_seconds: 1020, value: 1196}
+      - {offset_seconds: 1080, value: 1206}
+      - {offset_seconds: 1140, value: 1216}
+      - {offset_seconds: 1200, value: 1226}
+      - {offset_seconds: 1260, value: 1236}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e07
+    samples:
+      - {offset_seconds: 0, value: 1028}
+      - {offset_seconds: 60, value: 1038}
+      - {offset_seconds: 120, value: 1048}
+      - {offset_seconds: 180, value: 1058}
+      - {offset_seconds: 240, value: 1068}
+      - {offset_seconds: 300, value: 1078}
+      - {offset_seconds: 360, value: 1088}
+      - {offset_seconds: 420, value: 1098}
+      - {offset_seconds: 480, value: 1108}
+      - {offset_seconds: 540, value: 1118}
+      - {offset_seconds: 600, value: 1128}
+      - {offset_seconds: 660, value: 1138}
+      - {offset_seconds: 720, value: 1148}
+      - {offset_seconds: 780, value: 1158}
+      - {offset_seconds: 840, value: 1168}
+      - {offset_seconds: 900, value: 1178}
+      - {offset_seconds: 960, value: 1188}
+      - {offset_seconds: 1020, value: 1198}
+      - {offset_seconds: 1080, value: 1208}
+      - {offset_seconds: 1140, value: 1218}
+      - {offset_seconds: 1200, value: 1228}
+      - {offset_seconds: 1260, value: 1238}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e07
+    samples:
+      - {offset_seconds: 0, value: 1030}
+      - {offset_seconds: 60, value: 1040}
+      - {offset_seconds: 120, value: 1050}
+      - {offset_seconds: 180, value: 1060}
+      - {offset_seconds: 240, value: 1070}
+      - {offset_seconds: 300, value: 1080}
+      - {offset_seconds: 360, value: 1090}
+      - {offset_seconds: 420, value: 1100}
+      - {offset_seconds: 480, value: 1110}
+      - {offset_seconds: 540, value: 1120}
+      - {offset_seconds: 600, value: 1130}
+      - {offset_seconds: 660, value: 1140}
+      - {offset_seconds: 720, value: 1150}
+      - {offset_seconds: 780, value: 1160}
+      - {offset_seconds: 840, value: 1170}
+      - {offset_seconds: 900, value: 1180}
+      - {offset_seconds: 960, value: 1190}
+      - {offset_seconds: 1020, value: 1200}
+      - {offset_seconds: 1080, value: 1210}
+      - {offset_seconds: 1140, value: 1220}
+      - {offset_seconds: 1200, value: 1230}
+      - {offset_seconds: 1260, value: 1240}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e08
+    samples:
+      - {offset_seconds: 0, value: 1032}
+      - {offset_seconds: 60, value: 1042}
+      - {offset_seconds: 120, value: 1052}
+      - {offset_seconds: 180, value: 1062}
+      - {offset_seconds: 240, value: 1072}
+      - {offset_seconds: 300, value: 1082}
+      - {offset_seconds: 360, value: 1092}
+      - {offset_seconds: 420, value: 1102}
+      - {offset_seconds: 480, value: 1112}
+      - {offset_seconds: 540, value: 1122}
+      - {offset_seconds: 600, value: 1132}
+      - {offset_seconds: 660, value: 1142}
+      - {offset_seconds: 720, value: 1152}
+      - {offset_seconds: 780, value: 1162}
+      - {offset_seconds: 840, value: 1172}
+      - {offset_seconds: 900, value: 1182}
+      - {offset_seconds: 960, value: 1192}
+      - {offset_seconds: 1020, value: 1202}
+      - {offset_seconds: 1080, value: 1212}
+      - {offset_seconds: 1140, value: 1222}
+      - {offset_seconds: 1200, value: 1232}
+      - {offset_seconds: 1260, value: 1242}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e08
+    samples:
+      - {offset_seconds: 0, value: 1034}
+      - {offset_seconds: 60, value: 1044}
+      - {offset_seconds: 120, value: 1054}
+      - {offset_seconds: 180, value: 1064}
+      - {offset_seconds: 240, value: 1074}
+      - {offset_seconds: 300, value: 1084}
+      - {offset_seconds: 360, value: 1094}
+      - {offset_seconds: 420, value: 1104}
+      - {offset_seconds: 480, value: 1114}
+      - {offset_seconds: 540, value: 1124}
+      - {offset_seconds: 600, value: 1134}
+      - {offset_seconds: 660, value: 1144}
+      - {offset_seconds: 720, value: 1154}
+      - {offset_seconds: 780, value: 1164}
+      - {offset_seconds: 840, value: 1174}
+      - {offset_seconds: 900, value: 1184}
+      - {offset_seconds: 960, value: 1194}
+      - {offset_seconds: 1020, value: 1204}
+      - {offset_seconds: 1080, value: 1214}
+      - {offset_seconds: 1140, value: 1224}
+      - {offset_seconds: 1200, value: 1234}
+      - {offset_seconds: 1260, value: 1244}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e09
+    samples:
+      - {offset_seconds: 0, value: 1036}
+      - {offset_seconds: 60, value: 1046}
+      - {offset_seconds: 120, value: 1056}
+      - {offset_seconds: 180, value: 1066}
+      - {offset_seconds: 240, value: 1076}
+      - {offset_seconds: 300, value: 1086}
+      - {offset_seconds: 360, value: 1096}
+      - {offset_seconds: 420, value: 1106}
+      - {offset_seconds: 480, value: 1116}
+      - {offset_seconds: 540, value: 1126}
+      - {offset_seconds: 600, value: 1136}
+      - {offset_seconds: 660, value: 1146}
+      - {offset_seconds: 720, value: 1156}
+      - {offset_seconds: 780, value: 1166}
+      - {offset_seconds: 840, value: 1176}
+      - {offset_seconds: 900, value: 1186}
+      - {offset_seconds: 960, value: 1196}
+      - {offset_seconds: 1020, value: 1206}
+      - {offset_seconds: 1080, value: 1216}
+      - {offset_seconds: 1140, value: 1226}
+      - {offset_seconds: 1200, value: 1236}
+      - {offset_seconds: 1260, value: 1246}
+  - metric: rollup_latency
+    labels:
+      service: b
+      endpoint: e09
+    samples:
+      - {offset_seconds: 0, value: 1038}
+      - {offset_seconds: 60, value: 1048}
+      - {offset_seconds: 120, value: 1058}
+      - {offset_seconds: 180, value: 1068}
+      - {offset_seconds: 240, value: 1078}
+      - {offset_seconds: 300, value: 1088}
+      - {offset_seconds: 360, value: 1098}
+      - {offset_seconds: 420, value: 1108}
+      - {offset_seconds: 480, value: 1118}
+      - {offset_seconds: 540, value: 1128}
+      - {offset_seconds: 600, value: 1138}
+      - {offset_seconds: 660, value: 1148}
+      - {offset_seconds: 720, value: 1158}
+      - {offset_seconds: 780, value: 1168}
+      - {offset_seconds: 840, value: 1178}
+      - {offset_seconds: 900, value: 1188}
+      - {offset_seconds: 960, value: 1198}
+      - {offset_seconds: 1020, value: 1208}
+      - {offset_seconds: 1080, value: 1218}
+      - {offset_seconds: 1140, value: 1228}
+      - {offset_seconds: 1200, value: 1238}
+      - {offset_seconds: 1260, value: 1248}
+  - metric: rollup_latency
+    labels:
+      service: a
+      endpoint: e-late
+    samples:
+      - {offset_seconds: 600, value: 1140}
+      - {offset_seconds: 660, value: 1150}
+      - {offset_seconds: 720, value: 1160}
+      - {offset_seconds: 780, value: 1170}
+      - {offset_seconds: 840, value: 1180}
+      - {offset_seconds: 900, value: 1190}
+      - {offset_seconds: 960, value: 1200}
+      - {offset_seconds: 1020, value: 1210}
+      - {offset_seconds: 1080, value: 1220}
+      - {offset_seconds: 1140, value: 1230}
+      - {offset_seconds: 1200, value: 1240}
+      - {offset_seconds: 1260, value: 1250}

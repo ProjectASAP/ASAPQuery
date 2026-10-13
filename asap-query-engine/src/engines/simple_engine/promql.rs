@@ -188,10 +188,9 @@ impl SimpleEngine {
             .map(|s| s.to_string())
     }
 
-    /// Extracts topk k parameter from PromQL match result. Topk is only ever
-    /// produced by a spatial `topk` aggregation (excluded from every
-    /// collapsable spatial-of-temporal pattern), so no shape check is needed
-    /// before looking at the aggregation token.
+    /// Extracts topk k parameter from PromQL match result. Every pattern that
+    /// yields Topk binds its outer `topk` to the `aggregation` token (an inner
+    /// `sum` binds to `inner_aggregation`), so k is always that token's param.
     fn extract_topk_param(&self, match_result: &PromQLMatchResult) -> Result<String, String> {
         match_result
             .tokens

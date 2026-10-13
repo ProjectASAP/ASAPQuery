@@ -312,6 +312,22 @@ impl AggregationType {
         }
     }
 
+    /// Single-subpopulation types whose merge of two groups' states is the
+    /// state of their union, so a query can read one at a coarser grouping
+    /// (a roll-up). Increase is excluded: its merge joins pieces of one
+    /// counter in time.
+    pub const MERGEABLE_ACROSS_GROUPS: [AggregationType; 5] = [
+        AggregationType::Sum,
+        AggregationType::MinMax,
+        AggregationType::DatasketchesKLL,
+        AggregationType::DDSketch,
+        AggregationType::HLL,
+    ];
+
+    pub fn merges_across_groups(self) -> bool {
+        Self::MERGEABLE_ACROSS_GROUPS.contains(&self)
+    }
+
     /// Returns `true` if this type produces keyed (multi-population) accumulators.
     pub fn is_keyed(self) -> bool {
         matches!(

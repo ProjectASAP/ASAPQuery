@@ -1,0 +1,125 @@
+name: rollup
+# Every aggregation in the fixed planner output is grouped by (service,
+# endpoint). Each query appears grouped by (service, endpoint), which reads
+# the aggregation as-is, then by (service) and with no grouping, which roll
+# the per-endpoint aggregates up. The first query is the readiness probe, so
+# it is a non-rolled-up one.
+planner_output_dir: rollup-planner-output
+comparison_defaults:
+  value_tolerance:
+    relative: 0.01
+    absolute: 0.000001
+
+queries:
+  # DatasketchesKLL, 1s tumbling.
+  - name: kll-quantile-0.5-by-service-endpoint
+    expr: "quantile by (service, endpoint) (0.5, rollup_latency)"
+    instant_offsets_seconds: &evaluation_offsets [300, 600, 900, 1200]
+    range: &evaluation_range
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
+  - name: kll-quantile-0.5-by-service
+    expr: "quantile by (service) (0.5, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: kll-quantile-0.5-all
+    expr: "quantile(0.5, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: kll-quantile-0.9-by-service-endpoint
+    expr: "quantile by (service, endpoint) (0.9, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: kll-quantile-0.9-by-service
+    expr: "quantile by (service) (0.9, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: kll-quantile-0.9-all
+    expr: "quantile(0.9, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  # DDSketch (alpha 0.01), 1s tumbling. Its relative error adds to the
+  # nearest-rank gap, hence the wider tolerance.
+  - name: ddsketch-quantile-0.75-by-service-endpoint
+    expr: "quantile by (service, endpoint) (0.75, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: &ddsketch_tolerance
+      value_tolerance:
+        relative: 0.02
+  - name: ddsketch-quantile-0.75-by-service
+    expr: "quantile by (service) (0.75, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *ddsketch_tolerance
+  - name: ddsketch-quantile-0.75-all
+    expr: "quantile(0.75, rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *ddsketch_tolerance
+  # Sum and MinMax merge exactly, so they are compared tightly. Sum is 1s
+  # tumbling for the instant-vector sum and 5m/1m sliding for sum_over_time;
+  # min is 1m tumbling and max is 5m/1m sliding.
+  - name: sum-by-service-endpoint
+    expr: "sum by (service, endpoint) (rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: &exact
+      value_tolerance:
+        relative: 0
+  - name: sum-by-service
+    expr: "sum by (service) (rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: sum-all
+    expr: "sum(rollup_latency)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: sum-sum-over-time-by-service-endpoint
+    expr: "sum by (service, endpoint) (sum_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: sum-sum-over-time-by-service
+    expr: "sum by (service) (sum_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: sum-sum-over-time-all
+    expr: "sum(sum_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: min-min-over-time-by-service-endpoint
+    expr: "min by (service, endpoint) (min_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: min-min-over-time-by-service
+    expr: "min by (service) (min_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: min-min-over-time-all
+    expr: "min(min_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: max-max-over-time-by-service-endpoint
+    expr: "max by (service, endpoint) (max_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: max-max-over-time-by-service
+    expr: "max by (service) (max_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact
+  - name: max-max-over-time-all
+    expr: "max(max_over_time(rollup_latency[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison: *exact

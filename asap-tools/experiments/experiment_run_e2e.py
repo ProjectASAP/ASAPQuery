@@ -316,20 +316,42 @@ def main(cfg: DictConfig):
                     "Prometheus label discovery is disabled."
                 )
 
-            controller_service.start(
-                controller_input_file=controller_input_config,
-                streaming_engine=args.streaming_engine,
-                controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-                punting=args.controller_punting,
-                discovery_backend=discovery_backend,
-                data_ingestion_interval_ms=data_ingestion_interval_ms,
-            )
-            sync.rsync_controller_config_remote_to_local(
-                provider,
-                CONTROLLER_REMOTE_OUTPUT_DIR,
-                CONTROLLER_LOCAL_OUTPUT_DIR,
-                node_offset=args.node_offset,
-            )
+            if args.controller_prebuilt_output_dir:
+                print(
+                    f"Skipping the planner: using configs from "
+                    f"{args.controller_prebuilt_output_dir}"
+                )
+                config.copy_prebuilt_controller_output(
+                    args.controller_prebuilt_output_dir,
+                    CONTROLLER_LOCAL_OUTPUT_DIR,
+                    os.path.join(
+                        local_experiment_root_dir,
+                        "controller_client_configs",
+                        f"{experiment_mode}_controller_input.yaml",
+                    ),
+                    data_ingestion_interval_ms,
+                )
+                sync.rsync_streaming_configs(
+                    provider,
+                    CONTROLLER_LOCAL_OUTPUT_DIR,
+                    CONTROLLER_REMOTE_OUTPUT_DIR,
+                    node_offset=args.node_offset,
+                )
+            else:
+                controller_service.start(
+                    controller_input_file=controller_input_config,
+                    streaming_engine=args.streaming_engine,
+                    controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
+                    punting=args.controller_punting,
+                    discovery_backend=discovery_backend,
+                    data_ingestion_interval_ms=data_ingestion_interval_ms,
+                )
+                sync.rsync_controller_config_remote_to_local(
+                    provider,
+                    CONTROLLER_REMOTE_OUTPUT_DIR,
+                    CONTROLLER_LOCAL_OUTPUT_DIR,
+                    node_offset=args.node_offset,
+                )
 
         if (
             config.check_exporter_and_queries_exist(

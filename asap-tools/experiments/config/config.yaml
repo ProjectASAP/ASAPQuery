@@ -90,6 +90,9 @@ query_engine:
 controller:
   punting: ???  # REQUIRED: Enable query punting based on performance heuristics (should_be_performant check)
   auto_discover_labels: false  # Query Prometheus for metric labels instead of using config hints
+  # Skip the planner and deploy the streaming_config.yaml and inference_config.yaml
+  # already in this directory, e.g. from `asap-planner --planner saved`.
+  prebuilt_output_dir: null
 
 # Optional manual planner windowing override. Omit this block to preserve the
 # default tumbling-window behavior. For tumbling windows, omit
