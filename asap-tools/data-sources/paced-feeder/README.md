@@ -53,10 +53,12 @@ credentials.
 
 ## Pacing and stats
 
-Each tick sends its `--samples-per-sec` sub-second slots in turn. A slot's
-rows are split into `--batch-rows` requests and sent with up to
-`--concurrency` in flight, and the next slot starts only after every request
-of the current one returns, so a series' samples never arrive out of order.
+Each tick's rows are split into `--batch-rows` requests and sent with up to
+`--concurrency` in flight. For remote write, a tick sends its
+`--samples-per-sec` sub-second slots in turn, and the next slot starts only
+after every request of the current one returns, so each aggregation group's
+samples reach ASAPQuery in timestamp order. ClickHouse sorts on insert, so it
+gets the whole tick at once.
 `--samples-per-sec` is at most 1000, so timestamps (in ms) never repeat. The
 default batch size is 50,000 rows for remote write, which keeps a compressed
 request under axum's 2 MB body limit in ASAPQuery's ingest, and 100,000 for

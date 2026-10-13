@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,10 @@ const (
 	instantOrderDescending = "descending"
 	orderGroupingBy        = "by"
 	orderGroupingWithout   = "without"
+
+	// File names the planner writes and the query engine reads.
+	plannerStreamingConfigFile = "streaming_config.yaml"
+	plannerInferenceConfigFile = "inference_config.yaml"
 )
 
 // Suite is a data-independent collection of PromQL cases. All timestamps are
@@ -23,6 +28,11 @@ type Suite struct {
 	Name               string           `yaml:"name" json:"name"`
 	ComparisonDefaults ComparisonPolicy `yaml:"comparison_defaults" json:"comparisonDefaults"`
 	Queries            []QueryCase      `yaml:"queries" json:"queries"`
+	// PlannerOutputDir, when set, holds fixed streaming and inference configs
+	// that the query engine uses instead of running the planner. It is
+	// relative to the suite file; LoadSuiteFile resolves it to an absolute
+	// path.
+	PlannerOutputDir string `yaml:"planner_output_dir" json:"plannerOutputDir,omitempty"`
 }
 
 type QueryCase struct {
@@ -64,8 +74,30 @@ type Tolerance struct {
 }
 
 // LoadSuite parses and validates a query suite. It rejects incomplete cases
-// rather than silently selecting wall-clock defaults.
+// rather than silently selecting wall-clock defaults. A planner_output_dir
+// must be absolute here; a relative one needs the suite file's location, so
+// use LoadSuiteFile.
 func LoadSuite(contents []byte) (Suite, error) {
+	suite, err := parseSuite(contents)
+	if err != nil {
+		return Suite{}, err
+	}
+	if suite.PlannerOutputDir != "" {
+		if !filepath.IsAbs(suite.PlannerOutputDir) {
+			return Suite{}, fmt.Errorf(
+				"query suite %q: planner_output_dir %q is relative; load the suite with LoadSuiteFile",
+				suite.Name,
+				suite.PlannerOutputDir,
+			)
+		}
+		if suite.PlannerOutputDir, err = resolvePlannerOutputDir("", suite.PlannerOutputDir); err != nil {
+			return Suite{}, fmt.Errorf("query suite %q: %w", suite.Name, err)
+		}
+	}
+	return suite, nil
+}
+
+func parseSuite(contents []byte) (Suite, error) {
 	var suite Suite
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
@@ -123,13 +155,47 @@ func LoadSuite(contents []byte) (Suite, error) {
 	return suite, nil
 }
 
-// LoadSuiteFile reads a query suite from disk.
+// LoadSuiteFile reads a query suite from disk and resolves its
+// planner_output_dir against the suite file's directory.
 func LoadSuiteFile(path string) (Suite, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return Suite{}, fmt.Errorf("read query suite %q: %w", path, err)
 	}
-	return LoadSuite(contents)
+	suite, err := parseSuite(contents)
+	if err != nil {
+		return Suite{}, err
+	}
+	if suite.PlannerOutputDir != "" {
+		resolved, err := resolvePlannerOutputDir(filepath.Dir(path), suite.PlannerOutputDir)
+		if err != nil {
+			return Suite{}, fmt.Errorf("query suite %q: %w", suite.Name, err)
+		}
+		suite.PlannerOutputDir = resolved
+	}
+	return suite, nil
+}
+
+func resolvePlannerOutputDir(suiteDirectory, configured string) (string, error) {
+	directory := configured
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(suiteDirectory, directory)
+	}
+	directory, err := filepath.Abs(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve planner_output_dir %q: %w", configured, err)
+	}
+	for _, name := range []string{plannerStreamingConfigFile, plannerInferenceConfigFile} {
+		file := filepath.Join(directory, name)
+		info, err := os.Stat(file)
+		if err != nil {
+			return "", fmt.Errorf("planner_output_dir %q: %w", configured, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("planner_output_dir %q: %s is not a regular file", configured, file)
+		}
+	}
+	return directory, nil
 }
 
 func (q QueryCase) InstantTimes(base time.Time) []time.Time {

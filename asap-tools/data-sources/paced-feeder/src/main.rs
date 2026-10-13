@@ -16,7 +16,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
-use workload::Workload;
+use workload::{Row, Workload};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -263,18 +263,25 @@ async fn main() -> Result<()> {
         let started = Instant::now();
 
         let (mut rows, mut bytes) = (0, 0);
-        // A slot's requests all return before the next slot's are sent, so a
-        // series' samples never arrive out of timestamp order.
-        for slot in 0..args.samples_per_sec {
-            let slot_rows = Arc::new(workload.slot_rows(tick, slot, start_ms));
+        // ASAPQuery can drop samples behind a group's watermark, so remote write
+        // sends one slot at a time: a slot's requests all return before the
+        // next slot's are sent. ClickHouse sorts on insert, so it sends the
+        // whole tick at once.
+        let slots = (0..args.samples_per_sec).map(|slot| workload.slot_rows(tick, slot, start_ms));
+        let waves: Vec<Vec<Row>> = match args.sink {
+            SinkKind::RemoteWrite => slots.collect(),
+            SinkKind::Clickhouse => vec![slots.flatten().collect()],
+        };
+        for wave in waves {
+            let wave_rows = Arc::new(wave);
             let mut tasks = tokio::task::JoinSet::new();
-            for begin in (0..slot_rows.len()).step_by(batch_rows) {
-                let end = (begin + batch_rows).min(slot_rows.len());
-                let (slot_rows, sink) = (Arc::clone(&slot_rows), Arc::clone(&sink));
+            for begin in (0..wave_rows.len()).step_by(batch_rows) {
+                let end = (begin + batch_rows).min(wave_rows.len());
+                let (wave_rows, sink) = (Arc::clone(&wave_rows), Arc::clone(&sink));
                 let permit = Arc::clone(&permits).acquire_owned().await?;
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let body = sink.encoder.encode(&slot_rows[begin..end]);
+                    let body = sink.encoder.encode(&wave_rows[begin..end]);
                     let bytes = body.len();
                     sink.send(body).await.map(|()| (end - begin, bytes))
                 });

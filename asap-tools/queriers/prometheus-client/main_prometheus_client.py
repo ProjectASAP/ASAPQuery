@@ -323,6 +323,12 @@ def handle_query_group(
 
     # See classes/query_time.py. Aligned groups ignore query_start_times.
     align_to_interval = getattr(query_group, "align_to_interval", False)
+    simulated_start_time = getattr(query_group, "simulated_start_time", None)
+    if align_to_interval and simulated_start_time is not None:
+        raise ValueError(
+            "align_to_interval follows the wall clock; it can't be combined "
+            "with simulated_start_time"
+        )
     if align_to_interval:
         offset_secs = getattr(query_group, "query_time_offset", 0)
         first_eval_time = first_aligned_eval_time(
@@ -337,7 +343,16 @@ def handle_query_group(
             time.sleep(secs_until_send(query_unix_time, offset_secs, time.time()))
             logger.debug("Aligned evaluation time: {}", query_unix_time)
         else:
-            current_time = datetime.datetime.now()
+            if simulated_start_time is None:
+                current_time = datetime.datetime.now()
+            else:
+                # Pre-loaded data has fixed timestamps, so query time follows a
+                # clock anchored at the data start instead of the wall clock.
+                current_time = datetime.datetime.fromtimestamp(
+                    simulated_start_time
+                    + query_group.starting_delay
+                    + repetition_idx * query_group.repetition_delay_ms / 1000
+                )
             logger.debug("Current unix time: {}", int(current_time.timestamp()))
 
             if hasattr(query_group, "query_time_offset"):

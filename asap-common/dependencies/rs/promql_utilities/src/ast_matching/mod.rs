@@ -1,3 +1,4 @@
+pub mod collapsable_patterns;
 pub mod promql_pattern;
 pub mod promql_pattern_builder;
 //pub mod promql_pattern_factory;

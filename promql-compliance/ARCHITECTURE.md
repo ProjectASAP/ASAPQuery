@@ -54,7 +54,9 @@ The runner performs these stages:
    are relative to this timestamp.
 3. Generate temporary planner and engine configuration.
 4. Start Prometheus and wait for its health check.
-5. Run the planner. Its output is placed in a named shared volume.
+5. Run the planner. Its output is placed in a named shared volume. A suite
+   with `planner_output_dir` skips the planner and mounts that directory
+   instead.
 6. Start the ASAPQuery query engine after the planner completes.
 7. Send the same encoded remote-write batches to Prometheus and ASAPQuery.
 8. Wait for both query APIs to be ready and for the first probe query to return
