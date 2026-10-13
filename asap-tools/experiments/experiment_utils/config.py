@@ -539,6 +539,8 @@ def get_prometheus_data_ingestion_interval_ms(prometheus_config):
 
 
 PLANNER_OUTPUT_FILES = ("streaming_config.yaml", "inference_config.yaml")
+QUERY_LANGUAGE_PROMQL = "promql"
+QUERY_LANGUAGE_SQL = "sql"
 
 
 def check_prebuilt_controller_output(src):
@@ -558,8 +560,36 @@ def _is_planned(query, planned):
     return re.fullmatch(r"[\s()+\-*/0-9.]*", query) is not None
 
 
+def _validate_sql_inference_config(inference_config):
+    """Raise a clear error unless `inference_config` has the SQL schema shape."""
+    if not isinstance(inference_config, dict):
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml is not an SQL "
+            "inference config"
+        )
+    tables = inference_config.get("tables")
+    if not isinstance(tables, list):
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml is not an SQL "
+            "inference config: missing tables"
+        )
+    for table in tables:
+        if not isinstance(table, dict) or not all(
+            isinstance(table.get(key), list if key.endswith("columns") else str)
+            for key in ("name", "time_column", "value_columns", "metadata_columns")
+        ):
+            raise ValueError(
+                "controller.prebuilt_output_dir inference_config.yaml is not an SQL "
+                "inference config: invalid table schema"
+            )
+
+
 def copy_prebuilt_controller_output(
-    src, dest, controller_input_config, scrape_interval_ms
+    src,
+    dest,
+    controller_input_config,
+    scrape_interval_ms,
+    query_language=QUERY_LANGUAGE_PROMQL,
 ):
     """Replaces `dest` with the planner configs in `src`, after checking they
     plan every query of `controller_input_config` at this scrape interval."""
@@ -571,7 +601,16 @@ def copy_prebuilt_controller_output(
             f"dir {dest} must not contain one another"
         )
     with open(os.path.join(src, "inference_config.yaml")) as f:
-        planned = {q["query"] for q in yaml.safe_load(f)["queries"]}
+        inference_config = yaml.safe_load(f)
+    if query_language == QUERY_LANGUAGE_SQL:
+        _validate_sql_inference_config(inference_config)
+    if not isinstance(inference_config, dict) or not isinstance(
+        inference_config.get("queries"), list
+    ):
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml has invalid queries"
+        )
+    planned = {q["query"] for q in inference_config["queries"]}
     with open(controller_input_config) as f:
         groups = yaml.safe_load(f)["query_groups"]
     unplanned = [q for g in groups for q in g["queries"] if not _is_planned(q, planned)]

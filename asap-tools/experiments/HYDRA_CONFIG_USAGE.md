@@ -216,6 +216,32 @@ clickhouse.database=default
 experiment_params.dataset.max_rows=10000
 ```
 
+#### Run a frozen SQL planner output
+
+Generate the SQL plan separately, then point the ClickHouse sketchdb run at
+the directory containing its `streaming_config.yaml` and
+`inference_config.yaml`. The runner validates that the inference config is
+SQL, copies both files, and does not start `asap-planner`.
+
+```bash
+# Generate the plan in a separate SQL MILP-planning step.
+asap-planner --planner milp --query-language sql \
+  --input_config /path/to/planner_input.yaml \
+  --workload-facts /path/to/workload_facts.yaml \
+  --atomic-costs /path/to/rqe_atomic_costs.json \
+  --saturation-dir /path/to/saturation \
+  --streaming_engine precompute \
+  --data-ingestion-interval-ms 1000 \
+  --output-dir /path/to/frozen-sql-plan
+
+# Execute that exact plan during the ClickHouse evaluation.
+python experiment_run_clickhouse.py \
+  experiment_type=clickhouse \
+  experiment.name=frozen_plan_eval \
+  controller.prebuilt_output_dir=/path/to/frozen-sql-plan \
+  'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
+```
+
 ### experiment_run_e2e.py (Full E2E Pipeline)
 ```bash
 # Full pipeline with query engine
