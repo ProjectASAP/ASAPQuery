@@ -1,8 +1,9 @@
 use promql_parser::parser::Expr;
 use tracing::debug;
 
+use crate::ast_matching::collapsable_patterns::INNER_AGGREGATION_TOKEN;
 use crate::ast_matching::promql_pattern::AggregationModifierType;
-use crate::ast_matching::{PromQLMatchResult, PromQLPattern, PromQLPatternBuilder};
+use crate::ast_matching::PromQLMatchResult;
 use crate::data_model::KeyByLabelNames;
 use crate::query_logics::enums::{AggregationOperator, PromQLFunction, Statistic};
 use crate::query_logics::logics::get_is_collapsable;
@@ -180,56 +181,6 @@ pub fn get_spatial_aggregation_output_labels(
     reducer_output_labels(aggregation_token, all_labels)
 }
 
-/// Token for the inner reducer of `topk(k, sum by (...) (f(m[w])))`.
-pub const INNER_AGGREGATION_TOKEN: &str = "inner_aggregation";
-
-/// Patterns for `topk(k, sum by (l) (f(m[w])))`, one per `f` collapsable
-/// under both `sum` and `topk`: such a query collapses into one
-/// CountMinSketchWithHeap keyed by `l`.
-pub fn build_topk_of_sum_patterns() -> Vec<PromQLPattern> {
-    [
-        PromQLFunction::Rate,
-        PromQLFunction::Increase,
-        PromQLFunction::SumOverTime,
-        PromQLFunction::CountOverTime,
-        PromQLFunction::AvgOverTime,
-        PromQLFunction::MinOverTime,
-        PromQLFunction::MaxOverTime,
-    ]
-    .into_iter()
-    .filter(|&func| {
-        get_is_collapsable(func, AggregationOperator::Sum)
-            && get_is_collapsable(func, AggregationOperator::Topk)
-    })
-    .map(|func| {
-        PromQLPattern::new(PromQLPatternBuilder::aggregation(
-            vec![AggregationOperator::Topk.as_str()],
-            PromQLPatternBuilder::aggregation(
-                vec![AggregationOperator::Sum.as_str()],
-                PromQLPatternBuilder::function(
-                    vec![func.as_str()],
-                    vec![PromQLPatternBuilder::matrix_selector(
-                        PromQLPatternBuilder::metric(None, None, None, Some("metric")),
-                        None,
-                        Some("range_vector"),
-                    )],
-                    Some("function"),
-                    Some("function_args"),
-                ),
-                None,
-                None,
-                None,
-                Some(INNER_AGGREGATION_TOKEN),
-            ),
-            None,
-            None,
-            None,
-            Some("aggregation"),
-        ))
-    })
-    .collect()
-}
-
 /// Labels of the series topk ranks: the inner reducer's output labels when
 /// one is present, else all labels.
 fn topk_input_labels(
@@ -390,7 +341,7 @@ mod tests {
 
     fn match_topk_of_sum(query: &str) -> PromQLMatchResult {
         let ast = promql_parser::parser::parse(query).unwrap();
-        let result = build_topk_of_sum_patterns()
+        let result = crate::ast_matching::collapsable_patterns::build_topk_of_sum_patterns()
             .iter()
             .map(|pattern| pattern.matches(&ast))
             .find(|result| result.matches);

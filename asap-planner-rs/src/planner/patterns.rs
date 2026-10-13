@@ -1,7 +1,8 @@
+use promql_utilities::ast_matching::collapsable_patterns::{
+    build_one_temporal_one_spatial_patterns, build_topk_of_sum_patterns,
+};
 use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::query_logics::enums::{AggregationOperator, PromQLFunction};
-use promql_utilities::query_logics::logics::get_is_collapsable;
-use promql_utilities::query_logics::parsing::build_topk_of_sum_patterns;
 
 /// Build all patterns in priority order: ONLY_TEMPORAL (2), ONLY_SPATIAL (1),
 /// ONE_TEMPORAL_ONE_SPATIAL (one per collapsable (function, op) pair),
@@ -67,58 +68,8 @@ pub fn build_patterns() -> Vec<PromQLPattern> {
         Some("aggregation"),
     ));
 
-    // ONE_TEMPORAL_ONE_SPATIAL: one narrow pattern per collapsable (function, op)
-    // pair (see `get_is_collapsable`) — e.g. `sum(min_over_time(x[5m]))` cannot be
-    // served by a single precomputed statistic the way `sum(sum_over_time(x[5m]))`
-    // can. A broad any-op-wrapping-any-function pattern would structurally match
-    // non-collapsable combinations too, silently dropping the outer aggregation
-    // instead of rejecting the query (see #508).
-    let one_temporal_one_spatial_collapsable: Vec<PromQLPattern> = [
-        PromQLFunction::Rate,
-        PromQLFunction::Increase,
-        PromQLFunction::SumOverTime,
-        PromQLFunction::CountOverTime,
-        PromQLFunction::AvgOverTime,
-        PromQLFunction::MinOverTime,
-        PromQLFunction::MaxOverTime,
-        PromQLFunction::QuantileOverTime,
-    ]
-    .into_iter()
-    .flat_map(|func| {
-        [
-            AggregationOperator::Sum,
-            AggregationOperator::Count,
-            AggregationOperator::Avg,
-            AggregationOperator::Quantile,
-            AggregationOperator::Min,
-            AggregationOperator::Max,
-            AggregationOperator::Topk,
-        ]
-        .into_iter()
-        .filter_map(move |op| {
-            if !get_is_collapsable(func, op) {
-                return None;
-            }
-            let pattern = PromQLPatternBuilder::aggregation(
-                vec![op.as_str()],
-                PromQLPatternBuilder::function(
-                    vec![func.as_str()],
-                    vec![range_vector_pattern()],
-                    Some("function"),
-                    Some("function_args"),
-                ),
-                None,
-                None,
-                None,
-                Some("aggregation"),
-            );
-            Some(PromQLPattern::new(pattern))
-        })
-    })
-    .collect();
-
     let mut patterns = vec![ot_quantile, ot_temporal_funcs, os_spatial];
-    patterns.extend(one_temporal_one_spatial_collapsable);
+    patterns.extend(build_one_temporal_one_spatial_patterns());
     patterns.extend(build_topk_of_sum_patterns());
     patterns
 }
