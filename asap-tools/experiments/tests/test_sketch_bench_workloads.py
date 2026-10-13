@@ -6,6 +6,7 @@ the Prometheus semantics. It needs a `clickhouse` binary on PATH (or
 CLICKHOUSE_BINARY) and is skipped otherwise.
 """
 
+import itertools
 import json
 import math
 import os
@@ -25,7 +26,23 @@ sys.path.insert(
 
 import sketch_bench_workloads as sbw  # noqa: E402
 
-LABELS = {"data": ["job", "label_0"], "data_total": ["job", "label_0"]}
+SERIES_LABELS = [{"name": "job"}, {"name": "label_0", "child_of": "job"}]
+HTTP_LABELS = ["region", "service", "endpoint", "status"]
+METRICS = {
+    "data": {"type": "gauge", "labels": SERIES_LABELS},
+    "data_total": {"type": "counter", "labels": SERIES_LABELS},
+    "http": {
+        "type": "records",
+        "labels": [
+            {"name": "region"},
+            {"name": "service"},
+            {"name": "endpoint", "child_of": "service"},
+            {"name": "status"},
+        ],
+        "values": {"latency": {}, "user_id": {}},
+    },
+}
+LABELS = sbw.metric_labels(METRICS)
 CLICKHOUSE = os.environ.get("CLICKHOUSE_BINARY") or shutil.which("clickhouse")
 
 # The PromQL of sketch-bench's ten classic templates (windows vary per table).
@@ -95,22 +112,69 @@ class ParseTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     sbw.parse_promql(promql, 60, LABELS)
 
-    def test_structured_entry_raises(self):
-        entry = {"table": "http", "capability": "quantile", "interval_secs": 60}
-        with self.assertRaises(ValueError):
-            sbw.query_from_entry(entry, LABELS)
+    def test_structured_entries(self):
+        cardinality = mg_entry("cardinality", ["region", "service"], 300)
+        quantile = mg_entry("quantile", ["service"], 900)
+        self.assertEqual(
+            sbw.query_from_entry(cardinality, METRICS),
+            sbw.Query(
+                "http",
+                60,
+                300,
+                ("region", "service"),
+                None,
+                "cardinality",
+                value="user_id",
+            ),
+        )
+        self.assertEqual(
+            sbw.query_from_entry(quantile, METRICS),
+            sbw.Query(
+                "http",
+                60,
+                900,
+                ("service",),
+                None,
+                "quantile",
+                "0.99",
+                value="latency",
+            ),
+        )
+
+    def test_unsupported_structured_entries_raise(self):
+        for entry in [
+            {**mg_entry("cardinality", ["region"], 300), "capability": "sum"},
+            mg_entry("cardinality", ["instance"], 300),
+            {**mg_entry("quantile", ["region"], 300), "value": "bytes"},
+        ]:
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                sbw.query_from_entry(entry, METRICS)
+
+
+def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
+    """A structured multi-grouping entry over `http`, as sketch-bench writes it."""
+    entry = {
+        "table": "http",
+        "value": "latency" if capability == "quantile" else "user_id",
+        "capability": capability,
+        "grouping": grouping,
+        "window_secs": window_secs,
+        "interval_secs": 60,
+        "rqes": [],
+    }
+    if capability == "quantile":
+        entry["quantile"] = 0.99
+    return entry
 
 
 class ConvertTest(unittest.TestCase):
     def test_writes_config_grouped_by_interval(self):
         e2e = {
-            "metrics": {
-                name: {"labels": [{"name": "job"}, {"name": "label_0"}]}
-                for name in LABELS
-            },
+            "metrics": METRICS,
             "queries": [
                 {"promql": p, "interval_secs": t, "rqes": []} for t, p in CLASSIC
-            ],
+            ]
+            + [mg_entry("quantile", ["service"], 300)],
         }
         with tempfile.TemporaryDirectory() as tmp:
             table = os.path.join(tmp, "classic.json")
@@ -133,9 +197,23 @@ class ConvertTest(unittest.TestCase):
                 )
                 with open(g60["sql_file"]["baseline"]) as f:
                     statements = [s for s in f.read().split(";") if s.strip()]
-                self.assertEqual(len(statements), 8)
+                self.assertEqual(len(statements), 9)
                 with open(cfg["dataset"]["init_sql_file"]) as f:
-                    self.assertIn("CREATE TABLE data_total (ts DateTime64(3)", f.read())
+                    init = f.read()
+                self.assertIn("CREATE TABLE data_total (ts DateTime64(3)", init)
+                self.assertIn(
+                    "endpoint String, status String, latency Float64, "
+                    "user_id Float64)",
+                    init,
+                )
+                sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
+                with open(os.path.join(sql_dir, "asapquery.sql")) as f:
+                    self.assertEqual(
+                        f.read(),
+                        "-- quantile(0.99, latency) by (service) over 300s\n"
+                        "SELECT service, QUANTILE(0.99, latency) FROM http WHERE ts "
+                        "BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY service;\n",
+                    )
             finally:
                 os.chdir(cwd)
 
@@ -338,6 +416,65 @@ def make_dataset(seed: int = 7):
     return gauge, counter
 
 
+def make_records(seed: int = 11) -> List[tuple]:
+    """`http` records every 50 ms (one on every whole second) with skewed
+    labels. Endpoint names repeat across services (endpoint is a child of
+    service), so grouping by endpoint alone pools several services."""
+    rng = random.Random(seed)
+    records = []
+    for k in range(DURATION_SECS * 20 + 1):
+        t = DATA_START_MS + k * 50 + (0 if k % 20 == 0 else rng.randint(0, 49))
+        service = rng.choices(["s0", "s1", "s2", "s3"], [8, 4, 2, 1])[0]
+        labels = (
+            rng.choices(["r0", "r1", "r2"], [6, 3, 1])[0],
+            service,
+            rng.choices(["e0", "e1", "e2"], [5, 2, 1])[0],
+            rng.choices(["200", "404", "500"], [20, 3, 1])[0],
+        )
+        latency = rng.paretovariate(2.0) * (1 + "s0s1s2s3".index(service))
+        records.append((t, labels, (latency, float(int(rng.paretovariate(1.2) * 10)))))
+    return records
+
+
+def series_rows(by_series: Dict[Series, Samples]) -> List[tuple]:
+    return [(t, s, (v,)) for s, samples in by_series.items() for t, v in samples]
+
+
+def pooled(records, t_ms: int, w_ms: int, q: "sbw.Query") -> Vector:
+    """A structured query's reference: every record of a group in the window."""
+    idx = [HTTP_LABELS.index(name) for name in q.grouping]
+    col = list(METRICS["http"]["values"]).index(q.value)
+    groups: Dict[Series, List[float]] = {}
+    for t, labels, values in records:
+        if t_ms - w_ms <= t <= t_ms:
+            groups.setdefault(tuple(labels[i] for i in idx), []).append(values[col])
+    if q.agg == "cardinality":
+        return {k: len(set(vs)) for k, vs in groups.items()}
+    return {k: prom_quantile(float(q.quantile), vs) for k, vs in groups.items()}
+
+
+# Template 16's CUBE over (region, service, endpoint) and template 14/15-like
+# cardinality groupings, including status and the full label set.
+MULTIGROUP = [
+    mg_entry("quantile", list(g), w)
+    for w in (120, 300)
+    for n in (1, 2, 3)
+    for g in itertools.combinations(["region", "service", "endpoint"], n)
+] + [
+    mg_entry("cardinality", g, w)
+    for w in (120, 300)
+    for g in [
+        ["region"],
+        ["service"],
+        ["endpoint"],
+        ["status"],
+        ["region", "service"],
+        ["service", "endpoint"],
+        ["region", "service", "endpoint", "status"],
+    ]
+]
+
+
 def run_clickhouse(script: str, tmp: str) -> List[dict]:
     path = os.path.join(tmp, "script.sql")
     with open(path, "w") as f:
@@ -351,18 +488,27 @@ def run_clickhouse(script: str, tmp: str) -> List[dict]:
     return [json.loads(line) for line in out.splitlines()]
 
 
-def load_script(tmp: str, data: Dict[str, Dict[Series, Samples]]) -> str:
-    """Init SQL, then the data inserted through it (and any views on it)."""
-    parts = [sbw.init_sql(LABELS)]
-    for table, by_series in data.items():
+def load_script(tmp: str, rows: Dict[str, List[tuple]]) -> str:
+    """Init SQL, then each table's (ts ms, labels, values) rows inserted
+    through it (and any views on it)."""
+    parts = [sbw.init_sql(METRICS)]
+    for table, table_rows in rows.items():
+        names = LABELS[table]
+        values = sbw.value_columns(METRICS[table])
         csv = os.path.join(tmp, f"{table}.csv")
         with open(csv, "w") as f:
-            for (job, label_0), samples in by_series.items():
-                f.writelines(f"{t},{job},{label_0},{v!r}\n" for t, v in samples)
+            f.writelines(
+                ",".join([str(t), *labels, *map(repr, vs)]) + "\n"
+                for t, labels, vs in table_rows
+            )
+        structure = ", ".join(
+            ["ts_ms Int64"]
+            + [f"{n} String" for n in names]
+            + [f"{v} Float64" for v in values]
+        )
         parts.append(
-            f"INSERT INTO {table} SELECT fromUnixTimestamp64Milli(ts_ms), job, "
-            f"label_0, value FROM file('{csv}', 'CSV', "
-            "'ts_ms Int64, job String, label_0 String, value Float64');\n"
+            f"INSERT INTO {table} SELECT fromUnixTimestamp64Milli(ts_ms), "
+            f"{', '.join(names + values)} FROM file('{csv}', 'CSV', '{structure}');\n"
         )
     return "".join(parts)
 
@@ -391,31 +537,52 @@ def assert_vectors_close(test, got: Vector, want: Vector, rel: float) -> None:
         )
 
 
+def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]]:
+    """(name, query, reference at eval time t ms) for CASES and MULTIGROUP."""
+    cases = [
+        (p, sbw.parse_promql(p, t, LABELS), lambda e, ref=ref: ref(e, gauge, counter))
+        for t, p, ref in CASES
+    ]
+    for entry in MULTIGROUP:
+        q = sbw.query_from_entry(entry, METRICS)
+        w_ms = q.window_secs * 1000
+        cases.append(
+            (sbw.describe(entry), q, lambda e, q=q, w=w_ms: pooled(records, e, w, q))
+        )
+    return cases
+
+
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
 class ClickHouseSemanticsTest(unittest.TestCase):
     def test_raw_sql_matches_prometheus_reference(self):
         gauge, counter = make_dataset()
-        queries = [(t, p, sbw.parse_promql(p, t, LABELS)) for t, p, _ in CASES]
+        records = make_records()
+        cases = all_cases(gauge, counter, records)
         statements, groupings = [], {}
-        for i, (interval, _, q) in enumerate(queries):
-            for offset in EVAL_OFFSETS_SECS[interval]:
+        for i, (_, q, _) in enumerate(cases):
+            for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
                 end = DATA_START_MS // 1000 + offset
                 qid = f"{i}@{offset}"
                 sql = sbw.raw_sql(q, LABELS).replace(sbw.END, str(end))
                 statements.append((qid, sql))
                 groupings[qid] = q.grouping
+        rows = {
+            "data": series_rows(gauge),
+            "data_total": series_rows(counter),
+            "http": records,
+        }
         with tempfile.TemporaryDirectory() as tmp:
-            script = load_script(tmp, {"data": gauge, "data_total": counter})
+            script = load_script(tmp, rows)
             got = rows_by_id(
                 run_clickhouse(script + query_script(statements), tmp), groupings
             )
 
         BRANCHES_HIT.clear()
         nonempty = 0
-        for i, (interval, promql, ref) in enumerate(CASES):
-            for offset in EVAL_OFFSETS_SECS[interval]:
-                with self.subTest(promql=promql, offset=offset):
-                    want = ref(DATA_START_MS + offset * 1000, gauge, counter)
+        for i, (name, q, ref) in enumerate(cases):
+            for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
+                with self.subTest(query=name, offset=offset):
+                    want = ref(DATA_START_MS + offset * 1000)
                     nonempty += bool(want)
                     assert_vectors_close(self, got[f"{i}@{offset}"], want, 1e-9)
         self.assertEqual(

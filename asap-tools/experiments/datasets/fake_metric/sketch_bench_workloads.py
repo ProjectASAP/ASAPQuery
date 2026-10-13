@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Translate a sketch-bench table's end-to-end queries into ClickHouse configs.
 
-A sketch-bench table's `workloads[0].e2e` block lists its queries as
-`{promql, interval_secs, rqes}` and describes each metric (`metrics`). Every
-metric is one ClickHouse table named after it: `ts DateTime64(3)`, then the
-metric's labels in description order as String, then `value Float64`.
+A sketch-bench table's `workloads[0].e2e` block lists its queries, either
+`{promql, interval_secs, rqes}` or structured multi-grouping queries, and
+describes each metric (`metrics`). Every metric is one ClickHouse table named
+after it: `ts DateTime64(3)`, then the metric's labels in description order as
+String, then `value Float64`, or for a `records` metric one Float64 column per
+value field in description order.
 
 For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
 - <stem>/init.sql: the metric tables;
 - <stem>/interval_<T>s.sql: one statement per query that repeats every T s;
+- <stem>/asapquery.sql: the structured queries in ASAPQuery's SQL dialect;
 - <stem>_clickhouse.yaml: a baseline-only experiment_run_clickhouse.py config
   with one query group per T, repeating every T seconds.
 
@@ -17,9 +20,10 @@ installs for bare-metal runs), whose windows are closed on both ends: range
 vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
 each series in [T - 1s, T] (a lookback of one scrape interval); quantiles use
 quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
-never reset). T is the client's
-{{ end_time }} floored to a multiple of the query's interval. Unsupported
-query shapes raise.
+never reset). Structured queries read the same [T - W, T] and pool all samples
+of a group: cardinality is uniqExact of the value field, quantile is
+quantileExactInclusive. T is the client's {{ end_time }} floored to a multiple
+of the query's interval. Unsupported query shapes raise.
 
 Run from asap-tools/experiments:
     python3 datasets/fake_metric/sketch_bench_workloads.py \
@@ -48,6 +52,9 @@ CLICKHOUSE_URL = "http://localhost:8123"
 VALUE_COLUMN = "value"
 # Instant vectors read the latest sample of each series in the last scrape.
 INSTANT_WINDOW_SECONDS = SCRAPE_INTERVAL_SECONDS
+
+# Structured entries' capabilities, all pooled over a group's samples.
+STRUCTURED_AGGS = ("cardinality", "quantile")
 
 LABELS = r"(\w+(?:, \w+)*)"
 LEVEL = r"([\d.]+)"
@@ -165,12 +172,42 @@ def parse_promql(promql: str, interval: int, labels: Dict[str, List[str]]) -> Qu
     return _parse_series(text, interval, labels, promql)
 
 
-def query_from_entry(entry: dict, labels: Dict[str, List[str]]) -> Query:
-    """One `e2e.queries` entry. Entries are PromQL; structured entries (no
-    `promql`) are not supported yet and raise."""
-    if "promql" not in entry:
-        raise ValueError(f"query entry without promql is not supported: {entry}")
-    return parse_promql(entry["promql"], entry["interval_secs"], labels)
+def query_from_entry(entry: dict, metrics: dict) -> Query:
+    """One `e2e.queries` entry: PromQL, or a structured multi-grouping query
+    `{table, value, capability, grouping, quantile, window_secs,
+    interval_secs}` that pools every sample of a group over the window."""
+    if "promql" in entry:
+        return parse_promql(
+            entry["promql"], entry["interval_secs"], metric_labels(metrics)
+        )
+    table, capability = entry["table"], entry["capability"]
+    if capability not in STRUCTURED_AGGS:
+        raise ValueError(f"unsupported capability {capability!r}: {entry}")
+    labels = metric_labels(metrics)[table]
+    unknown = set(entry["grouping"]) - set(labels)
+    if unknown or entry["value"] not in value_columns(metrics[table]):
+        raise ValueError(f"unknown labels or value for {table!r}: {entry}")
+    return Query(
+        table,
+        entry["interval_secs"],
+        entry["window_secs"],
+        tuple(entry["grouping"]),
+        None,
+        capability,
+        str(entry["quantile"]) if capability == "quantile" else None,
+        value=entry["value"],
+    )
+
+
+def describe(entry: dict) -> str:
+    """A one-line comment naming the query."""
+    if "promql" in entry:
+        return entry["promql"]
+    level = f"{entry['quantile']}, " if entry["capability"] == "quantile" else ""
+    return (
+        f"{entry['capability']}({level}{entry['value']}) by "
+        f"({', '.join(entry['grouping'])}) over {entry['window_secs']}s"
+    )
 
 
 def eval_time(interval_secs: int) -> str:
@@ -223,6 +260,8 @@ def raw_agg(stat: str, quantile: Optional[str], value: str = VALUE_COLUMN) -> st
         return f"sum({value})"
     if stat == "count":
         return "count()"
+    if stat == "cardinality":
+        return f"uniqExact({value})"
     if stat == "quantile":
         return f"quantileExactInclusive({quantile})({value})"
     if stat == "last":
@@ -246,24 +285,53 @@ def raw_sql(q: Query, labels: Dict[str, List[str]]) -> str:
     )
 
 
-def init_sql(labels: Dict[str, List[str]]) -> str:
+def asapquery_sql(q: Query) -> str:
+    """A structured query in the dialect of ASAPQuery's SQL frontend. Its
+    window ends at the engine's NOW(); it cannot floor the eval time."""
+    group = ", ".join(q.grouping)
+    if q.agg == "cardinality":
+        agg = f"COUNT(DISTINCT {q.value})"
+    elif q.agg == "quantile":
+        agg = f"QUANTILE({q.quantile}, {q.value})"
+    else:
+        raise ValueError(f"no ASAPQuery SQL for {q}")
+    return (
+        f"SELECT {group}, {agg} FROM {q.table} WHERE ts BETWEEN "
+        f"DATEADD(s, -{q.window_secs}, NOW()) AND NOW() GROUP BY {group}"
+    )
+
+
+def value_columns(desc: dict) -> List[str]:
+    """A records metric has one column per value field; a gauge or counter
+    has one value column."""
+    return list(desc["values"]) if desc["type"] == "records" else [VALUE_COLUMN]
+
+
+def init_sql(metrics: dict) -> str:
     statements = []
-    for table, names in labels.items():
-        columns = ", ".join(f"{name} String" for name in names)
+    for table, desc in metrics.items():
+        names = [label["name"] for label in desc["labels"]]
+        columns = [f"{name} String" for name in names] + [
+            f"{value} Float64" for value in value_columns(desc)
+        ]
         statements += [
             f"DROP TABLE IF EXISTS {table}",
-            f"CREATE TABLE {table} (ts DateTime64(3), {columns}, "
-            f"{VALUE_COLUMN} Float64) ENGINE = MergeTree "
-            f"ORDER BY ({', '.join(names)}, ts)",
+            f"CREATE TABLE {table} (ts DateTime64(3), {', '.join(columns)}) "
+            f"ENGINE = MergeTree ORDER BY ({', '.join(names)}, ts)",
         ]
     return ";\n\n".join(statements) + ";\n"
 
 
-def metric_labels(e2e: dict) -> Dict[str, List[str]]:
+def metric_labels(metrics: dict) -> Dict[str, List[str]]:
     return {
         name: [label["name"] for label in desc["labels"]]
-        for name, desc in e2e["metrics"].items()
+        for name, desc in metrics.items()
     }
+
+
+def write_statements(path: str, statements: List[str]) -> None:
+    with open(path, "w") as f:
+        f.write(";\n\n".join(statements) + ";\n")
 
 
 def convert(
@@ -272,28 +340,34 @@ def convert(
     with open(table_path) as f:
         (workload,) = json.load(f)["workloads"]
     e2e = workload["e2e"]
-    labels = metric_labels(e2e)
+    metrics = e2e["metrics"]
+    labels = metric_labels(metrics)
     stem = os.path.splitext(os.path.basename(table_path))[0]
     sql_dir = os.path.join(OUT_CONFIG_DIR, stem)
     os.makedirs(sql_dir, exist_ok=True)
 
     init_path = os.path.join(sql_dir, "init.sql")
     with open(init_path, "w") as f:
-        f.write(init_sql(labels))
+        f.write(init_sql(metrics))
 
     by_interval: Dict[int, List[str]] = {}
+    asapquery: List[str] = []
     for entry in e2e["queries"]:
-        q = query_from_entry(entry, labels)
+        q = query_from_entry(entry, metrics)
         by_interval.setdefault(q.interval_secs, []).append(
-            f"-- {entry['promql']}\n{raw_sql(q, labels)}"
+            f"-- {describe(entry)}\n{raw_sql(q, labels)}"
         )
+        if "promql" not in entry:
+            asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(q)}")
+    if asapquery:
+        # For the ASAPQuery arm; the runner does not read it.
+        write_statements(os.path.join(sql_dir, "asapquery.sql"), asapquery)
 
     query_groups = []
     for interval, statements in sorted(by_interval.items()):
         name = f"interval_{interval}s"
         sql_path = os.path.join(sql_dir, f"{name}.sql")
-        with open(sql_path, "w") as f:
-            f.write(";\n\n".join(statements) + ";\n")
+        write_statements(sql_path, statements)
         query_groups.append(
             {
                 "name": name,
