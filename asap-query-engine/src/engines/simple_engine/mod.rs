@@ -2342,11 +2342,9 @@ impl SimpleEngine {
     }
 
     /// Collects every bucket in `bucket_map` whose start falls in
-    /// `[window_start, window_end)`, stepping by `step_increment`. Missing
-    /// buckets at a given start are skipped (partial data is okay). Used
-    /// identically by `execute_range_query_pipeline` for both the value
-    /// side and (#583) the keys side — the only difference between the two
-    /// call sites is which map/lookback/bucket-width they pass in.
+    /// `[window_start, window_end)`. Sliding walks by its stored-window
+    /// stride; Tumbling walks by `step_increment`. An incomplete Sliding
+    /// cover is rejected before accumulator sketches are cloned.
     ///
     /// Cost is proportional to `(window_end - window_start) / step_increment`
     /// -- the nominal window width -- not to how many buckets actually exist
@@ -2356,12 +2354,15 @@ impl SimpleEngine {
     /// `[0, current_time)` ("replay from the beginning") -- callers on that
     /// path MUST use `collect_bucket_map_entries_before` instead, never this
     /// (#581 stage E.4 review; see that function's doc for why).
-    fn sum_window(
+    fn window_buckets_for_step(
         bucket_map: &BucketMap,
         window_start: u64,
         window_end: u64,
         step_increment: u64,
-    ) -> Vec<Box<dyn AggregateCore>> {
+        window_type: WindowType,
+        stored_window_size_ms: u64,
+        expected_sliding_window_count: Option<usize>,
+    ) -> Option<Vec<Box<dyn AggregateCore>>> {
         // A zero step never advances `t`, so the loop below would never
         // terminate. This is the single caller-facing guard for that hazard
         // -- callers upstream may also validate their own step sources, but
@@ -2369,19 +2370,43 @@ impl SimpleEngine {
         // on either of them to have done so. Kept active in release builds
         // (assert!, not debug_assert!): a hung query is a production
         // incident, not just a debug-time nicety.
+        let grid_step_ms = if window_type == WindowType::Sliding {
+            stored_window_size_ms
+        } else {
+            step_increment
+        };
         assert!(
-            step_increment > 0,
-            "sum_window: step_increment must be nonzero, or this loop never terminates"
+            grid_step_ms > 0,
+            "window_buckets_for_step: grid step must be nonzero"
         );
-        let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
+        assert_eq!(
+            expected_sliding_window_count.is_some(),
+            window_type == WindowType::Sliding,
+            "only Sliding windows have a completeness requirement"
+        );
+
+        let mut selected_buckets = Vec::new();
+        let mut covered_window_count = 0;
         let mut t = window_start;
         while t < window_end {
-            if let Some(buckets) = bucket_map.get(&t) {
-                window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
+            if let Some(window_buckets) = bucket_map.get(&t) {
+                if !window_buckets.is_empty() {
+                    covered_window_count += 1;
+                    selected_buckets.extend(window_buckets.iter());
+                }
             }
-            t += step_increment;
+            t += grid_step_ms;
         }
-        window_buckets
+        if expected_sliding_window_count.is_some_and(|expected| covered_window_count < expected) {
+            return None;
+        }
+
+        Some(
+            selected_buckets
+                .into_iter()
+                .map(|bucket| bucket.clone_boxed_core())
+                .collect(),
+        )
     }
 
     /// Collects every bucket in `bucket_map` with a start timestamp strictly
@@ -2442,30 +2467,6 @@ impl SimpleEngine {
             .into_iter()
             .map(|(_, b)| b.clone_boxed_core())
             .collect()
-    }
-
-    /// Picks how a step's window is composed from `bucket_map`: Sliding walks
-    /// the non-overlapping stored-window stride `W`; Tumbling walks the
-    /// bucket grid stride. Used identically for values and SetAggregator
-    /// keys. Walking Sliding by its slide `S` would double-count overlapping
-    /// full-window aggregates (#608/#621).
-    ///
-    /// NOT used for `AggregationType::DeltaSetAggregator` keys -- callers on
-    /// that path must call `collect_bucket_map_entries_before` directly
-    /// instead (see its doc comment).
-    fn window_buckets_for_step(
-        bucket_map: &BucketMap,
-        window_start: u64,
-        window_end: u64,
-        step_increment: u64,
-        window_type: WindowType,
-        stored_window_size_ms: u64,
-    ) -> Vec<Box<dyn AggregateCore>> {
-        if window_type == WindowType::Sliding {
-            Self::sum_window(bucket_map, window_start, window_end, stored_window_size_ms)
-        } else {
-            Self::sum_window(bucket_map, window_start, window_end, step_increment)
-        }
     }
 
     /// Execute the range query pipeline.
@@ -2987,27 +2988,27 @@ impl SimpleEngine {
                                 };
                                 let keys_window_start =
                                     keys_window_end.saturating_sub(*keys_lookback_ms);
-                                Self::window_buckets_for_step(
+                                let expected_sliding_window_count =
+                                    (*keys_window_type == WindowType::Sliding).then_some(
+                                        (*keys_lookback_ms / *keys_stored_window_size_ms) as usize,
+                                    );
+                                let Some(keys_window_buckets) = Self::window_buckets_for_step(
                                     keys_bucket_map,
                                     keys_window_start,
                                     keys_window_end,
                                     *keys_tumbling_window_ms,
                                     *keys_window_type,
                                     *keys_stored_window_size_ms,
-                                )
+                                    expected_sliding_window_count,
+                                ) else {
+                                    debug!(
+                                        "Skipping incomplete Sliding key cover at t={}",
+                                        current_time
+                                    );
+                                    continue;
+                                };
+                                keys_window_buckets
                             };
-
-                        if *keys_window_type == WindowType::Sliding {
-                            let expected =
-                                (*keys_lookback_ms / *keys_stored_window_size_ms) as usize;
-                            if keys_window_buckets.len() < expected {
-                                debug!(
-                                    "Skipping incomplete Sliding key cover at t={}",
-                                    current_time
-                                );
-                                continue;
-                            }
-                        }
 
                         if keys_window_buckets.is_empty() {
                             debug!(
@@ -3043,14 +3044,23 @@ impl SimpleEngine {
                 };
                 let window_start = window_end.saturating_sub(lookback_ms);
 
-                let window_buckets = Self::window_buckets_for_step(
+                let expected_sliding_window_count = (window_type == WindowType::Sliding)
+                    .then_some((lookback_ms / context.window_size_ms) as usize);
+                let Some(window_buckets) = Self::window_buckets_for_step(
                     bucket_map,
                     window_start,
                     window_end,
                     tumbling_window_ms,
                     window_type,
                     context.window_size_ms,
-                );
+                    expected_sliding_window_count,
+                ) else {
+                    debug!(
+                        "Skipping incomplete Sliding value cover at t={}",
+                        current_time
+                    );
+                    continue;
+                };
 
                 trace!(
                     current_time,
@@ -3062,17 +3072,6 @@ impl SimpleEngine {
                     selected_bucket_count = window_buckets.len(),
                     "Composed query output window from stored buckets"
                 );
-
-                if window_type == WindowType::Sliding {
-                    let expected = (lookback_ms / context.window_size_ms) as usize;
-                    if window_buckets.len() < expected {
-                        debug!(
-                            "Skipping incomplete Sliding value cover at t={}",
-                            current_time
-                        );
-                        continue;
-                    }
-                }
 
                 if window_buckets.is_empty() {
                     // No data at all for this window - skip sample
