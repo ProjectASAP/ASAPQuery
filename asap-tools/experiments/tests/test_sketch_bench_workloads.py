@@ -6,6 +6,7 @@ the Prometheus semantics. It needs a `clickhouse` binary on PATH (or
 CLICKHOUSE_BINARY) and is skipped otherwise.
 """
 
+import datetime
 import itertools
 import json
 import math
@@ -18,6 +19,7 @@ import tempfile
 import unittest
 from typing import Callable, Dict, List, Tuple
 
+import jinja2
 import yaml
 
 sys.path.insert(
@@ -164,9 +166,41 @@ def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
         "interval_secs": 60,
         "rqes": [],
     }
+    agg = "COUNT(DISTINCT user_id)"
     if capability == "quantile":
         entry["quantile"] = 0.99
+        agg = "QUANTILE(0.99, latency)"
+    group = ", ".join(grouping)
+    entry["sql"] = (
+        f"SELECT {group}, {agg} FROM http WHERE ts BETWEEN "
+        f"DATEADD(s, -{window_secs}, NOW()) AND NOW() GROUP BY {group}"
+    )
     return entry
+
+
+class FlooredEndDatetimeTest(unittest.TestCase):
+    def test_renders_floored_utc_datetime(self):
+        env = jinja2.Environment()
+        for t in (1, 15, 60, 300, 3600):
+            template = env.from_string(sbw.floored_end_datetime(t))
+            for end in (1767229237, 1767229200, 1767225599, 1767232799):
+                with self.subTest(t=t, end=end):
+                    # As the client's TimeRange.end_datetime formats it.
+                    got = template.render(
+                        end_time=end,
+                        end_datetime=datetime.datetime.fromtimestamp(
+                            end, tz=datetime.timezone.utc
+                        ).strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    want = datetime.datetime.fromtimestamp(
+                        end // t * t, tz=datetime.timezone.utc
+                    )
+                    self.assertEqual(got, want.strftime("%Y-%m-%d %H:%M:%S"))
+
+    def test_unfloorable_interval_raises(self):
+        for t in (7, 420, 7200):
+            with self.subTest(t=t), self.assertRaises(ValueError):
+                sbw.floored_end_datetime(t)
 
 
 class ConvertTest(unittest.TestCase):
@@ -215,14 +249,14 @@ class ConvertTest(unittest.TestCase):
                     init,
                 )
                 sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
+                # The table's sql as written, with only NOW() substituted.
+                end = "'" + sbw.floored_end_datetime(60) + "'"
                 with open(os.path.join(sql_dir, "asapquery.sql")) as f:
                     self.assertEqual(
                         f.read(),
                         "-- quantile(0.99, latency) by (service) over 300s\n"
-                        "SELECT service, QUANTILE(0.99, latency) FROM http WHERE ts "
-                        "BETWEEN DATEADD(s, -{{ end_time % 60 + 300 }}, "
-                        "'{{ end_datetime }}') AND DATEADD(s, -{{ end_time % 60 }}, "
-                        "'{{ end_datetime }}') GROUP BY service;\n",
+                        + e2e["queries"][-1]["sql"].replace("NOW()", end)
+                        + ";\n",
                     )
             finally:
                 os.chdir(cwd)
