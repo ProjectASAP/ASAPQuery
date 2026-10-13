@@ -768,3 +768,18 @@ approxbench accuracy runs at 1e8 items):
 
 The trace workloads (Alibaba, Google, with 6h and 24h windows, ASAPQuery
 #812) are still to be rerun on this model.
+
+**End-to-end check (classic, 2026-10-13).** The classic-shared1 asap plan
+(cpu weights, cheapest) was run through ASAPQuery (`--planner saved`, #828),
+with the paced feeder (#840–#843) sending the same data to ASAPQuery,
+Prometheus 2.53 and ClickHouse at 10 samples/s per series. The 46 PromQL
+queries' Prometheus answers equal the ClickHouse SQL (#844) and
+materialized-view (#845) answers. ASAPQuery's exact accumulators match
+ClickHouse to 1e-10, and its DDSketch quantiles stay within alpha. Top-k
+falls short of the estimate: the plan's
+`topk(32, sum_over_time(data[w]))` sketch (CMS rows 3 × cols 1024, estimated
+precision 0.969) measured 0.9375 for two of three data seeds and 0.969–1.0
+for the third. The false positives are light keys whose CMS buckets collide
+with heavy keys in every row. The accuracy curves take the mean over seeds,
+so a config that clears 0.95 on average can miss on a given seed
+(sketch-bench#211).
