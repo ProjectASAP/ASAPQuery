@@ -5,10 +5,13 @@ Contains functions for validating configs, generating controller configs, etc.
 
 import math
 import os
+import re
+import shutil
 import copy
 import yaml
 from typing import Any, Dict, List, Tuple
 
+import hydra.utils
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import constants
@@ -535,6 +538,65 @@ def get_prometheus_data_ingestion_interval_ms(prometheus_config):
         raise ValueError(f"Invalid scrape interval string: {s}")
 
 
+PLANNER_OUTPUT_FILES = ("streaming_config.yaml", "inference_config.yaml")
+
+
+def check_prebuilt_controller_output(src):
+    for name in PLANNER_OUTPUT_FILES:
+        path = os.path.join(src, name)
+        if not os.path.isfile(path):
+            raise ValueError(f"controller.prebuilt_output_dir has no {name}: {path}")
+
+
+def _is_planned(query, planned):
+    """Whether `query` is planned whole, or is arithmetic over planned leaves
+    (the planner splits binary queries into leaves)."""
+    # ponytail: textual check, not a PromQL parse; a leaf that is a substring
+    # of another is removed longest first.
+    for leaf in sorted(planned, key=len, reverse=True):
+        query = query.replace(leaf, "")
+    return re.fullmatch(r"[\s()+\-*/0-9.]*", query) is not None
+
+
+def copy_prebuilt_controller_output(
+    src, dest, controller_input_config, scrape_interval_ms
+):
+    """Replaces `dest` with the planner configs in `src`, after checking they
+    plan every query of `controller_input_config` at this scrape interval."""
+    check_prebuilt_controller_output(src)
+    src_real, dest_real = os.path.realpath(src), os.path.realpath(dest)
+    if os.path.commonpath([src_real, dest_real]) in (src_real, dest_real):
+        raise ValueError(
+            f"controller.prebuilt_output_dir {src} and the experiment's output "
+            f"dir {dest} must not contain one another"
+        )
+    with open(os.path.join(src, "inference_config.yaml")) as f:
+        planned = {q["query"] for q in yaml.safe_load(f)["queries"]}
+    with open(controller_input_config) as f:
+        groups = yaml.safe_load(f)["query_groups"]
+    unplanned = [q for g in groups for q in g["queries"] if not _is_planned(q, planned)]
+    if unplanned:
+        raise ValueError(
+            f"controller.prebuilt_output_dir doesn't plan these queries: {unplanned}"
+        )
+    with open(os.path.join(src, "streaming_config.yaml")) as f:
+        aggregations = yaml.safe_load(f)["aggregations"]
+    bad = [
+        a["aggregationId"]
+        for a in aggregations
+        if a["slideIntervalMs"] % scrape_interval_ms
+    ]
+    if bad:
+        raise ValueError(
+            f"controller.prebuilt_output_dir aggregations {bad} slide off the "
+            f"{scrape_interval_ms} ms scrape interval: planned for another one?"
+        )
+    shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(dest)
+    for name in PLANNER_OUTPUT_FILES:
+        shutil.copy2(os.path.join(src, name), dest)
+
+
 class Args:
     """Helper class to convert Hydra config to argparse-like namespace for backward compatibility."""
 
@@ -605,6 +667,12 @@ class Args:
         # Controller configuration
         self.controller_punting = cfg.controller.punting
         self.controller_auto_discover_labels = cfg.controller.auto_discover_labels
+        self.controller_prebuilt_output_dir = cfg.controller.get("prebuilt_output_dir")
+        if self.controller_prebuilt_output_dir:
+            self.controller_prebuilt_output_dir = hydra.utils.to_absolute_path(
+                self.controller_prebuilt_output_dir
+            )
+            check_prebuilt_controller_output(self.controller_prebuilt_output_dir)
 
         # Aggregate cleanup configuration
         # Valid policies: "circular_buffer", "read_based", "no_cleanup"
