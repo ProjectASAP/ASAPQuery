@@ -983,6 +983,274 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
     }
 }
 
+const EXACT_ROLLUP_METRIC: &str = "exact_rollup_requests";
+
+/// One sample per (job, instance) series in the window ending at 1s.
+const EXACT_ROLLUP_SAMPLES: &[(&str, &str, i64, f64)] = &[
+    ("api", "a", 1_000, 2.0),
+    ("api", "b", 1_000, 3.0),
+    ("api", "c", 1_000, 6.0),
+    ("worker", "a", 1_000, 9.0),
+    ("worker", "b", 1_000, 4.0),
+];
+
+/// A query-time stage over the keyed (instance, job) output.
+fn rollup_stage(
+    operator: asap_types::query_config::QueryTimeAggregationOperator,
+    job_only: bool,
+) -> QueryTimeAggregation {
+    use asap_types::query_config::{QueryTimeGrouping, QueryTimeGroupingMode};
+    let grouping = if job_only {
+        QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::By,
+            labels: vec!["job".to_string()],
+        }
+    } else {
+        QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::All,
+            labels: Vec::new(),
+        }
+    };
+    QueryTimeAggregation {
+        operator,
+        grouping,
+        parameter: None,
+    }
+}
+
+/// The MILP planner's exact roll-up: `query` served from an aggregation
+/// keyed by (instance, job), read as `planned_subquery` at that grouping and
+/// regrouped by `stage`. Checks the instant result at 1s and the range
+/// result's last samples against `expected`, keyed by output label values.
+#[allow(clippy::too_many_arguments)]
+async fn assert_exact_rollup(
+    port: u16,
+    query: &str,
+    aggregation_type: AggregationType,
+    sub_type: &str,
+    planned_subquery: &str,
+    stage: QueryTimeAggregation,
+    samples: &[(&str, &str, i64, f64)],
+    expected: &[(&[&str], f64)],
+) {
+    let metric = EXACT_ROLLUP_METRIC;
+    let series = |job, instance, timestamp_ms, value| {
+        make_timeseries(
+            metric,
+            vec![("job", job), ("instance", instance)],
+            timestamp_ms,
+            value,
+        )
+    };
+    let mut timeseries: Vec<TimeSeries> = samples
+        .iter()
+        .map(|&(job, instance, timestamp_ms, value)| series(job, instance, timestamp_ms, value))
+        .collect();
+    // Later samples on every series close the first windows.
+    let mut closed: Vec<(&str, &str)> = Vec::new();
+    for &(job, instance, _, _) in samples {
+        if !closed.contains(&(job, instance)) {
+            closed.push((job, instance));
+            timeseries.push(series(job, instance, 3_000, 0.0));
+        }
+    }
+    let scenario = NativeDagScenario {
+        port,
+        metric,
+        query,
+        aggregation_configs: vec![make_agg_config_full(
+            29,
+            metric,
+            aggregation_type,
+            sub_type,
+            1_000,
+            0,
+            vec![],
+            vec!["instance", "job"],
+        )],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples: timeseries,
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, query) = scenario
+        .build_engine_with_plan(planned_subquery, vec![stage])
+        .await;
+    let expected: Vec<(Vec<String>, f64)> = expected
+        .iter()
+        .map(|(labels, value)| (labels.iter().map(|l| l.to_string()).collect(), *value))
+        .collect();
+
+    let Some((_, instant)) = engine
+        .handle_query_promql(query.clone(), 1.0)
+        .expect("roll-up should execute locally")
+    else {
+        panic!("roll-up returned no local result");
+    };
+    let QueryResult::Vector(instant) = instant else {
+        panic!("instant query should return a vector");
+    };
+    let mut instant_values: Vec<(Vec<String>, f64)> = instant
+        .values
+        .into_iter()
+        .map(|value| (value.labels.labels, value.value))
+        .collect();
+    instant_values.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(instant_values, expected, "{query} instant");
+
+    let Some((_, range)) = engine
+        .handle_range_query_promql(query.clone(), 1.0, 2.0, 1.0)
+        .expect("roll-up range should execute locally")
+    else {
+        panic!("roll-up range returned no local result");
+    };
+    let QueryResult::Matrix(range) = range else {
+        panic!("range query should return a matrix");
+    };
+    let mut range_values: Vec<(Vec<String>, f64)> = range
+        .values
+        .into_iter()
+        .map(|value| {
+            let sample = value
+                .samples
+                .last()
+                .expect("range result should have a final sample");
+            (value.labels.labels, sample.value)
+        })
+        .collect();
+    range_values.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(range_values, expected, "{query} range");
+}
+
+/// `sum by (job)` from a MultipleSum keyed by (instance, job), summed by
+/// `job` at query time.
+#[tokio::test]
+async fn e2e_exact_rollup_regroups_a_keyed_sum_at_query_time() {
+    use asap_types::query_config::QueryTimeAggregationOperator;
+    assert_exact_rollup(
+        19430,
+        "sum by (job) (exact_rollup_requests)",
+        AggregationType::MultipleSum,
+        "sum",
+        "sum by (instance, job) (exact_rollup_requests)",
+        rollup_stage(QueryTimeAggregationOperator::Sum, true),
+        EXACT_ROLLUP_SAMPLES,
+        &[(&["api"], 11.0), (&["worker"], 13.0)],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_exact_rollup_regroups_a_keyed_min_at_query_time() {
+    use asap_types::query_config::QueryTimeAggregationOperator;
+    assert_exact_rollup(
+        19431,
+        "min by (job) (exact_rollup_requests)",
+        AggregationType::MultipleMinMax,
+        "min",
+        "min by (instance, job) (exact_rollup_requests)",
+        rollup_stage(QueryTimeAggregationOperator::Min, true),
+        EXACT_ROLLUP_SAMPLES,
+        &[(&["api"], 2.0), (&["worker"], 4.0)],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_exact_rollup_regroups_a_keyed_max_at_query_time() {
+    use asap_types::query_config::QueryTimeAggregationOperator;
+    assert_exact_rollup(
+        19432,
+        "max by (job) (exact_rollup_requests)",
+        AggregationType::MultipleMinMax,
+        "max",
+        "max by (instance, job) (exact_rollup_requests)",
+        rollup_stage(QueryTimeAggregationOperator::Max, true),
+        EXACT_ROLLUP_SAMPLES,
+        &[(&["api"], 6.0), (&["worker"], 9.0)],
+    )
+    .await;
+}
+
+/// A coarse count is the sum of the fine counts, read from a keyed count.
+#[tokio::test]
+async fn e2e_exact_rollup_sums_a_keyed_count_at_query_time() {
+    use asap_types::query_config::QueryTimeAggregationOperator;
+    assert_exact_rollup(
+        19433,
+        "count by (job) (exact_rollup_requests)",
+        AggregationType::MultipleSum,
+        "count",
+        "count by (instance, job) (exact_rollup_requests)",
+        rollup_stage(QueryTimeAggregationOperator::Sum, true),
+        EXACT_ROLLUP_SAMPLES,
+        &[(&["api"], 3.0), (&["worker"], 2.0)],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_exact_rollup_sums_a_keyed_count_over_time_at_query_time() {
+    use asap_types::query_config::QueryTimeAggregationOperator;
+    let mut samples = EXACT_ROLLUP_SAMPLES.to_vec();
+    samples.splice(0..0, [("api", "a", 500, 1.0), ("worker", "b", 500, 1.0)]);
+    assert_exact_rollup(
+        19434,
+        "sum by (job) (count_over_time(exact_rollup_requests[1s]))",
+        AggregationType::MultipleSum,
+        "count",
+        "sum by (instance, job) (count_over_time(exact_rollup_requests[1s]))",
+        rollup_stage(QueryTimeAggregationOperator::Sum, true),
+        &samples,
+        &[(&["api"], 4.0), (&["worker"], 3.0)],
+    )
+    .await;
+}
+
+/// `sum without (instance)` regroups the keyed (instance, job) output by a
+/// `without` stage, which keeps `job`.
+#[tokio::test]
+async fn e2e_exact_rollup_regroups_a_keyed_sum_without_a_label_at_query_time() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+    assert_exact_rollup(
+        19436,
+        "sum without (instance) (exact_rollup_requests)",
+        AggregationType::MultipleSum,
+        "sum",
+        "sum by (instance, job) (exact_rollup_requests)",
+        QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Sum,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::Without,
+                labels: vec!["instance".to_string()],
+            },
+            parameter: None,
+        },
+        EXACT_ROLLUP_SAMPLES,
+        &[(&["api"], 11.0), (&["worker"], 13.0)],
+    )
+    .await;
+}
+
+/// A query with no output labels reduces every keyed group into one.
+#[tokio::test]
+async fn e2e_exact_rollup_reduces_a_keyed_sum_to_all_at_query_time() {
+    use asap_types::query_config::QueryTimeAggregationOperator;
+    assert_exact_rollup(
+        19435,
+        "sum(exact_rollup_requests)",
+        AggregationType::MultipleSum,
+        "sum",
+        "sum by (instance, job) (exact_rollup_requests)",
+        rollup_stage(QueryTimeAggregationOperator::Sum, false),
+        EXACT_ROLLUP_SAMPLES,
+        &[(&[], 24.0)],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
     let port = 19402u16;

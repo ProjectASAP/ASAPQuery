@@ -443,13 +443,36 @@ mod tests {
         assert!(err.contains("0 plans match"), "{err}");
     }
 
-    /// The exact sum is a keyed MultipleSum, which the engine doesn't roll up.
+    /// The exact sum is a keyed MultipleSum, so the roll-up reads it at the
+    /// deployment's grouping and sums by `job` at query time.
     #[test]
-    fn refuses_an_exact_sum_roll_up() {
+    fn writes_an_exact_sum_roll_up_as_a_query_time_sum() {
         let mut plan = plans(shared_p50());
         plan["plans"][0]["chosen"][0]["deployment_grouping"] = json!(["job", "label_0"]);
-        let err = refusal(plan, None);
-        assert!(err.contains("merge across groups"), "{err}");
+        let inference = run(plan, None)
+            .unwrap()
+            .to_inference_config(asap_types::enums::QueryLanguage::promql)
+            .unwrap();
+        let query_config = inference
+            .query_configs
+            .iter()
+            .find(|q| q.query == "sum by (job) (data)")
+            .expect("a query_config for the roll-up");
+        assert_eq!(
+            query_config.planned_subquery,
+            "sum by (job, label_0) (data)"
+        );
+        let [stage] = query_config.query_time_aggregations.as_slice() else {
+            panic!("{:?}", query_config.query_time_aggregations);
+        };
+        assert_eq!(
+            serde_json::to_value(stage).unwrap(),
+            json!({
+                "operator": "sum",
+                "grouping": {"mode": "by", "labels": ["job"]},
+                "parameter": null,
+            })
+        );
     }
 
     #[test]

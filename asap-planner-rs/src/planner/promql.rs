@@ -38,7 +38,8 @@ pub struct NestedAggregationPlan {
     pub query_time_aggregations: Vec<QueryTimeAggregation>,
 }
 
-fn aggregation_stage(
+/// The query-time stage that evaluates `aggregate` over its input series.
+pub(crate) fn aggregation_stage(
     aggregate: &promql_parser::parser::AggregateExpr,
 ) -> Option<QueryTimeAggregation> {
     let operator = match aggregate.op.to_string().as_str() {
@@ -114,7 +115,7 @@ fn expr_to_binary_arm(expr: &promql_parser::parser::Expr) -> BinaryArm {
 }
 
 /// Recursively remove outer `Paren` wrappers from an expression.
-fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::Expr {
+pub(crate) fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::Expr {
     if let promql_parser::parser::Expr::Paren(paren) = expr {
         strip_parens(&paren.expr)
     } else {
