@@ -57,6 +57,16 @@ pub enum MilpOutputError {
         raqe: Vec<String>,
         deployment: Vec<String>,
     },
+    #[error(
+        "queries {first:?} and {other:?} share a deployment but need different labels \
+         ({first_labels} vs {other_labels})"
+    )]
+    DeploymentLabelsDisagree {
+        first: String,
+        other: String,
+        first_labels: String,
+        other_labels: String,
+    },
     #[error(transparent)]
     Generator(#[from] ControllerError),
 }
@@ -233,21 +243,25 @@ fn aggregation_config(
         }
     };
 
-    let requirements = &items
+    // A Raqe doesn't carry the labels a keyed sketch is keyed by (a
+    // topk-of-sum heap's inner `sum by` labels), so the solver may share one
+    // deployment between queries that need different keys.
+    let first = items
         .first()
-        .expect("every planned deployment serves a Raqe")
-        .requirements;
-    let mut grouping_labels = KeyByLabelNames::empty();
-    let mut aggregated_labels = KeyByLabelNames::empty();
-    set_subpopulation_labels(
-        requirements.statistics[0],
-        aggregation_type,
-        &requirements.grouping_labels,
-        requirements.topk_by_labels.as_ref(),
-        &mut KeyByLabelNames::empty(),
-        &mut grouping_labels,
-        &mut aggregated_labels,
-    );
+        .expect("every planned deployment serves a Raqe");
+    let (grouping_labels, aggregated_labels) = subpopulation_labels(first, aggregation_type);
+    if let Some(other) = items.iter().find(|item| {
+        subpopulation_labels(item, aggregation_type)
+            != (grouping_labels.clone(), aggregated_labels.clone())
+    }) {
+        let (other_grouping, other_aggregated) = subpopulation_labels(other, aggregation_type);
+        return Err(MilpOutputError::DeploymentLabelsDisagree {
+            first: first.query_strings[0].clone(),
+            other: other.query_strings[0].clone(),
+            first_labels: format!("grouping {grouping_labels:?}, aggregated {aggregated_labels:?}"),
+            other_labels: format!("grouping {other_grouping:?}, aggregated {other_aggregated:?}"),
+        });
+    }
 
     Ok(IntermediateAggConfig {
         aggregation_type,
@@ -271,6 +285,27 @@ fn aggregation_config(
         grouping_labels,
         aggregated_labels,
     })
+}
+
+/// The (grouping, aggregated) labels `item`'s query needs from an aggregation
+/// of `aggregation_type`.
+fn subpopulation_labels(
+    item: &OptimizerItem,
+    aggregation_type: AggregationType,
+) -> (KeyByLabelNames, KeyByLabelNames) {
+    let requirements = &item.requirements;
+    let mut grouping_labels = KeyByLabelNames::empty();
+    let mut aggregated_labels = KeyByLabelNames::empty();
+    set_subpopulation_labels(
+        requirements.statistics[0],
+        aggregation_type,
+        &requirements.grouping_labels,
+        requirements.topk_by_labels.as_ref(),
+        &mut KeyByLabelNames::empty(),
+        &mut grouping_labels,
+        &mut aggregated_labels,
+    );
+    (grouping_labels, aggregated_labels)
 }
 
 fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
@@ -668,6 +703,30 @@ mod tests {
         assert!(
             matches!(&err, MilpOutputError::RollupUnsupported { query: q, raqe, deployment }
                 if q.contains(query) && raqe == &["job"] && deployment == &["instance", "job"]),
+            "{err}"
+        );
+    }
+
+    /// Both are global top-k Raqes on one metric, so the solver may give them
+    /// one deployment, but their heaps are keyed by different labels.
+    #[test]
+    fn topk_of_sum_queries_needing_different_heap_keys_cannot_share_a_deployment() {
+        let by_job = "topk(5, sum by (job) (sum_over_time(http_requests_total[1m])))";
+        let by_instance = "topk(5, sum by (instance) (sum_over_time(http_requests_total[1m])))";
+        let (config, workload, mut solution) =
+            plan(&(group(by_job, 0.9) + &group(by_instance, 0.9)));
+        for raqe in &mut solution.raqes {
+            raqe.deployment = 0;
+        }
+        solution.deployments.truncate(1);
+
+        let err = plan_to_planner_output(&config, &workload, &solution)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&err, MilpOutputError::DeploymentLabelsDisagree { first, other, .. }
+                if [first, other].contains(&&by_job.to_string())
+                    && [first, other].contains(&&by_instance.to_string())),
             "{err}"
         );
     }

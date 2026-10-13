@@ -396,6 +396,11 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
 
     // TopK keeps one heap per `topk by` bucket; its `grouping_labels` is the
     // output label set (every label), which would cost one heap per series.
+    // ponytail: a topk-of-sum heap holds one key per inner `sum by` group, but
+    // the Raqe has no field for those labels, so it is priced from the
+    // bucket grouping's shape. Key count is bounded by the series count, but
+    // accuracy curves measured per series may not match summed values; needs
+    // key labels in sketch-bench's Raqe.
     let grouping_labels: LabelSet = match capability {
         Capability::TopKByValue | Capability::TopKByCount => req
             .topk_by_labels
