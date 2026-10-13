@@ -26,6 +26,10 @@ series' first/last sample, sample times and count (rate, increase). A query
 merges the W/T buckets of its window, plus for PromQL the samples at exactly
 T - W (kept apart in each bucket's `edge` rows), so W must be a multiple of
 T; instant vectors read [T - 1s, T], which is bucket-aligned only when T = 1 s.
+A table with any query the views cannot serve gets no baseline_mv arm (no
+init_mv.sql, MV SQL or _mv config) and a note on stderr naming the queries:
+dropping just those queries would shift the arm's query indices against the
+baseline SQL that labels both arms' results.
 
 Semantics are those of Prometheus 2.53 (the version installation/prometheus
 installs for bare-metal runs), whose windows are closed on both ends: range
@@ -554,23 +558,36 @@ def convert(
     os.makedirs(sql_dir, exist_ok=True)
 
     entries = [(e, query_from_entry(e, metrics)) for e in e2e["queries"]]
-    views = plan_views([q for _, q in entries], metrics)
+    unservable = [describe(e) for e, q in entries if q.window_secs % q.interval_secs]
+    if unservable:
+        print(
+            f"{table_path}: no {BASELINE_MV} arm; its views need windows that "
+            f"are multiples of the interval: {'; '.join(unservable)}",
+            file=sys.stderr,
+        )
+        modes, views = [BASELINE], {}
+    else:
+        modes = [BASELINE, BASELINE_MV]
+        views = plan_views([q for _, q in entries], metrics)
     # Each arm loads data through its own init SQL, so baseline ingest never
     # feeds the views.
     init_paths = {
         BASELINE: os.path.join(sql_dir, "init.sql"),
         BASELINE_MV: os.path.join(sql_dir, "init_mv.sql"),
     }
-    for mode, path in init_paths.items():
+    for mode in modes:
+        path = init_paths[mode]
         with open(path, "w") as f:
             f.write(init_sql(metrics, list(views.values()), mode == BASELINE_MV))
 
     by_interval: Dict[int, Dict[str, List[str]]] = {}
     asapquery: List[str] = []
     for entry, q in entries:
-        files = by_interval.setdefault(q.interval_secs, {BASELINE: [], BASELINE_MV: []})
+        files = by_interval.setdefault(q.interval_secs, {m: [] for m in modes})
         files[BASELINE].append(f"-- {describe(entry)}\n{raw_sql(q, labels)}")
-        files[BASELINE_MV].append(f"-- {describe(entry)}\n{mv_sql(q, views, labels)}")
+        if BASELINE_MV in files:
+            sql = mv_sql(q, views, labels)
+            files[BASELINE_MV].append(f"-- {describe(entry)}\n{sql}")
         if "promql" not in entry:
             asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(q)}")
     if asapquery:
@@ -602,7 +619,8 @@ def convert(
         )
 
     out_paths = []
-    for mode, suffix in [(BASELINE, ""), (BASELINE_MV, "_mv")]:
+    for mode in modes:
+        suffix = "_mv" if mode == BASELINE_MV else ""
         out = {
             "experiment": [{"mode": mode, "server": "clickhouse"}],
             "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],

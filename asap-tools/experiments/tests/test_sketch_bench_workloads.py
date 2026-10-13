@@ -6,6 +6,8 @@ the Prometheus semantics. It needs a `clickhouse` binary on PATH (or
 CLICKHOUSE_BINARY) and is skipped otherwise.
 """
 
+import contextlib
+import io
 import itertools
 import json
 import math
@@ -275,6 +277,42 @@ class ConvertTest(unittest.TestCase):
                         "'{{ end_datetime }}') AND DATEADD(s, -{{ end_time % 60 }}, "
                         "'{{ end_datetime }}') GROUP BY service;\n",
                     )
+            finally:
+                os.chdir(cwd)
+
+    def test_unservable_query_skips_mv_arm(self):
+        # An instant vector at T = 60 s reads [T - 1s, T], not whole buckets.
+        e2e = {
+            "metrics": METRICS,
+            "queries": [
+                {"promql": "sum by (job) (data)", "interval_secs": 60, "rqes": []},
+                {"promql": "sum_over_time(data[1m])", "interval_secs": 60, "rqes": []},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "instant.json")
+            with open(table, "w") as f:
+                json.dump({"workloads": [{"e2e": e2e}]}, f)
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    (path,) = sbw.convert(table, "data.json", 30, 600)
+                self.assertIn("no baseline_mv arm", err.getvalue())
+                self.assertIn("sum by (job) (data)", err.getvalue())
+                with open(path) as f:
+                    cfg = yaml.safe_load(f)
+                self.assertEqual(
+                    cfg["experiment"], [{"mode": "baseline", "server": "clickhouse"}]
+                )
+                (group,) = cfg["query_groups"]
+                self.assertEqual(list(group["sql_file"]), ["baseline"])
+                with open(group["sql_file"]["baseline"]) as f:
+                    self.assertEqual(f.read().count(";"), 2)
+                with open(cfg["dataset"]["init_sql_file"]) as f:
+                    self.assertNotIn("MATERIALIZED VIEW", f.read())
+                sql_dir = os.path.dirname(cfg["dataset"]["init_sql_file"])
+                self.assertFalse(os.path.exists(os.path.join(sql_dir, "init_mv.sql")))
             finally:
                 os.chdir(cwd)
 
