@@ -465,9 +465,7 @@ one process per (sink, metric). It pushes over remote write instead of being
 scraped: in `sketchdb` mode to the query engine's ingest
 (`streaming.remote_write`, which must have `parallelism: 1`), plus Prometheus
 when the mode sets `query_prometheus_too`; in every other mode to Prometheus,
-which then starts with `--web.enable-remote-write-receiver` and a 5 s
-`storage.tsdb.out_of_order_time_window` (a tick's requests are sent
-concurrently, so samples can arrive out of order within a second). All processes
+which then starts with `--web.enable-remote-write-receiver`. All processes
 share the seed and table, so every system gets the same data. Its metrics are
 listed under `metrics` with `exporter: paced_feeder`; Prometheus does not
 forward them to the query engine. Generate a whole config from a sketch-bench

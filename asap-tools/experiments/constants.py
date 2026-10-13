@@ -44,10 +44,6 @@ PROMETHEUS_CONFIG_FILE = "prometheus.yml"
 PROMETHEUS_REMOTE_WRITE_ENDPOINT = "/api/v1/write"
 # Lets Prometheus accept samples pushed to PROMETHEUS_REMOTE_WRITE_ENDPOINT.
 PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG = "--web.enable-remote-write-receiver"
-# The paced feeder sends a tick's requests concurrently, so a series' samples
-# can arrive out of order within that second; Prometheus rejects them without
-# an out-of-order window.
-PROMETHEUS_OUT_OF_ORDER_TIME_WINDOW = "5s"
 HTTP_READINESS_CURL_TIMEOUT_SECONDS = 5
 QUERY_ENGINE_RUNTIME_INFO_ENDPOINT = "/api/v1/status/runtimeinfo"
 

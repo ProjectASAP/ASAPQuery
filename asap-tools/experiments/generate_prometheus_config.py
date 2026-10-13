@@ -4,9 +4,7 @@ import shutil
 import argparse
 from omegaconf import DictConfig
 
-import constants
 import experiment_utils
-from experiment_utils.services.paced_feeder import PACED_FEEDER_EXPORTER
 from utils import get_node_range
 
 
@@ -159,13 +157,6 @@ def main(args, experiment_config=None):
 
     if exporter_config is None:
         raise ValueError("Invalid exporter config: {}".format(rejection_reason))
-
-    if PACED_FEEDER_EXPORTER in exporter_config["exporter_list"]:
-        config["storage"] = {
-            "tsdb": {
-                "out_of_order_time_window": constants.PROMETHEUS_OUT_OF_ORDER_TIME_WINDOW
-            }
-        }
 
     # add section for "scrape_configs"
     config["scrape_configs"] = []
@@ -446,6 +437,7 @@ def main(args, experiment_config=None):
             config["remote_write"].append(remote_write_config)
 
     # Write prometheus config to output_dir
+    import constants
 
     output_file = os.path.join(args.output_dir, constants.PROMETHEUS_CONFIG_FILE)
     os.makedirs(args.output_dir, exist_ok=True)
