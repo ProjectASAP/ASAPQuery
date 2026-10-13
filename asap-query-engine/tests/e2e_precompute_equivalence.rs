@@ -455,6 +455,61 @@ async fn e2e_nested_topk_executes_after_its_planned_sum_anchor() {
 }
 
 #[tokio::test]
+async fn e2e_topk_of_sum_ranks_groups_from_one_planned_heap() {
+    let metric = "topk_of_sum_requests";
+    let query = "topk(1, sum by (job) (sum_over_time(topk_of_sum_requests[1s])))";
+    let (streaming_config, inference_config) = plan_promql_query(
+        metric,
+        vec!["instance".to_string(), "job".to_string()],
+        query,
+        1_000,
+    );
+    let heaps: Vec<_> = streaming_config
+        .get_all_aggregation_configs()
+        .values()
+        .map(|config| (config.aggregation_type, config.aggregated_labels.clone()))
+        .collect();
+    assert_eq!(
+        heaps,
+        vec![(
+            AggregationType::CountMinSketchWithHeap,
+            KeyByLabelNames::new(vec!["job".to_string()])
+        )]
+    );
+
+    // The top series is worker's `c` (4), but the top job is api (2 + 3).
+    let samples = vec![
+        make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 1_000, 2.0),
+        make_timeseries(metric, vec![("job", "api"), ("instance", "b")], 1_000, 3.0),
+        make_timeseries(
+            metric,
+            vec![("job", "worker"), ("instance", "c")],
+            1_000,
+            4.0,
+        ),
+        make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 3_000, 0.0),
+        make_timeseries(
+            metric,
+            vec![("job", "worker"), ("instance", "c")],
+            3_000,
+            0.0,
+        ),
+    ];
+    let engine =
+        build_engine_from_configs(19429, streaming_config, inference_config, samples, 1_000).await;
+
+    let Some((_, QueryResult::Vector(vector))) = engine
+        .handle_query_promql(query.to_string(), 1.0)
+        .expect("topk of sum should execute natively")
+    else {
+        panic!("topk of sum should return an instant vector");
+    };
+    assert_eq!(vector.values.len(), 1, "result: {:?}", vector.values);
+    assert_eq!(vector.values[0].labels.labels, vec!["api"]);
+    assert_eq!(vector.values[0].value, 5.0);
+}
+
+#[tokio::test]
 async fn e2e_nested_aggregation_preserves_plain_topk_labels() {
     use asap_types::query_config::{
         QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,

@@ -561,6 +561,8 @@ impl SimpleEngine {
             spatial_pattern("generic", &spatial_pattern_blocks),
         ];
         controller_patterns.extend(one_temporal_one_spatial_collapsable_patterns);
+        controller_patterns
+            .extend(promql_utilities::query_logics::parsing::build_topk_of_sum_patterns());
 
         Self {
             store,
