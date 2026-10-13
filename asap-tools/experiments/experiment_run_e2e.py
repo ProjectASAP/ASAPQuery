@@ -28,6 +28,7 @@ from experiment_utils.services import (
     PACED_FEEDER_EXPORTER,
     PacedFeederService,
     check_paced_feeder_config,
+    paced_feeder_min_duration_secs,
     paced_feeder_sinks,
 )
 from experiment_utils.services.misc import DiscoveryBackend
@@ -204,8 +205,10 @@ def main(cfg: DictConfig):
             paced_feeder_config,
             modes=list(modes_by_name.values()),
             parallelism=args.parallelism,
-            min_feed_secs=(0 if skip_querying else args.steady_state_wait)
-            + minimum_experiment_running_time,
+            min_feed_secs=paced_feeder_min_duration_secs(
+                0 if skip_querying else args.steady_state_wait,
+                minimum_experiment_running_time,
+            ),
         )
         paced_feeder_service = PacedFeederService(provider, args)
 

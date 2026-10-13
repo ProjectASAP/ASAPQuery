@@ -38,6 +38,7 @@ from .paced_feeder import (
     PACED_FEEDER_EXPORTER,
     PacedFeederService,
     check_paced_feeder_config,
+    paced_feeder_min_duration_secs,
     paced_feeder_sinks,
 )
 from .clickhouse_service import ClickHouseService, ClickHouseDataLoaderService
@@ -164,5 +165,6 @@ __all__ = [
     "PACED_FEEDER_EXPORTER",
     "PacedFeederService",
     "check_paced_feeder_config",
+    "paced_feeder_min_duration_secs",
     "paced_feeder_sinks",
 ]

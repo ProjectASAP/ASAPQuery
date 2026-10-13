@@ -152,6 +152,12 @@ class BuildConfigTest(unittest.TestCase):
             group["queries"],
             ["SELECT dst_subnet, uniq(src_ip) FROM flows GROUP BY dst_subnet"],
         )
+        # The client refuses to render {{ end_time }} templates without a
+        # window; the SQL carries its own, so 0. PromQL groups have none.
+        self.assertEqual(group["time_window_seconds"], 0)
+        self.assertNotIn(
+            "time_window_seconds", config["experiment_params"]["query_groups"][0]
+        )
         self.assertFalse(any("structured" in n for n in notes))
         # The records metric goes to ASAPQuery only: fed, but no baseline
         # mode and not under `metrics`.
@@ -167,6 +173,17 @@ class BuildConfigTest(unittest.TestCase):
         self.assertIn(
             "no baseline mode: records metrics ['flows'] go to ASAPQuery only", notes
         )
+
+    def test_records_rate_only_with_records_metrics(self):
+        sql = os.path.join(self.tmp.name, "multigroup.sql")
+        with open(sql, "w") as f:
+            f.write("SELECT 1;\n")
+        config, _ = self.build(sql_queries_file=sql, records_per_sec=1000)
+        feeder = config["experiment_params"]["exporters"]["exporter_list"]
+        self.assertEqual(feeder["paced_feeder"]["records_per_sec"], 1000)
+        config, _ = self.build(records_per_sec=1000)
+        feeder = config["experiment_params"]["exporters"]["exporter_list"]
+        self.assertNotIn("records_per_sec", feeder["paced_feeder"])
 
     def test_sql_file_must_match_the_structured_queries(self):
         sql = os.path.join(self.tmp.name, "multigroup.sql")

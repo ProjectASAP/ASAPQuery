@@ -486,12 +486,16 @@ table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
 - **Example**: `42`
 
 #### `experiment_params.exporters.exporter_list.paced_feeder.duration_secs` (int, required)
-- **Description**: Seconds of data to send. Must be at least `flow.steady_state_wait` plus the query groups' running time
+- **Description**: Seconds of data to send. Must be at least the feeder's startup check (7 s) plus `flow.steady_state_wait` plus the query groups' running time
 - **Example**: `4000`
 
 #### `experiment_params.exporters.exporter_list.paced_feeder.samples_per_sec` (int, optional)
-- **Description**: Overrides the table's `samples_per_sec_per_series`
+- **Description**: Overrides the table's `samples_per_sec_per_series` (gauge and counter metrics)
 - **Example**: `20`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.records_per_sec` (int, optional)
+- **Description**: Overrides the table's `records_per_sec` (records metrics)
+- **Example**: `20000`
 
 #### `experiment_params.exporters.exporter_list.paced_feeder.extra_flags` (string, optional)
 - **Description**: Appended to every feeder command line

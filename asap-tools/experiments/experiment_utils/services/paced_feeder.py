@@ -57,6 +57,23 @@ def feeds_prometheus(mode: Dict[str, Any]) -> bool:
     )
 
 
+def paced_feeder_min_duration_secs(
+    steady_state_wait: float, query_running_secs: float
+) -> float:
+    """Seconds of data that last until the final query: queries end at most
+    startup check + steady_state_wait + the query groups' running time after
+    launch, and the data starts PACED_FEEDER_START_LEAD_SECS after launch (not
+    subtracted, for slack)."""
+    return PACED_FEEDER_STARTUP_CHECK_SECS + steady_state_wait + query_running_secs
+
+
+def table_metric_types(workload_table: str) -> Dict[str, str]:
+    """Metric name -> type in the table's `workloads[0].e2e.metrics`."""
+    with open(workload_table) as f:
+        (workload,) = json.load(f)["workloads"]
+    return {name: m["type"] for name, m in workload["e2e"]["metrics"].items()}
+
+
 def check_paced_feeder_config(
     config: Dict[str, Any],
     modes: List[Dict[str, Any]],
@@ -67,16 +84,14 @@ def check_paced_feeder_config(
     one sending records to Prometheus, or one that stops sending before the
     queries end."""
     prometheus_modes = [m["mode"] for m in modes if feeds_prometheus(m)]
-    with open(config["workload_table"]) as f:
-        (workload,) = json.load(f)["workloads"]
-    table_metrics = workload["e2e"]["metrics"]
+    table_metrics = table_metric_types(config["workload_table"])
     for metric in config["metrics"]:
         if metric not in table_metrics:
             raise ValueError(
                 f"paced_feeder metric {metric!r} is not in "
                 f"{config['workload_table']} (has {sorted(table_metrics)})"
             )
-        metric_type = table_metrics[metric]["type"]
+        metric_type = table_metrics[metric]
         if metric_type == RECORDS_METRIC_TYPE:
             if prometheus_modes:
                 raise ValueError(
@@ -96,7 +111,8 @@ def check_paced_feeder_config(
         raise ValueError(
             f"paced_feeder.duration_secs={config['duration_secs']} ends before the "
             f"queries do: needs at least {min_feed_secs} "
-            "(flow.steady_state_wait + the query groups' running time)"
+            "(feeder startup + flow.steady_state_wait + the query groups' "
+            "running time)"
         )
 
 
@@ -121,6 +137,7 @@ def paced_feeder_command(
     workload_table: str,
     url: str,
     metric: str,
+    metric_type: str,
     start_ms: int,
     stats_out: str,
 ) -> str:
@@ -130,7 +147,11 @@ def paced_feeder_command(
         f" --seed {config['seed']} --duration-secs {config['duration_secs']}"
         f" --start-ms {start_ms} --stats-out {stats_out}"
     )
-    if config.get("samples_per_sec") is not None:
+    # The feeder refuses the other kind's rate flag.
+    if metric_type == RECORDS_METRIC_TYPE:
+        if config.get("records_per_sec") is not None:
+            cmd += f" --records-per-sec {config['records_per_sec']}"
+    elif config.get("samples_per_sec") is not None:
         cmd += f" --samples-per-sec {config['samples_per_sec']}"
     if config.get("extra_flags"):
         cmd += f" {config['extra_flags']}"
@@ -161,9 +182,7 @@ class PacedFeederService(BaseService):
         **kwargs,
     ) -> None:
         output_dir = os.path.join(experiment_output_dir, "paced_feeder_output")
-        # One shared event-time origin for every process of this mode.
-        start_ms = (math.ceil(time.time()) + PACED_FEEDER_START_LEAD_SECS) * 1000
-
+        metric_types = table_metric_types(config["workload_table"])
         jobs = [(sink, metric) for sink in sinks for metric in config["metrics"]]
         job_nodes = [
             self.target_nodes[i % len(self.target_nodes)] for i in range(len(jobs))
@@ -184,6 +203,9 @@ class PacedFeederService(BaseService):
                 self.provider, config["workload_table"], output_dir, node_idx
             )
 
+        # One shared event-time origin for every process of this mode, taken
+        # after the SSH prep above so the lead covers only the launches.
+        start_ms = (math.ceil(time.time()) + PACED_FEEDER_START_LEAD_SECS) * 1000
         node_cmds: List[Tuple[int, str]] = []
         for node_idx, (sink, metric) in zip(job_nodes, jobs):
             name = f"{sink}_{metric}"
@@ -192,6 +214,7 @@ class PacedFeederService(BaseService):
                 workload_table,
                 sinks[sink],
                 metric,
+                metric_types[metric],
                 start_ms,
                 os.path.join(output_dir, f"{name}_stats.json"),
             )

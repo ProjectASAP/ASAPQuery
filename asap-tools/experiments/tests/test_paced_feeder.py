@@ -21,8 +21,11 @@ from experiment_utils.core import (
 from experiment_utils.services import create_prometheus_service
 from experiment_utils.services.docker_prometheus import DockerPrometheusService
 from experiment_utils.services.paced_feeder import (
+    PACED_FEEDER_START_LEAD_SECS,
+    PACED_FEEDER_STARTUP_CHECK_SECS,
     PacedFeederService,
     check_paced_feeder_config,
+    paced_feeder_min_duration_secs,
     paced_feeder_command,
     paced_feeder_sinks,
 )
@@ -88,6 +91,7 @@ class PacedFeederCommandTest(unittest.TestCase):
             "/out/table.json",
             QE_URL,
             "data",
+            "gauge",
             1700000005000,
             "/out/query_engine_data_stats.json",
         )
@@ -105,10 +109,27 @@ class PacedFeederCommandTest(unittest.TestCase):
             "/t",
             QE_URL,
             "data",
+            "gauge",
             0,
             "/s",
         )
         self.assertTrue(cmd.endswith(" --samples-per-sec 20 --concurrency 4"))
+
+    def test_each_metric_gets_its_own_kind_of_rate(self):
+        # The feeder exits on --samples-per-sec for a records metric (and on
+        # --records-per-sec for a gauge), which the startup check would only
+        # report as a dead process.
+        config = feeder_config("/t", samples_per_sec=20, records_per_sec=1000)
+
+        def rate_flags(metric, metric_type):
+            cmd = paced_feeder_command(
+                config, "/t", QE_URL, metric, metric_type, 0, "/s"
+            )
+            return [f for f in cmd.split() if f.endswith("-per-sec")]
+
+        self.assertEqual(rate_flags("data", "gauge"), ["--samples-per-sec"])
+        self.assertEqual(rate_flags("data_total", "counter"), ["--samples-per-sec"])
+        self.assertEqual(rate_flags("flows", "records"), ["--records-per-sec"])
 
 
 class PacedFeederSinksTest(unittest.TestCase):
@@ -183,6 +204,18 @@ class CheckPacedFeederConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least 601"):
             check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 1, 601)
 
+    def test_duration_covers_startup_wait_and_queries(self):
+        # 60 s steady_state_wait and 533 s of queries: the feeder's startup
+        # check comes on top, so 600 s is exactly enough and 599 s is not.
+        min_secs = paced_feeder_min_duration_secs(60, 533)
+        self.assertEqual(min_secs, PACED_FEEDER_STARTUP_CHECK_SECS + 60 + 533)
+        self.assertEqual(min_secs, 600)
+        check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 1, min_secs)
+        with self.assertRaisesRegex(ValueError, "at least 600"):
+            check_paced_feeder_config(
+                feeder_config(self.table, duration_secs=599), BOTH_MODES, 1, min_secs
+            )
+
     def test_missing_keys_rejected_with_the_other_exporters(self):
         params = OmegaConf.create(
             {
@@ -197,10 +230,15 @@ class CheckPacedFeederConfigTest(unittest.TestCase):
         self.assertIn("duration_secs", reason)
 
 
+# Fake seconds each SSH prep step (binary check, table copy) takes.
+PREP_SECS = 10
+
+
 class RecordingProvider:
     def __init__(self, running_count):
         self.commands = []
         self.running_count = running_count
+        self.clock = 1700000000.0
 
     def get_home_dir(self):
         return "/home/u"
@@ -210,6 +248,8 @@ class RecordingProvider:
 
     def execute_command(self, node_idx, cmd, **kwargs):
         self.commands.append((node_idx, cmd))
+        if cmd.startswith("test -x"):
+            self.clock += PREP_SECS
         returncode = 0
         if cmd.startswith("pgrep"):
             returncode = 0 if cmd.endswith(f"-qx {self.running_count}") else 1
@@ -225,22 +265,64 @@ class Args:
 
 
 class PacedFeederServiceStartTest(unittest.TestCase):
-    def start(self, running_count):
+    def start(self, running_count, sinks=None, **config_overrides):
         provider = RecordingProvider(running_count)
+        self.provider = provider
         service = PacedFeederService(provider, Args())
+
+        def rsync(*args):
+            provider.clock += PREP_SECS
+            return "/exp/paced_feeder_output/table.json"
+
         with tempfile.TemporaryDirectory() as local_dir, mock.patch(
             "experiment_utils.services.paced_feeder.time.sleep"
         ), mock.patch(
+            "experiment_utils.services.paced_feeder.time.time",
+            lambda: provider.clock,
+        ), mock.patch(
             "experiment_utils.services.paced_feeder.sync.rsync_dataset_file",
-            return_value="/exp/paced_feeder_output/table.json",
+            side_effect=rsync,
         ):
             service.start(
-                config=feeder_config("/local/table.json"),
-                sinks={"query_engine": QE_URL, "prometheus": PROM_URL},
+                config=feeder_config(write_table(local_dir), **config_overrides),
+                sinks=sinks or {"query_engine": QE_URL, "prometheus": PROM_URL},
                 experiment_output_dir="/exp",
                 local_experiment_dir=local_dir,
             )
         return provider.commands
+
+    def test_start_time_leads_the_launches_not_the_prep(self):
+        # The SSH prep (2 nodes x binary check + table copy) takes 40 fake
+        # seconds; the shared start must still be the lead after it.
+        commands = self.start(running_count=2)
+        start_secs = {
+            int(c.split(" --start-ms ")[1].split()[0]) / 1000
+            for _, c in commands
+            if "--sink" in c
+        }
+        self.assertEqual(
+            start_secs, {1700000000 + 4 * PREP_SECS + PACED_FEEDER_START_LEAD_SECS}
+        )
+
+    def test_records_and_gauge_processes_get_their_rate_flags(self):
+        commands = self.start(
+            running_count=1,
+            sinks={"query_engine": QE_URL},
+            metrics=["data", "flows"],
+            samples_per_sec=20,
+            records_per_sec=1000,
+        )
+        rate_flags = {
+            c.split(" --metric ")[1].split()[0]: [
+                f for f in c.split() if f.endswith("-per-sec")
+            ]
+            for _, c in commands
+            if "--sink" in c
+        }
+        self.assertEqual(
+            rate_flags,
+            {"data": ["--samples-per-sec"], "flows": ["--records-per-sec"]},
+        )
 
     def test_one_process_per_sink_and_metric_spread_over_workers(self):
         commands = self.start(running_count=2)

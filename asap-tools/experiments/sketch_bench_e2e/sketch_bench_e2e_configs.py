@@ -86,6 +86,7 @@ def build_config(
     query_time_offset_secs: int = DEFAULT_QUERY_TIME_OFFSET_SECS,
     feeder_duration_secs: Optional[int] = None,
     samples_per_sec: Optional[int] = None,
+    records_per_sec: Optional[int] = None,
     prebuilt_output_dir: Optional[str] = None,
     sql_queries_file: Optional[str] = None,
 ) -> Tuple[dict, List[str]]:
@@ -113,7 +114,12 @@ def build_config(
         sql = [(q["interval_secs"], s) for q, s in zip(structured, statements)]
 
     query_groups = []
-    for queries_by_interval in (by_interval(promql), by_interval(sql)):
+    for queries_by_interval, extra in (
+        (by_interval(promql), {}),
+        # The SQL templates read only {{ end_time }} / {{ end_datetime }} (the
+        # window is in the SQL); the client requires a window to render them.
+        (by_interval(sql), {"time_window_seconds": 0}),
+    ):
         for interval_secs, queries in queries_by_interval.items():
             if query_duration_secs < interval_secs:
                 raise ValueError(
@@ -131,6 +137,7 @@ def build_config(
                         "query_time_offset": query_time_offset_secs,
                         "align_to_interval": True,
                     },
+                    **extra,
                 }
             )
     if not query_groups:
@@ -169,6 +176,8 @@ def build_config(
     }
     if samples_per_sec is not None:
         feeder["samples_per_sec"] = samples_per_sec
+    if records_per_sec is not None and records_metrics:
+        feeder["records_per_sec"] = records_per_sec
 
     modes = [SKETCHDB_MODE]
     if records_metrics:
@@ -231,6 +240,7 @@ def main() -> None:
         help=f"default: starting delay + query duration + {FEEDER_SLACK_SECS}",
     )
     parser.add_argument("--samples-per-sec", type=int)
+    parser.add_argument("--records-per-sec", type=int)
     parser.add_argument("--prebuilt-output-dir")
     parser.add_argument("--sql-queries")
     parser.add_argument("--output", help="default: <output dir>/<table stem>.yaml")
@@ -244,6 +254,7 @@ def main() -> None:
         query_time_offset_secs=args.query_time_offset_secs,
         feeder_duration_secs=args.feeder_duration_secs,
         samples_per_sec=args.samples_per_sec,
+        records_per_sec=args.records_per_sec,
         prebuilt_output_dir=args.prebuilt_output_dir,
         sql_queries_file=args.sql_queries,
     )
