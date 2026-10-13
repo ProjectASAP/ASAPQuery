@@ -861,7 +861,7 @@ mod tests {
         }
         solution.deployments.truncate(1);
 
-        let err = plan_to_planner_output(&config, &workload, &solution)
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()
             .unwrap();
         assert!(
