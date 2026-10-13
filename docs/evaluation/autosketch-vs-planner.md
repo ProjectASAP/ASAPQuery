@@ -665,6 +665,14 @@ the full analysis are in sketch-bench #210,
   **All** is classic plus multi-grouping (mixed + multi-grouping).
 - **Inputs.** KLL memory is asap_sketchlib's real allocation (#192), and the
   cost table is re-measured.
+- **Templates 7 and 9 dropped (sketch-bench #210).** `sum by (job)
+  (rate(data_total[w]))` and `topk(32, sum by (label_0) (rate(data_total[w])))`
+  aggregate counter rates across series. ASAPQuery's engine would need each
+  series' previous counter value to turn samples into increments before
+  summing them by `job` or feeding a CMS, so both are removed from the
+  evaluation. Template 6 (per-series `rate`) stays. Template 2's end-to-end
+  PromQL is `topk(32, sum_over_time(data[w]))`: `label_0` identifies a series,
+  so `sum by (label_0)` only dropped `job`, and the RQE is unchanged.
 
 **Version 1**, the cheapest plan (CPU only in vCPU; Fargate in $/hour), and
 each method's cost at AutoSketch's latency (1015 ms with the classic
