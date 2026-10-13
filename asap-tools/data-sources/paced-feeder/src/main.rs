@@ -314,16 +314,23 @@ fn verify_facts(workload: &Workload) -> Result<bool> {
         ok &= print_label_facts(&metric.labels, &metric.series);
     }
     for metric in &workload.records {
-        // Every combination of label values a record can have.
-        let domain = table::series_labels(&metric.labels)?;
-        println!(
-            "{}: {} records/s, {} label combinations",
-            metric.name,
-            metric.records_per_sec,
-            domain.len()
-        );
-        ok &= print_label_facts(&metric.labels, &domain);
-        let report = metric.share_checks(records::SHARE_SAMPLE_RECORDS);
+        let n = records::SHARE_SAMPLE_RECORDS;
+        println!("{}: {} records/s", metric.name, metric.records_per_sec);
+        println!("  label-value tuples among {n} records");
+        println!("  {:<40} {:>12} {:>12}", "labels", "possible", "seen");
+        for fact in metric.label_coverage(n) {
+            // Every tuple a record has is possible; skew leaves some unseen.
+            let holds = fact.actual <= fact.expected;
+            ok &= holds;
+            println!(
+                "  {:<40} {:>12} {:>12}{}",
+                fact.labels.join(","),
+                fact.expected,
+                fact.actual,
+                if holds { "" } else { "  MISMATCH" }
+            );
+        }
+        let report = metric.share_checks(n);
         println!(
             "  shares of {} records (tolerance {} standard errors)",
             report.records,

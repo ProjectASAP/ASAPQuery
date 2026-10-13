@@ -333,7 +333,7 @@ pub fn facts(labels: &[LabelSpec], series: &[Vec<String>]) -> Vec<Fact> {
 /// The product of the cardinalities of `subset` and every ancestor of its
 /// labels: a child value names its parent, so grouping by a child groups by
 /// its ancestors too.
-fn closed_cardinality(labels: &[LabelSpec], subset: &[usize]) -> u64 {
+pub fn closed_cardinality(labels: &[LabelSpec], subset: &[usize]) -> u64 {
     let mut closed = HashSet::new();
     let mut todo: Vec<usize> = subset.to_vec();
     while let Some(i) = todo.pop() {

@@ -120,9 +120,10 @@ name), `n` and the draw, so records match sketch-bench's `label_shares()`
 sending anything: for every non-empty subset of a metric's labels it prints
 the expected number of distinct label-value tuples (the product of the
 cardinalities of the subset plus every label's `child_of` ancestors) and the
-number among the generated series (for records metrics, among all label-value
-combinations a record can have), and exits non-zero if any differ. For records
-metrics it also draws records `0..1e6` and compares each label's three
+number among the generated series, and exits non-zero if any differ. For
+records metrics it draws records `0..1e6`, prints how many of the possible
+tuples of each subset they hold (skew leaves rare ones unseen; more than
+possible fails), and compares each label's three
 heaviest values' shares (a child's index pooled over parents, i.e. its share
 given the parent), the burst value's share and the share of burst records with
 `label_shares()`; a share fails if it is off by more than 5 standard errors,
@@ -139,8 +140,9 @@ data_total: 10000 series
   …
 
 $ paced_feeder --workload-table synthetic-templatesmultigroup-shared1.json --verify-facts
-flows: 4000000 records/s, 3000000 label combinations
-  labels                                       expected    generated
+flows: 4000000 records/s
+  label-value tuples among 1000000 records
+  labels                                       possible         seen
   dst_subnet                                       1000         1000
   …
   shares of 1000000 records (tolerance 5 standard errors)
@@ -151,7 +153,7 @@ flows: 4000000 records/s, 3000000 label combinations
   …
   burst        records                         0.05000    0.05029    0.00109
   burst keys: 9938 distinct of 10000
-http: 2000000 records/s, 10000 label combinations
+http: 2000000 records/s
   …
   endpoint     *.0 (given service)             0.29841    0.29855    0.00229
   …

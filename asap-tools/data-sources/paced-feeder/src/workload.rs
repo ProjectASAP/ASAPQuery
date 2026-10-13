@@ -73,8 +73,7 @@ pub struct Metric {
     pub seed: u64,
 }
 
-/// Gauge and counter `metrics`, or `records` metrics, never both: they have
-/// different sub-second slots.
+/// Gauge and counter `metrics` and `records` metrics, sent by one feeder.
 #[derive(Debug, Clone)]
 pub struct Workload {
     /// Samples per second per series of `metrics`; unused for `records`.

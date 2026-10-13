@@ -27,7 +27,7 @@
 //!   record's value of `L` is its first one (`0`, or `0.0` for a child: the
 //!   heaviest). Scaling keeps the tail index `a`.
 
-use crate::table::{fnv1a, is_identifier, label_parents};
+use crate::table::{closed_cardinality, fnv1a, is_identifier, label_parents, Fact};
 use crate::workload::{splitmix64, unit_uniform, LabelSpec};
 use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
@@ -45,6 +45,9 @@ pub const PARETO_SCALE: f64 = 1_000.0;
 pub const SCALE_RANGE: [f64; 2] = [1.0, 10.0];
 /// Keys are sent as `Float64`, which holds integers exactly up to 2^53.
 const MAX_KEY: u64 = 1 << 53;
+/// The most values a Zipf draws from (a label's values or a field's keys): it
+/// keeps a CDF entry and a `u32` guide entry per value, 1.2 GB at this cap.
+pub const MAX_ZIPF_VALUES: u64 = 100_000_000;
 /// The facts check counts shares over this many records.
 pub const SHARE_SAMPLE_RECORDS: u64 = 1_000_000;
 /// A share's check fails if it is off by more than this many standard errors
@@ -113,6 +116,7 @@ pub fn zipf_shares(n: u64, theta: f64) -> Vec<f64> {
 
 impl Zipf {
     pub fn new(n: u64, theta: f64) -> Self {
+        assert!(n <= MAX_ZIPF_VALUES, "a Zipf over {n} values");
         let mut cdf: Vec<f64> = zipf_shares(n, theta)
             .into_iter()
             .scan(0.0, |sum, p| {
@@ -231,9 +235,10 @@ impl RecordMetric {
                 .with_context(|| format!("label `{}` needs a `skew`", label.name))?;
             ensure!(skew >= 0.0, "label `{}`: skew must be ≥ 0", label.name);
             ensure!(
-                label.cardinality <= u64::from(u32::MAX),
-                "label `{}`: too many values",
-                label.name
+                label.cardinality <= MAX_ZIPF_VALUES,
+                "label `{}`: cardinality {} is over the {MAX_ZIPF_VALUES} values a Zipf draws from",
+                label.name,
+                label.cardinality
             );
             label_zipfs.push(Zipf::new(label.cardinality, skew));
         }
@@ -259,8 +264,8 @@ impl RecordMetric {
                 } => {
                     ensure!(theta >= 0.0, "value `{field}`: zipf must be ≥ 0");
                     ensure!(
-                        keys > 0 && keys <= MAX_KEY,
-                        "value `{field}`: keys must be in [1, 2^53]"
+                        keys > 0 && keys <= MAX_ZIPF_VALUES,
+                        "value `{field}`: keys must be in [1, {MAX_ZIPF_VALUES}], the values a Zipf draws from"
                     );
                     if let Some(b) = field_burst {
                         ensure!(burst.is_none(), "at most one value may have a burst");
@@ -436,6 +441,42 @@ impl RecordMetric {
             shares[b.value as usize] += b.share;
         }
         shares
+    }
+
+    /// For every non-empty subset of the labels, the number of label-value
+    /// tuples a record can have (as for series: closed under `child_of`) and
+    /// the distinct tuples among records `0..n`. A child's value index names
+    /// its parent, so the tuples need not hold the ancestors.
+    pub fn label_coverage(&self, n: u64) -> Vec<Fact> {
+        let num_labels = self.labels.len();
+        assert!(
+            num_labels < 32,
+            "too many labels to enumerate their subsets"
+        );
+        let (mut labels, mut values) = (vec![0u32; num_labels], vec![0.0; self.fields.len()]);
+        let mut drawn = Vec::with_capacity(n as usize * num_labels);
+        for index in 0..n {
+            self.record(index, &mut labels, &mut values);
+            drawn.extend_from_slice(&labels);
+        }
+        (1u32..1 << num_labels)
+            .map(|mask| {
+                let subset: Vec<usize> = (0..num_labels).filter(|i| mask & (1 << i) != 0).collect();
+                let actual = drawn
+                    .chunks(num_labels)
+                    .map(|record| subset.iter().map(|&i| record[i]).collect::<Vec<u32>>())
+                    .collect::<HashSet<_>>()
+                    .len() as u64;
+                Fact {
+                    labels: subset
+                        .iter()
+                        .map(|&i| self.labels[i].name.clone())
+                        .collect(),
+                    expected: closed_cardinality(&self.labels, &subset),
+                    actual,
+                }
+            })
+            .collect()
     }
 
     /// The share checks of the facts check over records `0..n`: each label's
@@ -815,6 +856,27 @@ pub mod tests {
     }
 
     #[test]
+    fn label_coverage_counts_distinct_tuples_within_the_domain() {
+        let coverage = metric("http", &http_spec()).label_coverage(200_000);
+        assert_eq!(coverage.len(), 15);
+        let by_labels = |names: &str| {
+            let fact = coverage
+                .iter()
+                .find(|f| f.labels.join(",") == names)
+                .unwrap();
+            (fact.expected, fact.actual)
+        };
+        // Small domains are covered; an endpoint names its service.
+        assert_eq!(by_labels("region"), (4, 4));
+        assert_eq!(by_labels("endpoint"), (625, 625));
+        assert_eq!(by_labels("service,endpoint"), (625, 625));
+        // Heavy skew leaves some of the 10,000 full tuples unseen.
+        let (expected, actual) = by_labels("region,service,endpoint,status");
+        assert!(expected == 10_000 && actual < expected, "{actual}");
+        assert!(coverage.iter().all(|f| f.actual <= f.expected));
+    }
+
+    #[test]
     fn share_checks_pass_and_catch_a_wrong_skew() {
         for spec in [http_spec(), flows_spec()] {
             let report = metric("m", &spec).share_checks(200_000);
@@ -871,8 +933,16 @@ pub mod tests {
         spec["values"]["dst_port"] = json!({"zipf": 0.0, "keys": 5});
         assert!(err(spec).contains("not be `ts` or a label"));
 
+        // A Zipf's tables are capped; burst keys are drawn uniformly, so only
+        // their numbering is.
         let mut spec = flows_spec();
-        spec["values"]["src_ip"]["keys"] = json!(1u64 << 53);
+        spec["values"]["src_ip"]["keys"] = json!(MAX_ZIPF_VALUES + 1);
+        assert!(err(spec).contains("keys must be in [1, 100000000]"));
+        let mut spec = http_spec();
+        spec["labels"][0]["cardinality"] = json!(MAX_ZIPF_VALUES + 1);
+        assert!(err(spec).contains("cardinality 100000001 is over"));
+        let mut spec = flows_spec();
+        spec["values"]["src_ip"]["burst"]["keys"] = json!(1u64 << 53);
         assert!(err(spec).contains("all keys ≤ 2^53"));
 
         assert!(RecordMetric::from_table("m", &http_spec(), Some(0), 1).is_err());
