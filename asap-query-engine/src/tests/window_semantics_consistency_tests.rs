@@ -331,6 +331,86 @@ mod tests {
         );
     }
 
+    /// Two workers can each emit a bucket for the same (key, window), so a
+    /// range step's Sliding cover must be judged by distinct window starts,
+    /// not bucket count: two buckets for [3s, 6s) must not stand in for the
+    /// missing [0s, 3s).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sliding_range_step_with_duplicate_bucket_and_missing_window_is_skipped() {
+        let query = "sum_over_time(cpu_load[6s])";
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: HashMap::from([(
+                1,
+                AggregationConfig {
+                    aggregation_id: 1,
+                    aggregation_type: AggregationType::Sum,
+                    aggregation_sub_type: String::new(),
+                    parameters: HashMap::new(),
+                    grouping_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                    aggregated_labels: KeyByLabelNames::empty(),
+                    rollup_labels: KeyByLabelNames::empty(),
+                    original_yaml: String::new(),
+                    window_size_ms: 3_000,
+                    slide_interval_ms: 1_000,
+                    window_type: WindowType::Sliding,
+                    spatial_filter: String::new(),
+                    spatial_filter_normalized: String::new(),
+                    metric: "cpu_load".to_string(),
+                    num_aggregates_to_retain: None,
+                    read_count_threshold: None,
+                    table_name: None,
+                    value_column: None,
+                },
+            )]),
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let host_a = Some(KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        });
+        for (start, value) in [
+            (3_000, 10.0),
+            (3_000, 10.0),
+            (1_000, 100.0),
+            (4_000, 1_000.0),
+        ] {
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, start + 3_000, host_a.clone(), 1),
+                    Box::new(SumAccumulator::with_sum(value)),
+                )
+                .unwrap();
+        }
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                "cpu_load".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )),
+            query_configs: vec![QueryConfig::new(query.to_string())
+                .add_aggregation(AggregationReference::new(1, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::promql,
+        );
+
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 6.0, 7.0, 1.0)
+            .expect("native query execution should not fail")
+            .expect("the step at 7s has a complete cover");
+
+        assert_eq!(
+            host_a_samples(&matrix_values(result.1)),
+            vec![(7_000, 1_100.0)]
+        );
+    }
+
     // ════════════════════════════════════════════════════════════════════
     // 2. Tumbling: instant and range paths must AGREE, and both must
     //    correctly SUM every disjoint bucket in the query's window (proving

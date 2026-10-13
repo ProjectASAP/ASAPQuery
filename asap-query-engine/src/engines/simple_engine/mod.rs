@@ -2444,6 +2444,21 @@ impl SimpleEngine {
             .collect()
     }
 
+    /// Number of distinct stored windows in a step's Sliding cover. A window
+    /// can hold several buckets (one per worker that saw the key), so the
+    /// bucket count can't tell a complete cover from a partial one.
+    fn sliding_cover_window_count(
+        bucket_map: &BucketMap,
+        window_start: u64,
+        window_end: u64,
+        stored_window_size_ms: u64,
+    ) -> usize {
+        (window_start..window_end)
+            .step_by(stored_window_size_ms as usize)
+            .filter(|t| bucket_map.get(t).is_some_and(|buckets| !buckets.is_empty()))
+            .count()
+    }
+
     /// Picks how a step's window is composed from `bucket_map`: Sliding walks
     /// the non-overlapping stored-window stride `W`; Tumbling walks the
     /// bucket grid stride. Used identically for values and SetAggregator
@@ -2987,6 +3002,23 @@ impl SimpleEngine {
                                 };
                                 let keys_window_start =
                                     keys_window_end.saturating_sub(*keys_lookback_ms);
+                                if *keys_window_type == WindowType::Sliding {
+                                    let expected =
+                                        (*keys_lookback_ms / *keys_stored_window_size_ms) as usize;
+                                    let covered = Self::sliding_cover_window_count(
+                                        keys_bucket_map,
+                                        keys_window_start,
+                                        keys_window_end,
+                                        *keys_stored_window_size_ms,
+                                    );
+                                    if covered < expected {
+                                        debug!(
+                                            "Skipping incomplete Sliding key cover at t={}",
+                                            current_time
+                                        );
+                                        continue;
+                                    }
+                                }
                                 Self::window_buckets_for_step(
                                     keys_bucket_map,
                                     keys_window_start,
@@ -2996,18 +3028,6 @@ impl SimpleEngine {
                                     *keys_stored_window_size_ms,
                                 )
                             };
-
-                        if *keys_window_type == WindowType::Sliding {
-                            let expected =
-                                (*keys_lookback_ms / *keys_stored_window_size_ms) as usize;
-                            if keys_window_buckets.len() < expected {
-                                debug!(
-                                    "Skipping incomplete Sliding key cover at t={}",
-                                    current_time
-                                );
-                                continue;
-                            }
-                        }
 
                         if keys_window_buckets.is_empty() {
                             debug!(
@@ -3065,7 +3085,13 @@ impl SimpleEngine {
 
                 if window_type == WindowType::Sliding {
                     let expected = (lookback_ms / context.window_size_ms) as usize;
-                    if window_buckets.len() < expected {
+                    let covered = Self::sliding_cover_window_count(
+                        bucket_map,
+                        window_start,
+                        window_end,
+                        context.window_size_ms,
+                    );
+                    if covered < expected {
                         debug!(
                             "Skipping incomplete Sliding value cover at t={}",
                             current_time
