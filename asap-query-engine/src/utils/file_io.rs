@@ -41,6 +41,43 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    /// The PromQL compliance roll-up suite ships hand-written planner output;
+    /// parse it the way the engine does so it can't drift from the format.
+    #[test]
+    fn compliance_rollup_planner_output_loads_as_engine_config() {
+        let directory = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../promql-compliance/suites/rollup-planner-output"
+        );
+        let inference = read_inference_config(
+            &format!("{directory}/inference_config.yaml"),
+            QueryLanguage::promql,
+        )
+        .unwrap();
+        let streaming =
+            read_streaming_config(&format!("{directory}/streaming_config.yaml"), &inference)
+                .unwrap();
+
+        assert!(!inference.query_configs.is_empty());
+        for query_config in &inference.query_configs {
+            assert!(
+                !query_config.aggregations.is_empty(),
+                "{}",
+                query_config.query
+            );
+            for reference in &query_config.aggregations {
+                assert!(
+                    streaming
+                        .get_aggregation_config(reference.aggregation_id)
+                        .is_some(),
+                    "{} names missing aggregation {}",
+                    query_config.query,
+                    reference.aggregation_id
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_read_streaming_config() {
         let streaming_yaml_content = r#"

@@ -74,8 +74,30 @@ type Tolerance struct {
 }
 
 // LoadSuite parses and validates a query suite. It rejects incomplete cases
-// rather than silently selecting wall-clock defaults.
+// rather than silently selecting wall-clock defaults. A planner_output_dir
+// must be absolute here; a relative one needs the suite file's location, so
+// use LoadSuiteFile.
 func LoadSuite(contents []byte) (Suite, error) {
+	suite, err := parseSuite(contents)
+	if err != nil {
+		return Suite{}, err
+	}
+	if suite.PlannerOutputDir != "" {
+		if !filepath.IsAbs(suite.PlannerOutputDir) {
+			return Suite{}, fmt.Errorf(
+				"query suite %q: planner_output_dir %q is relative; load the suite with LoadSuiteFile",
+				suite.Name,
+				suite.PlannerOutputDir,
+			)
+		}
+		if suite.PlannerOutputDir, err = resolvePlannerOutputDir("", suite.PlannerOutputDir); err != nil {
+			return Suite{}, fmt.Errorf("query suite %q: %w", suite.Name, err)
+		}
+	}
+	return suite, nil
+}
+
+func parseSuite(contents []byte) (Suite, error) {
 	var suite Suite
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
@@ -140,7 +162,7 @@ func LoadSuiteFile(path string) (Suite, error) {
 	if err != nil {
 		return Suite{}, fmt.Errorf("read query suite %q: %w", path, err)
 	}
-	suite, err := LoadSuite(contents)
+	suite, err := parseSuite(contents)
 	if err != nil {
 		return Suite{}, err
 	}
