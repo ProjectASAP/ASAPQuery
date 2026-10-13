@@ -564,6 +564,44 @@ def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]
 
 
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
+class KeyPruningTest(unittest.TestCase):
+    """ClickHouse 26.10 prunes `ts > <integer>` on a DateTime64 key as
+    `ts >= <integer> + 1`, so a left-open window lost the samples in its first
+    second. Small granules let the index prune them here too."""
+
+    def test_samples_just_after_window_start_are_kept(self):
+        end_s = DATA_START_MS // 1000 + 3600
+        start_ms = (end_s - 60) * 1000
+        # Every 7 ms from just before the window start to past its end; each
+        # record has its own user_id, so the distinct count is a row count.
+        times = range(start_ms - 50, end_s * 1000 + 50, 7)
+        records = [(t, ("r0", "s0", "e0", "200"), (1.0, float(t))) for t in times]
+        series = [(t, ("job_0", "label_0_0"), (1.0,)) for t in times]
+        cases = [
+            (
+                sbw.query_from_entry(mg_entry("cardinality", ["region"], 60), METRICS),
+                sum(start_ms < t <= end_s * 1000 for t in times),
+            ),
+            (
+                sbw.parse_promql("count_over_time(data[1m])", 60, LABELS),
+                sum(start_ms <= t <= end_s * 1000 for t in times),
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            script = load_script(tmp, {"http": records, "data": series}).replace(
+                "ts);", "ts) SETTINGS index_granularity = 8;"
+            )
+            self.assertIn("index_granularity = 8", script)
+            statements = [
+                (str(i), sbw.raw_sql(q, LABELS).replace(sbw.END, str(end_s)))
+                for i, (q, _) in enumerate(cases)
+            ]
+            rows = run_clickhouse(script + query_script(statements), tmp)
+        got = {row["qid"]: row["value"] for row in rows}
+        self.assertEqual(got, {str(i): want for i, (_, want) in enumerate(cases)})
+
+
+@unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
 class ClickHouseSemanticsTest(unittest.TestCase):
     def test_raw_sql_matches_prometheus_reference(self):
         gauge, counter = make_dataset()
