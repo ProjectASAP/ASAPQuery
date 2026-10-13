@@ -411,6 +411,104 @@ mod tests {
         );
     }
 
+    /// The same cover rule applies to per-step keys: worker partials at one
+    /// window start cannot make a missing key window look complete.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sliding_key_cover_with_duplicate_bucket_and_missing_window_is_skipped() {
+        let query = "sum by (host) (count_over_time(event_frequency[6s]))";
+        let config = |aggregation_id, aggregation_type, aggregated_labels| AggregationConfig {
+            aggregation_id,
+            aggregation_type,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels,
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 3_000,
+            slide_interval_ms: 1_000,
+            window_type: WindowType::Sliding,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: "event_frequency".to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: HashMap::from([
+                (
+                    1,
+                    config(1, AggregationType::CountMinSketch, KeyByLabelNames::empty()),
+                ),
+                (
+                    2,
+                    config(
+                        2,
+                        AggregationType::SetAggregator,
+                        KeyByLabelNames::new(vec!["host".to_string()]),
+                    ),
+                ),
+            ]),
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let host_a = KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        };
+
+        // Values fully cover both steps. Keys have two worker partials at
+        // [3s, 6s), no [0s, 3s) bucket, then complete coverage at 7s.
+        for start in [0, 1_000, 3_000, 4_000] {
+            let mut values = CountMinSketchAccumulator::new(4, 128);
+            values.inner.update(&host_a.to_semicolon_str(), 1.0);
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, start + 3_000, None, 1),
+                    Box::new(values),
+                )
+                .unwrap();
+        }
+        for start in [3_000, 3_000, 1_000, 4_000] {
+            let mut keys = SetAggregatorAccumulator::new();
+            keys.add_key(host_a.clone());
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, start + 3_000, None, 2),
+                    Box::new(keys),
+                )
+                .unwrap();
+        }
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                "event_frequency".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )),
+            query_configs: vec![QueryConfig::new(query.to_string())
+                .add_aggregation(AggregationReference::new(1, None))
+                .add_aggregation(AggregationReference::new(2, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::promql,
+        );
+
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 6.0, 7.0, 1.0)
+            .expect("native query execution should not fail")
+            .expect("the step at 7s has a complete key cover");
+
+        assert_eq!(host_a_samples(&matrix_values(result.1)), vec![(7_000, 2.0)]);
+    }
+
     // ════════════════════════════════════════════════════════════════════
     // 2. Tumbling: instant and range paths must AGREE, and both must
     //    correctly SUM every disjoint bucket in the query's window (proving
