@@ -665,6 +665,22 @@ metrics:
     }
 
     #[test]
+    fn topk_of_sum_is_one_global_heap_keyed_by_the_inner_labels() {
+        let w = workload(&group(
+            "topk(5, sum by (job) (sum_over_time(http_requests_total[5m])))",
+            0.9,
+        ));
+        let r = &w.raqes[0];
+        assert_eq!(r.capability, Capability::TopKByValue);
+        assert_eq!(r.grouping_labels, LabelSet::new());
+        assert_eq!(r.topk_k, Some(5));
+        assert_eq!(
+            w.items[0].requirements.grouping_labels,
+            promql_utilities::data_model::KeyByLabelNames::new(vec!["job".into()])
+        );
+    }
+
+    #[test]
     fn bare_topk_is_one_global_heap() {
         let w = workload(&group("topk(5, http_requests_total)", 0.9));
         assert_eq!(w.raqes[0].grouping_labels, LabelSet::new());
