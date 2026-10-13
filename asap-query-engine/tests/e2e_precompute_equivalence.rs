@@ -995,7 +995,7 @@ async fn e2e_exact_rollup_regroups_a_keyed_sum_at_query_time() {
     let metric = "exact_rollup_requests";
     let query = "sum by (job) (exact_rollup_requests)";
     let scenario = NativeDagScenario {
-        port: 19429,
+        port: 19430,
         metric,
         query,
         aggregation_configs: vec![make_agg_config_full(
