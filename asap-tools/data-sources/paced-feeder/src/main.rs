@@ -263,43 +263,40 @@ async fn main() -> Result<()> {
         let started = Instant::now();
 
         let (mut rows, mut bytes) = (0, 0);
-        // ASAPQuery can drop samples behind a group's watermark, so remote write
-        // sends one slot at a time: a slot's requests all return before the
-        // next slot's are sent. ClickHouse sorts on insert, so it sends the
-        // whole tick at once.
-        let slots = (0..args.samples_per_sec).map(|slot| workload.slot_rows(tick, slot, start_ms));
-        let waves: Vec<Vec<Row>> = match args.sink {
-            SinkKind::RemoteWrite => slots.collect(),
-            SinkKind::Clickhouse => vec![slots.flatten().collect()],
-        };
-        for wave in waves {
-            let wave_rows = Arc::new(wave);
-            let mut tasks = tokio::task::JoinSet::new();
-            for begin in (0..wave_rows.len()).step_by(batch_rows) {
-                let end = (begin + batch_rows).min(wave_rows.len());
-                let (wave_rows, sink) = (Arc::clone(&wave_rows), Arc::clone(&sink));
-                let permit = Arc::clone(&permits).acquire_owned().await?;
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    let body = sink.encoder.encode(&wave_rows[begin..end]);
-                    let bytes = body.len();
-                    sink.send(body).await.map(|()| (end - begin, bytes))
-                });
-            }
+        // A tick's requests go out concurrently, so a group's samples within
+        // the tick may arrive out of order. That is safe for ASAPQuery: the
+        // tick lies in one window (see `slot_rows`) and is under one second
+        // behind the watermark, within the allowed lateness.
+        let tick_rows: Arc<Vec<Row>> = Arc::new(
+            (0..args.samples_per_sec)
+                .flat_map(|slot| workload.slot_rows(tick, slot, start_ms))
+                .collect(),
+        );
+        let mut tasks = tokio::task::JoinSet::new();
+        for begin in (0..tick_rows.len()).step_by(batch_rows) {
+            let end = (begin + batch_rows).min(tick_rows.len());
+            let (tick_rows, sink) = (Arc::clone(&tick_rows), Arc::clone(&sink));
+            let permit = Arc::clone(&permits).acquire_owned().await?;
+            tasks.spawn(async move {
+                let _permit = permit;
+                let body = sink.encoder.encode(&tick_rows[begin..end]);
+                let bytes = body.len();
+                sink.send(body).await.map(|()| (end - begin, bytes))
+            });
+        }
 
-            while let Some(joined) = tasks.join_next().await {
-                // A panicked task counts as a failed request, so the stats of
-                // the ticks before it are still written.
-                match joined.map_err(anyhow::Error::from).and_then(|sent| sent) {
-                    Ok((n_rows, n_bytes)) => {
-                        rows += n_rows;
-                        bytes += n_bytes;
-                    }
-                    Err(e) => {
-                        failed_requests += 1;
-                        if errors.len() < 10 {
-                            errors.push(format!("tick {tick}: {e:#}"));
-                        }
+        while let Some(joined) = tasks.join_next().await {
+            // A panicked task counts as a failed request, so the stats of
+            // the ticks before it are still written.
+            match joined.map_err(anyhow::Error::from).and_then(|sent| sent) {
+                Ok((n_rows, n_bytes)) => {
+                    rows += n_rows;
+                    bytes += n_bytes;
+                }
+                Err(e) => {
+                    failed_requests += 1;
+                    if errors.len() < 10 {
+                        errors.push(format!("tick {tick}: {e:#}"));
                     }
                 }
             }

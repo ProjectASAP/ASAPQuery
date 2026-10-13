@@ -41,12 +41,13 @@ impl Workload {
     }
 
     /// Samples for sub-second slot `slot` of one-second tick `tick`, one per
-    /// series, with event time starting at `start_ms`. Slots within the second
-    /// are spaced evenly.
+    /// series. Slots are spaced evenly over `(t, t + 1 s]`, where `t` is the
+    /// tick's start: the same left-open interval as ASAPQuery's one-second
+    /// windows, so a tick never spans two of them.
     pub fn slot_rows(&self, tick: u64, slot: u32, start_ms: i64) -> Vec<Row> {
         let per_sec = u64::from(self.samples_per_sec);
         let slot = u64::from(slot);
-        let timestamp_ms = start_ms + tick as i64 * 1_000 + (slot * 1_000 / per_sec) as i64;
+        let timestamp_ms = start_ms + tick as i64 * 1_000 + ((slot + 1) * 1_000 / per_sec) as i64;
         let sample_index = tick * per_sec + slot;
         (0..self.num_series())
             .map(|series| Row {
@@ -98,7 +99,7 @@ mod tests {
     #[test]
     fn each_slot_has_every_series_at_its_timestamp() {
         let w = workload();
-        for (slot, timestamp_ms) in [(0, 15_000), (1, 15_500)] {
+        for (slot, timestamp_ms) in [(0, 15_500), (1, 16_000)] {
             let rows = w.slot_rows(5, slot, 10_000);
             assert_eq!(rows.len(), 6);
             assert!(rows.iter().all(|r| r.timestamp_ms == timestamp_ms));
