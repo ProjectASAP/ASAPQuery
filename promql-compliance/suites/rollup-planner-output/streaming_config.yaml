@@ -1,0 +1,113 @@
+# Hand-written in the planner's output format. Every aggregation is a
+# single-subpopulation type grouped by (service, endpoint); the tumbling
+# window sizes match what the planner picks for each query shape, and ids 4
+# and 6 are sliding to cover sliding-window roll-ups.
+aggregations:
+- aggregationId: 1
+  aggregationSubType: ''
+  aggregationType: DatasketchesKLL
+  labels:
+    aggregated: []
+    grouping:
+    - endpoint
+    - service
+    rollup: []
+  metric: rollup_latency
+  parameters:
+    K: 500
+  slideIntervalMs: 1000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 1000
+  windowType: tumbling
+- aggregationId: 2
+  aggregationSubType: ''
+  aggregationType: DDSketch
+  labels:
+    aggregated: []
+    grouping:
+    - endpoint
+    - service
+    rollup: []
+  metric: rollup_latency
+  parameters:
+    alpha: 0.01
+  slideIntervalMs: 1000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 1000
+  windowType: tumbling
+- aggregationId: 3
+  aggregationSubType: sum
+  aggregationType: Sum
+  labels:
+    aggregated: []
+    grouping:
+    - endpoint
+    - service
+    rollup: []
+  metric: rollup_latency
+  parameters: {}
+  slideIntervalMs: 1000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 1000
+  windowType: tumbling
+- aggregationId: 4
+  aggregationSubType: sum
+  aggregationType: Sum
+  labels:
+    aggregated: []
+    grouping:
+    - endpoint
+    - service
+    rollup: []
+  metric: rollup_latency
+  parameters: {}
+  slideIntervalMs: 60000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 300000
+  windowType: sliding
+- aggregationId: 5
+  aggregationSubType: min
+  aggregationType: MinMax
+  labels:
+    aggregated: []
+    grouping:
+    - endpoint
+    - service
+    rollup: []
+  metric: rollup_latency
+  parameters: {}
+  slideIntervalMs: 60000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 60000
+  windowType: tumbling
+- aggregationId: 6
+  aggregationSubType: max
+  aggregationType: MinMax
+  labels:
+    aggregated: []
+    grouping:
+    - endpoint
+    - service
+    rollup: []
+  metric: rollup_latency
+  parameters: {}
+  slideIntervalMs: 60000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 300000
+  windowType: sliding
+metrics:
+  rollup_latency:
+  - endpoint
+  - service

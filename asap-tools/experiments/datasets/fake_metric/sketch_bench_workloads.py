@@ -14,7 +14,9 @@ For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
   (baseline_mv);
 - <stem>/interval_<T>s_<mode>.sql: one statement per query that repeats every
   T s, for the baseline (raw table) and baseline_mv (views) arms;
-- <stem>/asapquery.sql: the structured queries in ASAPQuery's SQL dialect;
+- <stem>/asapquery.sql: each structured entry's `sql` (ASAPQuery's SQL, as
+  sketch-bench's exporter writes it) with NOW() replaced by the floored eval
+  time;
 - <stem>_clickhouse.yaml, <stem>_clickhouse_mv.yaml: one
   experiment_run_clickhouse.py config per arm, each loading data through its
   own init SQL, with one query group per T, repeating every T seconds.
@@ -335,30 +337,37 @@ def raw_sql(q: Query, labels: Dict[str, List[str]]) -> str:
     )
 
 
-def asapquery_sql(q: Query) -> str:
-    """A structured query in the dialect of ASAPQuery's SQL frontend.
+def floored_end_datetime(interval_secs: int) -> str:
+    """A Jinja template for the client's {{ end_datetime }} floored to a
+    multiple of the interval T, as the ClickHouse SQL floors {{ end_time }}.
 
-    The frontend takes a datetime literal but cannot floor it, so the window
-    ends `{{ end_time }} % T` seconds before the client's {{ end_datetime }}
-    (UTC; the frontend reads timezone-naive literals as server-local time):
-    the same floored T as the ClickHouse SQL. The frontend maps the BETWEEN to
-    (start, duration) = (T - W, W) and answers over (T - W, T], as the
-    ClickHouse SQL does for structured queries.
+    end_datetime is UTC 'YYYY-MM-DD HH:MM:SS', and UTC timestamps are
+    multiples of 60 exactly at whole minutes, so flooring rewrites the seconds
+    (T divides 60) or the minutes (T divides 3600 and is a multiple of 60).
     """
-    group = ", ".join(q.grouping)
-    if q.agg == "cardinality":
-        agg = f"COUNT(DISTINCT {q.value})"
-    elif q.agg == "quantile":
-        agg = f"QUANTILE({q.quantile}, {q.value})"
-    else:
-        raise ValueError(f"no ASAPQuery SQL for {q}")
-    t = q.interval_secs
-    end = "'{{ end_datetime }}'"
-    return (
-        f"SELECT {group}, {agg} FROM {q.table} WHERE ts BETWEEN "
-        f"DATEADD(s, -{{{{ end_time % {t} + {q.window_secs} }}}}, {end}) AND "
-        f"DATEADD(s, -{{{{ end_time % {t} }}}}, {end}) GROUP BY {group}"
-    )
+    t = interval_secs
+    if 60 % t == 0:
+        floored = f"end_time % 60 // {t} * {t}"
+        return f'{{{{ end_datetime[:17] }}}}{{{{ "%02d" | format({floored}) }}}}'
+    if t % 60 == 0 and 3600 % t == 0:
+        floored = f"end_time % 3600 // {t} * {t} // 60"
+        return f'{{{{ end_datetime[:14] }}}}{{{{ "%02d" | format({floored}) }}}}:00'
+    raise ValueError(f"cannot floor a datetime to {t}s: T must divide 60 or 3600")
+
+
+def asapquery_sql(entry: dict) -> str:
+    """A structured entry's `sql` with NOW() replaced by the floored eval time.
+
+    ASAPQuery's SQL frontend takes a datetime literal but cannot floor it, so
+    the literal is floored in the client's template (UTC; the frontend reads
+    timezone-naive literals as server-local time). The frontend maps
+    `ts BETWEEN DATEADD(s, -W, E) AND E` to (start, duration) = (E - W, W) and
+    answers over (E - W, E], as the ClickHouse SQL does for structured queries.
+    """
+    if "sql" not in entry:
+        raise ValueError(f"structured entry without its ASAPQuery sql: {entry}")
+    end = floored_end_datetime(entry["interval_secs"])
+    return entry["sql"].replace("NOW()", f"'{end}'")
 
 
 def value_columns(desc: dict) -> List[str]:
@@ -596,7 +605,7 @@ def convert(
             sql = mv_sql(q, views, labels)
             files[BASELINE_MV].append(f"-- {describe(entry)}\n{sql}")
         if "promql" not in entry:
-            asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(q)}")
+            asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(entry)}")
     if asapquery:
         # For the ASAPQuery arm; the runner does not read it.
         write_statements(os.path.join(sql_dir, "asapquery.sql"), asapquery)

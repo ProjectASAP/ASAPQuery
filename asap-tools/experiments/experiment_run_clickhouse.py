@@ -93,7 +93,7 @@ Baseline + sketchdb:
 import json
 import os
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
 import hydra
@@ -121,6 +121,87 @@ DEFAULT_MONITOR_INTERVAL_SECONDS = 1.0
 def _start_clickhouse_controller(controller_service, cfg, **kwargs):
     """Start the ClickHouse planner using the configured punting setting."""
     controller_service.start(punting=cfg.controller.punting, **kwargs)
+
+
+def _deploy_prebuilt_clickhouse_controller_output(
+    provider,
+    prebuilt_output_dir: str,
+    local_controller_dir: str,
+    remote_controller_dir: str,
+    controller_client_config: str,
+    data_ingestion_interval_ms: int,
+    node_offset: int,
+) -> None:
+    """Validate and deploy a frozen SQL planner output without starting a planner."""
+    config.copy_prebuilt_controller_output(
+        prebuilt_output_dir,
+        local_controller_dir,
+        controller_client_config,
+        data_ingestion_interval_ms,
+        query_language=config.QUERY_LANGUAGE_SQL,
+    )
+    sync.rsync_streaming_configs(
+        provider, local_controller_dir, remote_controller_dir, node_offset
+    )
+
+
+def _prepare_clickhouse_controller_output(
+    prebuilt_output_dir: Optional[str],
+    deploy_prebuilt_output: Callable[[str], None],
+    generate_controller_output: Callable[[], None],
+) -> None:
+    """Deploy a frozen output when configured, otherwise generate one."""
+    if prebuilt_output_dir:
+        deploy_prebuilt_output(prebuilt_output_dir)
+    else:
+        generate_controller_output()
+
+
+def _generate_clickhouse_controller_output(
+    provider,
+    cfg,
+    query_groups,
+    dataset_cfg,
+    local_controller_dir: str,
+    remote_controller_dir: str,
+    node_offset: int,
+    clickhouse_url: str,
+    data_ingestion_interval_ms: int,
+) -> None:
+    """Generate and retrieve the SQL planner output for a ClickHouse run."""
+    planner_input_yaml = config.generate_sql_planner_input(
+        query_groups,
+        dataset_cfg,
+        cfg.get("sketch_parameters", None),
+        cfg.get("windowing", None),
+    )
+    local_planner_input = os.path.join(local_controller_dir, "planner_input.yaml")
+    with open(local_planner_input, "w") as planner_input_file:
+        planner_input_file.write(planner_input_yaml)
+    sync.rsync_streaming_configs(
+        provider, local_controller_dir, remote_controller_dir, node_offset
+    )
+
+    controller_service = ControllerService(
+        provider=provider, use_container=False, node_offset=node_offset
+    )
+    _start_clickhouse_controller(
+        controller_service,
+        cfg,
+        controller_input_file=os.path.join(remote_controller_dir, "planner_input.yaml"),
+        streaming_engine="precompute",
+        controller_remote_output_dir=remote_controller_dir,
+        discovery_backend=DiscoveryBackend(
+            type="clickhouse",
+            url=clickhouse_url,
+            database=CLICKHOUSE_DATABASE,
+        ),
+        query_language=config.QUERY_LANGUAGE_SQL,
+        data_ingestion_interval_ms=data_ingestion_interval_ms,
+    )
+    sync.rsync_controller_config_remote_to_local(
+        provider, remote_controller_dir, local_controller_dir, node_offset
+    )
 
 
 def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> None:
@@ -361,6 +442,7 @@ def main(cfg: DictConfig) -> None:
     profile_query_engine = bool(cfg.profiling.query_engine)
     profile_prometheus_time = cfg.profiling.prometheus_time
     monitor_interval_seconds = float(cfg.flow.monitor_interval_seconds)
+    controller_prebuilt_output_dir = cfg.controller.get("prebuilt_output_dir")
     minimum_experiment_running_time = config.get_minimum_experiment_running_time(
         cfg.experiment_params
     )
@@ -530,44 +612,41 @@ def main(cfg: DictConfig) -> None:
             )
             os.makedirs(local_controller_dir, exist_ok=True)
 
-            # Generate and rsync the planner input config to the node
-            planner_input_yaml = config.generate_sql_planner_input(
-                ep.query_groups,
-                dataset_cfg,
-                cfg.get("sketch_parameters", None),
-                cfg.get("windowing", None),
-            )
-            local_planner_input = os.path.join(
-                local_controller_dir, "planner_input.yaml"
-            )
-            with open(local_planner_input, "w") as _f:
-                _f.write(planner_input_yaml)
-            sync.rsync_streaming_configs(
-                provider, local_controller_dir, remote_controller_dir, node_offset
+            controller_client_config = os.path.join(
+                local_experiment_root_dir,
+                "controller_client_configs",
+                f"{experiment_mode}.yaml",
             )
 
-            # Run asap-planner (SQL mode) — writes streaming_config.yaml + inference_config.yaml
-            controller_service = ControllerService(
-                provider=provider, use_container=False, node_offset=node_offset
-            )
-            _start_clickhouse_controller(
-                controller_service,
-                cfg,
-                controller_input_file=os.path.join(
-                    remote_controller_dir, "planner_input.yaml"
-                ),
-                streaming_engine="precompute",
-                controller_remote_output_dir=remote_controller_dir,
-                discovery_backend=DiscoveryBackend(
-                    type="clickhouse",
-                    url=clickhouse_url,
-                    database=CLICKHOUSE_DATABASE,
-                ),
-                query_language="sql",
-                data_ingestion_interval_ms=data_ingestion_interval_ms,
-            )
-            sync.rsync_controller_config_remote_to_local(
-                provider, remote_controller_dir, local_controller_dir, node_offset
+            def deploy_prebuilt_output(prebuilt_output_dir: str) -> None:
+                print(f"Skipping the planner: using configs from {prebuilt_output_dir}")
+                _deploy_prebuilt_clickhouse_controller_output(
+                    provider,
+                    prebuilt_output_dir,
+                    local_controller_dir,
+                    remote_controller_dir,
+                    controller_client_config,
+                    data_ingestion_interval_ms,
+                    node_offset,
+                )
+
+            def generate_controller_output() -> None:
+                _generate_clickhouse_controller_output(
+                    provider,
+                    cfg,
+                    ep.query_groups,
+                    dataset_cfg,
+                    local_controller_dir,
+                    remote_controller_dir,
+                    node_offset,
+                    clickhouse_url,
+                    data_ingestion_interval_ms,
+                )
+
+            _prepare_clickhouse_controller_output(
+                controller_prebuilt_output_dir,
+                deploy_prebuilt_output,
+                generate_controller_output,
             )
 
             # Start query engine (precompute + JSON ingest + ClickHouse fallback)

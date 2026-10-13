@@ -12,6 +12,7 @@ pub mod prometheus_forwarding_tests;
 pub mod query_equivalence_tests;
 pub mod query_time_aggregation_public_tests;
 pub mod range_query_arithmetic_tests;
+pub mod rollup_tests;
 pub mod sql_pattern_matching_tests;
 pub mod stage_e_instant_range_equivalence_tests;
 pub mod store_correctness_tests;

@@ -1,6 +1,7 @@
 use promql_parser::parser::Expr;
 use tracing::debug;
 
+use crate::ast_matching::collapsable_patterns::INNER_AGGREGATION_TOKEN;
 use crate::ast_matching::promql_pattern::AggregationModifierType;
 use crate::ast_matching::PromQLMatchResult;
 use crate::data_model::KeyByLabelNames;
@@ -170,12 +171,36 @@ pub fn get_spatial_aggregation_output_labels(
         .and_then(|token| token.aggregation.as_ref())
         .expect("aggregation token missing");
 
-    // Patching: When the query is topk, we should always return all labels
+    // topk is a selector: it keeps its input's labels, which are all labels
+    // unless an inner `sum by (...)` reduced them first.
     if aggregation_token.op.parse::<AggregationOperator>() == Ok(AggregationOperator::Topk) {
-        debug!("Aggregation operation is 'topk', returning all labels");
-        return all_labels.clone();
+        debug!("Aggregation operation is 'topk', returning its input's labels");
+        return topk_input_labels(match_result, all_labels);
     }
 
+    reducer_output_labels(aggregation_token, all_labels)
+}
+
+/// Labels of the series topk ranks: the inner reducer's output labels when
+/// one is present, else all labels.
+fn topk_input_labels(
+    match_result: &PromQLMatchResult,
+    all_labels: &KeyByLabelNames,
+) -> KeyByLabelNames {
+    match match_result
+        .tokens
+        .get(INNER_AGGREGATION_TOKEN)
+        .and_then(|token| token.aggregation.as_ref())
+    {
+        Some(inner) => reducer_output_labels(inner, all_labels),
+        None => all_labels.clone(),
+    }
+}
+
+fn reducer_output_labels(
+    aggregation_token: &crate::AggregationToken,
+    all_labels: &KeyByLabelNames,
+) -> KeyByLabelNames {
     // Fixing issue https://github.com/ProjectASAP/asap-internal/issues/24
     let modifier: &crate::AggregationModifier = match aggregation_token.modifier.as_ref() {
         Some(m) => m,
@@ -210,15 +235,17 @@ pub fn get_spatial_aggregation_output_labels(
 /// Per PromQL semantics, `topk`/`bottomk` are selectors, not reducers: `by`/
 /// `without` only buckets the input series for independent per-bucket
 /// ranking, it never changes the output's label set (unlike `sum by (...)`
-/// etc, which collapse the output down to the by-clause labels) -- that's
-/// exactly why `get_spatial_aggregation_output_labels` always returns all
-/// labels for `topk` regardless of any modifier. This function recovers the
-/// modifier's labels separately, for callers that need the bucketing
-/// information itself (#714: `topk by (job) (k, x)` needs one independent
-/// top-k ranking per `job` value, not one ranking over the whole input).
+/// etc, which collapse the output down to the by-clause labels). So
+/// `get_spatial_aggregation_output_labels` returns topk's input labels
+/// regardless of any modifier: all labels, or the inner `sum`'s output
+/// labels in `topk(k, sum by (...) (...))`. This function recovers the
+/// bucket labels separately, for callers that need them: `topk by (job)
+/// (k, x)` ranks each `job` value independently. Bucket labels are always
+/// within topk's input labels.
 ///
-/// Returns `None` when there's no modifier (a bare `topk(k, x)` ranks across
-/// the whole input in a single bucket) or when the aggregation isn't `topk`.
+/// Returns `None` when the input forms a single bucket: no modifier (a bare
+/// `topk(k, x)`), no bucket labels left within the input, or when the
+/// aggregation isn't `topk`.
 pub fn get_topk_by_labels(
     match_result: &PromQLMatchResult,
     all_labels: &KeyByLabelNames,
@@ -233,13 +260,34 @@ pub fn get_topk_by_labels(
     }
 
     let modifier = aggregation_token.modifier.as_ref()?;
-    Some(match modifier.modifier_type {
-        AggregationModifierType::By => KeyByLabelNames::new(modifier.labels.clone()),
-        AggregationModifierType::Without => {
-            let without_labels = KeyByLabelNames::new(modifier.labels.clone());
-            all_labels.difference(&without_labels)
-        }
-    })
+    let modifier_labels = KeyByLabelNames::new(modifier.labels.clone());
+    let Some(inner) = match_result
+        .tokens
+        .get(INNER_AGGREGATION_TOKEN)
+        .and_then(|token| token.aggregation.as_ref())
+    else {
+        // Plain topk: `all_labels` may be empty for a metric missing from
+        // the schema, so `by` labels are taken as written.
+        return Some(match modifier.modifier_type {
+            AggregationModifierType::By => modifier_labels,
+            AggregationModifierType::Without => all_labels.difference(&modifier_labels),
+        });
+    };
+    let input_labels = reducer_output_labels(inner, all_labels);
+    let buckets = match modifier.modifier_type {
+        // The inner sum removed every label outside its output, so such a
+        // `by` label is empty in every input series and doesn't split them.
+        AggregationModifierType::By => KeyByLabelNames::new(
+            modifier_labels
+                .labels
+                .into_iter()
+                .filter(|label| input_labels.labels.contains(label))
+                .collect(),
+        ),
+        AggregationModifierType::Without => input_labels.difference(&modifier_labels),
+    };
+    // No bucket labels left is one ranking over the whole input.
+    Some(buckets).filter(|buckets| !buckets.is_empty())
 }
 
 #[cfg(test)]
@@ -295,5 +343,103 @@ mod tests {
             get_statistics_to_compute(&PromQLMatchResult::with_tokens(HashMap::new())).unwrap_err();
 
         assert_eq!(err, StatisticExtractionError::MissingStatistic);
+    }
+
+    fn labels(names: &[&str]) -> KeyByLabelNames {
+        KeyByLabelNames::new(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    fn match_topk_of_sum(query: &str) -> PromQLMatchResult {
+        let ast = promql_parser::parser::parse(query).unwrap();
+        let result = crate::ast_matching::collapsable_patterns::build_topk_of_sum_patterns()
+            .iter()
+            .map(|pattern| pattern.matches(&ast))
+            .find(|result| result.matches);
+        result.unwrap_or_else(|| panic!("{query} should match"))
+    }
+    #[test]
+    fn topk_of_sum_outputs_the_inner_sum_labels() {
+        let all = labels(&["instance", "job", "label_0"]);
+        let result = match_topk_of_sum("topk(32, sum by (label_0) (sum_over_time(data[15m])))");
+
+        assert_eq!(
+            get_spatial_aggregation_output_labels(&result, &all),
+            labels(&["label_0"])
+        );
+        assert_eq!(get_topk_by_labels(&result, &all), None);
+        assert_eq!(
+            get_statistics_to_compute(&result),
+            Ok(vec![Statistic::Topk])
+        );
+    }
+
+    #[test]
+    fn topk_of_sum_without_buckets_within_the_inner_sum_labels() {
+        let all = labels(&["instance", "job", "label_0"]);
+        let result = match_topk_of_sum(
+            "topk without (label_0) (3, sum by (job, label_0) (sum_over_time(data[5m])))",
+        );
+
+        assert_eq!(
+            get_spatial_aggregation_output_labels(&result, &all),
+            labels(&["job", "label_0"])
+        );
+        // Only `job` is left of the inner sum's labels, not `instance`.
+        assert_eq!(get_topk_by_labels(&result, &all), Some(labels(&["job"])));
+    }
+
+    /// A metric missing from the schema has no known labels; plain topk's
+    /// `by` labels must still bucket, not collapse into a global ranking.
+    #[test]
+    fn plain_topk_by_keeps_its_labels_for_a_metric_missing_from_the_schema() {
+        let ast = promql_parser::parser::parse("topk by (job) (5, x)").unwrap();
+        let result = crate::ast_matching::PromQLPattern::new(
+            crate::ast_matching::PromQLPatternBuilder::aggregation(
+                vec!["topk"],
+                crate::ast_matching::PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                None,
+                None,
+                Some("aggregation"),
+            ),
+        )
+        .matches(&ast);
+        assert!(result.matches);
+
+        assert_eq!(
+            get_topk_by_labels(&result, &KeyByLabelNames::empty()),
+            Some(labels(&["job"]))
+        );
+    }
+
+    /// The inner sum already removed `instance`, so every input series has
+    /// the same (empty) `instance` and there is one bucket: the global top
+    /// jobs, not a heap per raw `instance` of partial sums.
+    #[test]
+    fn topk_of_sum_by_a_label_the_inner_sum_removed_is_one_bucket() {
+        let all = labels(&["instance", "job"]);
+        let result =
+            match_topk_of_sum("topk by (instance) (3, sum by (job) (sum_over_time(m[5m])))");
+
+        assert_eq!(get_topk_by_labels(&result, &all), None);
+
+        let partly_kept = match_topk_of_sum(
+            "topk by (instance, job) (3, sum by (job, label_0) (sum_over_time(m[5m])))",
+        );
+        assert_eq!(
+            get_topk_by_labels(&partly_kept, &labels(&["instance", "job", "label_0"])),
+            Some(labels(&["job"]))
+        );
+    }
+
+    #[test]
+    fn topk_of_sum_without_inner_modifier_collapses_to_no_labels() {
+        let all = labels(&["instance", "job"]);
+        let result = match_topk_of_sum("topk(1, sum(sum_over_time(data[5m])))");
+
+        assert_eq!(
+            get_spatial_aggregation_output_labels(&result, &all),
+            KeyByLabelNames::empty()
+        );
     }
 }

@@ -66,7 +66,7 @@ func TestGeneratedConfigsUseCurrentPlannerAndEngineSchema(t *testing.T) {
 		Queries: []QueryCase{{Name: "up", Expr: "up"}},
 	}
 
-	if err := writeGeneratedConfigs(directory, fixture, suite); err != nil {
+	if err := writeGeneratedConfigs(directory, fixture, suite, false); err != nil {
 		t.Fatalf("writeGeneratedConfigs: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestGeneratedPlannerGroupsUseCompatibleQueryTiming(t *testing.T) {
 		},
 	}
 
-	if err := writeGeneratedConfigs(directory, fixture, suite); err != nil {
+	if err := writeGeneratedConfigs(directory, fixture, suite, false); err != nil {
 		t.Fatalf("writeGeneratedConfigs: %v", err)
 	}
 
@@ -157,5 +157,149 @@ func TestGeneratedPlannerGroupsUseCompatibleQueryTiming(t *testing.T) {
 	}
 	if planner.QueryGroups[1].RangeDurationMS == nil || *planner.QueryGroups[1].RangeDurationMS != 60_000 {
 		t.Fatalf("short-rate range_duration_ms = %v, want 60000", planner.QueryGroups[1].RangeDurationMS)
+	}
+}
+
+func TestGeneratedConfigsWithFixedPlannerOutputSkipPlanner(t *testing.T) {
+	directory := t.TempDir()
+	fixture := seeder.Fixture{
+		Name: "single-series",
+		Series: []seeder.FixtureSeries{{
+			Metric:  "up",
+			Labels:  map[string]string{"job": "test"},
+			Samples: []seeder.FixtureSample{{OffsetSeconds: 0, Value: 1}},
+		}},
+	}
+	suite := Suite{
+		Name:             "fixed-output",
+		Queries:          []QueryCase{{Name: "up", Expr: "up"}},
+		PlannerOutputDir: "/fixed/planner/output",
+	}
+
+	if err := writeGeneratedConfigs(directory, fixture, suite, true); err != nil {
+		t.Fatalf("writeGeneratedConfigs: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(directory, "controller-config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("planner config was generated for a suite with fixed planner output (stat err: %v)", err)
+	}
+
+	overrideContents, err := os.ReadFile(filepath.Join(directory, fixedPlannerOutputComposeFile))
+	if err != nil {
+		t.Fatalf("read compose override: %v", err)
+	}
+	var override struct {
+		Services struct {
+			Planner struct {
+				Profiles []string `yaml:"profiles"`
+			} `yaml:"planner"`
+			QueryEngine struct {
+				DependsOn yaml.Node `yaml:"depends_on"`
+				Volumes   []struct {
+					Type     string `yaml:"type"`
+					Source   string `yaml:"source"`
+					Target   string `yaml:"target"`
+					ReadOnly bool   `yaml:"read_only"`
+				} `yaml:"volumes"`
+			} `yaml:"queryengine"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(overrideContents, &override); err != nil {
+		t.Fatalf("parse compose override: %v", err)
+	}
+	if len(override.Services.Planner.Profiles) == 0 {
+		t.Fatal("compose override leaves the planner service active")
+	}
+	dependsOn := override.Services.QueryEngine.DependsOn
+	if dependsOn.Tag != "!override" {
+		t.Fatalf("queryengine depends_on tag = %q, want !override so the planner dependency is dropped", dependsOn.Tag)
+	}
+	var dependencies map[string]any
+	if err := dependsOn.Decode(&dependencies); err != nil {
+		t.Fatalf("decode queryengine depends_on: %v", err)
+	}
+	if _, ok := dependencies["planner"]; ok {
+		t.Fatal("queryengine still depends on the planner")
+	}
+	volumes := override.Services.QueryEngine.Volumes
+	wantSource := "${" + fixedPlannerOutputDirEnv + ":?" + fixedPlannerOutputDirEnv + " is required}"
+	if len(volumes) != 1 || volumes[0].Type != "bind" || volumes[0].Source != wantSource ||
+		volumes[0].Target != plannerOutputMountPath || !volumes[0].ReadOnly {
+		t.Fatalf("queryengine volumes = %+v, want one read-only bind of %s at %s", volumes, wantSource, plannerOutputMountPath)
+	}
+
+	engineContents, err := os.ReadFile(filepath.Join(directory, "engine_config.yaml"))
+	if err != nil {
+		t.Fatalf("read engine config: %v", err)
+	}
+	var engine struct {
+		InferenceConfig string `yaml:"inference_config"`
+		StreamingConfig string `yaml:"streaming_config"`
+	}
+	if err := yaml.Unmarshal(engineContents, &engine); err != nil {
+		t.Fatalf("parse engine config: %v", err)
+	}
+	if got, want := engine.InferenceConfig, plannerOutputMountPath+"/"+plannerInferenceConfigFile; got != want {
+		t.Fatalf("engine inference_config = %q, want %q", got, want)
+	}
+	if got, want := engine.StreamingConfig, plannerOutputMountPath+"/"+plannerStreamingConfigFile; got != want {
+		t.Fatalf("engine streaming_config = %q, want %q", got, want)
+	}
+}
+
+// With caller-owned targets there is no Compose project to swap the planner
+// out of, so the planner input is still generated and validated.
+func TestGeneratedConfigsWithoutComposeStillWritePlannerInput(t *testing.T) {
+	directory := t.TempDir()
+	fixture := seeder.Fixture{
+		Name: "single-series",
+		Series: []seeder.FixtureSeries{{
+			Metric:  "up",
+			Labels:  map[string]string{"job": "test"},
+			Samples: []seeder.FixtureSample{{OffsetSeconds: 0, Value: 1}},
+		}},
+	}
+	suite := Suite{
+		Name:             "fixed-output",
+		Queries:          []QueryCase{{Name: "up", Expr: "up"}},
+		PlannerOutputDir: "/fixed/planner/output",
+	}
+
+	if err := writeGeneratedConfigs(directory, fixture, suite, false); err != nil {
+		t.Fatalf("writeGeneratedConfigs: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(directory, "controller-config.yaml")); err != nil {
+		t.Fatalf("planner config not generated without Compose: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, fixedPlannerOutputComposeFile)); !os.IsNotExist(err) {
+		t.Fatalf("compose override written without Compose (stat err: %v)", err)
+	}
+}
+
+func TestComposeVersionAtLeast(t *testing.T) {
+	minimum := [3]int{2, 24, 4}
+	for _, test := range []struct {
+		version string
+		want    bool
+	}{
+		{"2.24.4", true},
+		{"v2.29.1", true},
+		{"2.24.4-desktop.1", true},
+		{"3.0.0", true},
+		{"2.24.3", false},
+		{"2.9.10", false},
+		{"1.29.2", false},
+	} {
+		got, err := composeVersionAtLeast(test.version, minimum)
+		if err != nil {
+			t.Fatalf("composeVersionAtLeast(%q): %v", test.version, err)
+		}
+		if got != test.want {
+			t.Fatalf("composeVersionAtLeast(%q) = %v, want %v", test.version, got, test.want)
+		}
+	}
+	if _, err := composeVersionAtLeast("not-a-version", minimum); err == nil {
+		t.Fatal("an unrecognized version must be an error")
 	}
 }
