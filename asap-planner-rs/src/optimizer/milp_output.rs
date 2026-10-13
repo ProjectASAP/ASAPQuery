@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use asap_types::enums::{CleanupPolicy, WindowType};
 use indexmap::map::Entry;
 use indexmap::IndexMap;
-use promql_parser::parser::{token, Expr};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
 use rqe_optimizer::milp::MilpSolution;
@@ -13,16 +12,16 @@ use rqe_optimizer::{Capability, Deployment};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
 use crate::generator::{GeneratorOutput, QueryPlanEntry};
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::labels::set_subpopulation_labels;
 use crate::planner_output::PlannerOutput;
 use crate::promql::generator::{build_inference_yaml, build_streaming_yaml};
+use crate::sql::generator::{build_sql_inference_yaml, build_sql_streaming_yaml};
 
 use super::aqe_extractor::contains_avg;
-use super::milp::MilpWorkload;
+use super::milp::{MilpConfig, MilpWorkload};
 use super::solution::OptimizerItem;
 
 #[derive(Debug, Error)]
@@ -62,8 +61,11 @@ pub enum MilpOutputError {
 }
 
 /// Errors on queries whose plan can be costed but not written as configs:
-/// avg queries, and range-query overrides, which only size retention.
-pub fn reject_unwritable_queries(config: &ControllerConfig) -> Result<(), MilpOutputError> {
+/// PromQL avg queries, and range-query overrides, which only size retention.
+pub fn reject_unwritable_queries(config: MilpConfig) -> Result<(), MilpOutputError> {
+    let MilpConfig::Promql(config) = config else {
+        return Ok(());
+    };
     if let Some(query) = config
         .query_groups
         .iter()
@@ -88,7 +90,7 @@ pub fn reject_unwritable_queries(config: &ControllerConfig) -> Result<(), MilpOu
 /// plan's deployment order, starting at 1. No cleanup policy yet, so the
 /// retained instance counts are not emitted.
 pub fn plan_to_planner_output(
-    config: &ControllerConfig,
+    config: MilpConfig,
     workload: &MilpWorkload,
     solution: &MilpSolution,
 ) -> Result<PlannerOutput, MilpOutputError> {
@@ -119,10 +121,23 @@ pub fn plan_to_planner_output(
         }
     }
 
+    // A SQL aggregation names its table and value column, and its metric is
+    // the table.
+    let sql_columns: HashMap<String, (&str, &str)> = config
+        .sql_columns()
+        .into_iter()
+        .map(|(metric, table, column)| (metric, (table.name.as_str(), column)))
+        .collect();
+
     let mut aggregations: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
     let mut deployment_keys = Vec::with_capacity(served.len());
     for (planned, items) in solution.deployments.iter().zip(&served) {
-        let aggregation = aggregation_config(&planned.deployment, items)?;
+        let mut aggregation = aggregation_config(&planned.deployment, items)?;
+        if let Some(&(table, column)) = sql_columns.get(&aggregation.metric) {
+            aggregation.metric = table.to_string();
+            aggregation.table_name = Some(table.to_string());
+            aggregation.value_column = Some(column.to_string());
+        }
         let key = aggregation.identifying_key();
         aggregations.entry(key.clone()).or_insert(aggregation);
         deployment_keys.push(key);
@@ -152,11 +167,23 @@ pub fn plan_to_planner_output(
         .enumerate()
         .map(|(index, key)| (key.clone(), index as u32 + 1))
         .collect();
-    let schema = config.schema_from_hints();
+    let (streaming_yaml, inference_yaml) = match config {
+        MilpConfig::Promql(config) => {
+            let schema = config.schema_from_hints();
+            (
+                build_streaming_yaml(&aggregations, &id_map, &schema)?,
+                build_inference_yaml(CleanupPolicy::NoCleanup, &queries, &id_map, &schema)?,
+            )
+        }
+        MilpConfig::Sql(config) => (
+            build_sql_streaming_yaml(config, &aggregations, &id_map)?,
+            build_sql_inference_yaml(config, CleanupPolicy::NoCleanup, &queries, &id_map)?,
+        ),
+    };
     Ok(PlannerOutput::from_output(GeneratorOutput {
         punted_queries: Vec::new(),
-        streaming_yaml: build_streaming_yaml(&aggregations, &id_map, &schema)?,
-        inference_yaml: build_inference_yaml(CleanupPolicy::NoCleanup, &queries, &id_map, &schema)?,
+        streaming_yaml,
+        inference_yaml,
         aggregation_count: aggregations.len(),
         query_count: queries.len(),
     }))
@@ -290,20 +317,6 @@ fn heap_size(deployment: &Deployment) -> Result<u64, MilpOutputError> {
         .ok_or_else(|| missing_param(&deployment.config.sketch, "heap"))
 }
 
-/// A `topk` query's literal `k`; `None` for anything else.
-pub(crate) fn topk_k(query: &str) -> Option<u64> {
-    let Ok(Expr::Aggregate(aggregate)) = promql_parser::parser::parse(query) else {
-        return None;
-    };
-    if aggregate.op.id() != token::T_TOPK {
-        return None;
-    }
-    match aggregate.param.as_deref()? {
-        Expr::NumberLiteral(number) if number.val >= 1.0 => Some(number.val as u64),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -311,17 +324,25 @@ mod tests {
     use asap_types::aggregation_config::AggregationConfig;
     use asap_types::enums::QueryLanguage;
     use rqe_optimizer::milp::Objective;
-    use rqe_optimizer::AtomicCostEntry;
+    use rqe_optimizer::{AtomicCostEntry, WorkloadFacts};
     use serde_json::json;
 
     use super::*;
-    use crate::optimizer::milp::tests::{config, costs, facts, group, table_accuracy, SCRAPE_MS};
+    use crate::config::input::{ControllerConfig, SQLControllerConfig};
+    use crate::optimizer::milp::tests::{
+        config, costs, facts, group, table_accuracy, FACTS, SCRAPE_MS,
+    };
     use crate::optimizer::milp::{build_milp_workload, solve_milp};
+    use crate::optimizer::workload_facts::parse_workload_facts;
 
     fn plan(groups: &str) -> (ControllerConfig, MilpWorkload, MilpSolution) {
         let config = config(groups);
-        let facts = facts(&config);
-        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let (workload, solution) = solve(MilpConfig::Promql(&config), &facts(&config));
+        (config, workload, solution)
+    }
+
+    fn solve(config: MilpConfig, facts: &WorkloadFacts) -> (MilpWorkload, MilpSolution) {
+        let workload = build_milp_workload(config, facts, SCRAPE_MS).unwrap();
         let mut costs = costs();
         for cost in &mut costs {
             cost.sketch_config["params"] = match cost.sketch.as_str() {
@@ -336,20 +357,28 @@ mod tests {
         }
         let solution = solve_milp(
             &workload,
-            &facts,
+            facts,
             &costs,
             Objective::default(),
             false,
             &table_accuracy,
         )
         .unwrap();
-        (config, workload, solution)
+        (workload, solution)
     }
 
     /// The aggregation each query names, parsed back the way the engine reads it.
     fn aggregation_for(output: &PlannerOutput, query: &str) -> AggregationConfig {
-        let inference = output.to_inference_config(QueryLanguage::promql).unwrap();
-        let streaming = output.to_streaming_config(QueryLanguage::promql).unwrap();
+        aggregation_in(output, query, QueryLanguage::promql)
+    }
+
+    fn aggregation_in(
+        output: &PlannerOutput,
+        query: &str,
+        language: QueryLanguage,
+    ) -> AggregationConfig {
+        let inference = output.to_inference_config(language).unwrap();
+        let streaming = output.to_streaming_config(language).unwrap();
         let query_config = inference
             .query_configs
             .iter()
@@ -390,7 +419,8 @@ mod tests {
             .map(|q| group(q, 0.99))
             .collect();
         let (config, workload, solution) = plan(&groups);
-        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
         assert_eq!(output.streaming_aggregation_count(), 5);
 
         let a = aggregation_for(&output, sum);
@@ -433,6 +463,113 @@ mod tests {
             assert_eq!(a.metric, "http_requests_total");
             // No cleanup policy yet: retention is unbounded.
             assert_eq!(a.num_aggregates_to_retain, None);
+        }
+    }
+
+    /// What the engine builds from an aggregation, without its id, metric
+    /// and SQL columns.
+    fn layout(a: &AggregationConfig) -> String {
+        let parameters: BTreeMap<_, _> = a.parameters.iter().collect();
+        format!(
+            "{:?}",
+            (
+                a.aggregation_type,
+                &a.aggregation_sub_type,
+                parameters,
+                &a.grouping_labels,
+                &a.aggregated_labels,
+                &a.rollup_labels,
+                a.window_size_ms,
+                a.slide_interval_ms,
+                a.window_type,
+                &a.spatial_filter_normalized,
+                a.num_aggregates_to_retain,
+            )
+        )
+    }
+
+    /// A workload written in SQL, on a table whose value column has
+    /// `http_requests_total`'s labels and facts, plans exactly as in PromQL.
+    #[test]
+    fn sql_twin_plans_like_promql() {
+        let last = |secs: u32| format!("time BETWEEN DATEADD(s, -{secs}, NOW()) AND NOW()");
+        let twins = [
+            (
+                "sum by (job) (http_requests_total)",
+                format!(
+                    "SELECT job, SUM(requests) FROM http WHERE {} GROUP BY job",
+                    last(15)
+                ),
+            ),
+            (
+                "sum by (job) (count_over_time(http_requests_total[1m]))",
+                format!(
+                    "SELECT job, COUNT(requests) FROM http WHERE {} GROUP BY job",
+                    last(60)
+                ),
+            ),
+            (
+                "quantile_over_time(0.99, http_requests_total[5m])",
+                format!(
+                    "SELECT instance, job, quantile(0.99)(requests) FROM http WHERE {} \
+                     GROUP BY instance, job",
+                    last(300)
+                ),
+            ),
+            (
+                "topk(5, sum_over_time(http_requests_total[1m]))",
+                format!(
+                    "SELECT instance, job, SUM(requests) AS s FROM http WHERE {} \
+                     GROUP BY instance, job ORDER BY s DESC LIMIT 5",
+                    last(60)
+                ),
+            ),
+            (
+                "topk(5, count_over_time(http_requests_total[1m]))",
+                format!(
+                    "SELECT instance, job, COUNT(requests) AS c FROM http WHERE {} \
+                     GROUP BY instance, job ORDER BY c DESC LIMIT 5",
+                    last(60)
+                ),
+            ),
+        ];
+        let promql_groups: String = twins.iter().map(|(q, _)| group(q, 0.99)).collect();
+        let (promql, promql_workload, promql_solution) = plan(&promql_groups);
+
+        let sql_groups: String = twins.iter().map(|(_, q)| group(q, 0.99)).collect();
+        let sql: SQLControllerConfig = serde_yaml::from_str(&format!(
+            "tables:\n  - name: http\n    time_column: time\n    value_columns: [requests]\n    \
+             metadata_columns: [instance, job]\nquery_groups:\n{sql_groups}"
+        ))
+        .unwrap();
+        let facts = parse_workload_facts(
+            &FACTS.replace("http_requests_total", "http.requests"),
+            &MilpConfig::Sql(&sql).hints().unwrap(),
+            SCRAPE_MS,
+        )
+        .unwrap();
+        let (sql_workload, sql_solution) = solve(MilpConfig::Sql(&sql), &facts);
+
+        let (promql_cost, sql_cost) = (&promql_solution.plan_cost, &sql_solution.plan_cost);
+        assert_eq!(sql_cost.cpu_secs_per_sec(), promql_cost.cpu_secs_per_sec());
+        assert_eq!(sql_cost.memory_bytes(), promql_cost.memory_bytes());
+
+        let promql_output = plan_to_planner_output(
+            MilpConfig::Promql(&promql),
+            &promql_workload,
+            &promql_solution,
+        )
+        .unwrap();
+        let sql_output =
+            plan_to_planner_output(MilpConfig::Sql(&sql), &sql_workload, &sql_solution).unwrap();
+        assert_eq!(sql_output.streaming_aggregation_count(), 5);
+        for (promql_query, sql_query) in &twins {
+            let expected = aggregation_for(&promql_output, promql_query);
+            let a = aggregation_in(&sql_output, sql_query, QueryLanguage::sql);
+            assert_eq!(layout(&a), layout(&expected), "{sql_query}");
+            assert_eq!(a.metric, "http.requests");
+            assert_eq!(a.table_name.as_deref(), Some("http"));
+            assert_eq!(a.value_column.as_deref(), Some("requests"));
         }
     }
 
@@ -481,7 +618,8 @@ mod tests {
             } else {
                 assert_eq!(heap, needed, "k = {k}: m · k");
             }
-            let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+            let output =
+                plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
             assert_eq!(
                 aggregation_for(&output, &query).parameters["heapsize"],
                 json!(heap),
@@ -500,7 +638,8 @@ mod tests {
         assert_eq!(solution.deployments.len(), 1);
         let heap = planned_heap(&workload, &solution, large);
         assert!(heap >= heap_needed(&workload, &solution, large));
-        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
         for query in [small, large] {
             assert_eq!(
                 aggregation_for(&output, query).parameters["heapsize"],
@@ -526,7 +665,7 @@ mod tests {
         let query = "quantile_over_time(0.99, http_requests_total[5m])";
         let config = config(&group(query, 0.99));
         let facts = facts(&config);
-        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let workload = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let costs = vec![dd_cost(json!({"alpha": 0.02}))];
         let solution = solve_milp(
             &workload,
@@ -538,7 +677,8 @@ mod tests {
         )
         .unwrap();
 
-        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
         let aggregation = aggregation_for(&output, query);
         assert_eq!(aggregation.aggregation_type, AggregationType::DDSketch);
         assert_eq!(aggregation.parameters["alpha"], json!(0.02));
@@ -549,7 +689,7 @@ mod tests {
         let query = "quantile_over_time(0.99, http_requests_total[5m])";
         let config = config(&group(query, 0.99));
         let facts = facts(&config);
-        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let workload = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let costs = vec![dd_cost(json!({}))];
         let solution = solve_milp(
             &workload,
@@ -562,7 +702,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            plan_to_planner_output(&config, &workload, &solution),
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution),
             Err(MilpOutputError::MissingParam {
                 variant,
                 param: "alpha",
@@ -575,7 +715,7 @@ mod tests {
         let query = "quantile_over_time(0.99, http_requests_total[5m])";
         let config = config(&group(query, 0.99));
         let facts = facts(&config);
-        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let workload = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
 
         for alpha in [0.0, -0.01, 1.0] {
             let costs = vec![dd_cost(json!({"alpha": alpha}))];
@@ -589,7 +729,7 @@ mod tests {
             )
             .unwrap();
             assert!(matches!(
-                plan_to_planner_output(&config, &workload, &solution),
+                plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution),
                 Err(MilpOutputError::InvalidDdsAlpha { .. })
             ));
         }
@@ -602,7 +742,8 @@ mod tests {
         let deployment = &mut solution.deployments[0].deployment;
         deployment.window_ms = 300_000;
         deployment.slide_ms = 60_000;
-        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
         let a = aggregation_for(&output, query);
         assert_eq!(a.window_type, WindowType::Sliding);
         assert_eq!((a.window_size_ms, a.slide_interval_ms), (300_000, 60_000));
@@ -612,7 +753,7 @@ mod tests {
     fn avg_query_is_an_error() {
         let query = "avg by (job) (http_requests_total)";
         let (config, workload, solution) = plan(&group(query, 0.99));
-        let err = plan_to_planner_output(&config, &workload, &solution)
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()
             .unwrap();
         assert!(matches!(err, MilpOutputError::AvgQuery(q) if q == query));
@@ -626,7 +767,7 @@ mod tests {
         for field in ["step_ms: 60000", "range_duration_ms: 3600000"] {
             let (config, workload, solution) =
                 plan(&format!("{}    {field}\n", group(query, 0.99)));
-            let err = plan_to_planner_output(&config, &workload, &solution)
+            let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
                 .err()
                 .unwrap();
             assert!(
@@ -644,7 +785,7 @@ mod tests {
             0.99,
         ));
         solution.deployments[0].deployment.config.sketch = "hydra-kll".into();
-        let err = plan_to_planner_output(&config, &workload, &solution)
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()
             .unwrap();
         assert!(
@@ -662,7 +803,7 @@ mod tests {
             .deployment
             .grouping_labels
             .insert("instance".into());
-        let err = plan_to_planner_output(&config, &workload, &solution)
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()
             .unwrap();
         assert!(
@@ -684,7 +825,7 @@ mod tests {
         other.deployment.slide_ms *= 2;
         solution.deployments.push(other);
         solution.raqes[1].deployment = 1;
-        let err = plan_to_planner_output(&config, &workload, &solution)
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()
             .unwrap();
         assert!(matches!(err, MilpOutputError::QueryOnTwoDeployments(q) if q == query));
@@ -696,12 +837,5 @@ mod tests {
             "rate(http_requests_total[5m]) / avg_over_time(http_requests_total[5m])"
         ));
         assert!(!contains_avg("sum by (job) (http_requests_total) * 2"));
-    }
-
-    #[test]
-    fn topk_k_reads_the_literal() {
-        assert_eq!(topk_k("topk(7, http_requests_total)"), Some(7));
-        assert_eq!(topk_k("topk by (job) (3, http_requests_total)"), Some(3));
-        assert_eq!(topk_k("sum(http_requests_total)"), None);
     }
 }

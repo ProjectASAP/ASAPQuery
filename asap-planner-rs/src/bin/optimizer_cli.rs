@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    parse_weight, plan_milp, plan_to_planner_output, reject_unwritable_queries, MilpInputs,
-    MilpPlan,
+    parse_weight, plan_milp, plan_to_planner_output, reject_unwritable_queries, MilpConfig,
+    MilpInputs, MilpPlan,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -82,6 +82,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
+    let config = MilpConfig::Promql(config);
     // Fail before solving when the plan would be written but can't be.
     if args.output_dir.is_some() {
         reject_unwritable_queries(config)?;
