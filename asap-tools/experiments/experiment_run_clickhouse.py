@@ -138,7 +138,7 @@ def _deploy_prebuilt_clickhouse_controller_output(
         local_controller_dir,
         controller_client_config,
         data_ingestion_interval_ms,
-        query_language="sql",
+        query_language=config.QUERY_LANGUAGE_SQL,
     )
     sync.rsync_streaming_configs(
         provider, local_controller_dir, remote_controller_dir, node_offset

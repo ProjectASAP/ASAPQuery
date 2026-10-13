@@ -9,6 +9,7 @@ import yaml
 from experiment_utils.config import copy_prebuilt_controller_output
 
 QUERY = "sum by (job) (data)"
+SQL_QUERY = "SELECT count() FROM hits"
 
 
 class CopyPrebuiltControllerOutputTest(unittest.TestCase):
@@ -96,6 +97,7 @@ class CopyPrebuiltControllerOutputTest(unittest.TestCase):
             self.copy_sql()
 
     def test_sql_output_with_a_sql_schema_is_copied(self):
+        self.write(self.client, {"query_groups": [{"queries": [SQL_QUERY]}]})
         self.write(
             os.path.join(self.src, "inference_config.yaml"),
             {
@@ -107,7 +109,7 @@ class CopyPrebuiltControllerOutputTest(unittest.TestCase):
                         "metadata_columns": [],
                     }
                 ],
-                "queries": [{"query": QUERY}],
+                "queries": [{"query": SQL_QUERY}],
             },
         )
 
@@ -116,6 +118,15 @@ class CopyPrebuiltControllerOutputTest(unittest.TestCase):
         self.assertTrue(
             os.path.isfile(os.path.join(self.dest, "inference_config.yaml"))
         )
+
+    def test_sql_output_refuses_an_invalid_table_schema(self):
+        self.write(
+            os.path.join(self.src, "inference_config.yaml"),
+            {"tables": [{}], "queries": [{"query": QUERY}]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "invalid table schema"):
+            self.copy_sql()
 
 
 if __name__ == "__main__":
