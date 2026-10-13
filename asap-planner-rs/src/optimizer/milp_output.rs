@@ -1,6 +1,6 @@
 //! Turns a solved MILP plan into the planner's streaming and inference YAML.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use asap_types::enums::{CleanupPolicy, WindowType};
 use indexmap::map::Entry;
@@ -55,16 +55,6 @@ pub enum MilpOutputError {
         query: String,
         raqe: Vec<String>,
         deployment: Vec<String>,
-    },
-    #[error(
-        "queries {first:?} and {other:?} share a deployment but need different labels \
-         ({first_labels} vs {other_labels})"
-    )]
-    DeploymentLabelsDisagree {
-        first: String,
-        other: String,
-        first_labels: String,
-        other_labels: String,
     },
     #[error(transparent)]
     Generator(#[from] ControllerError),
@@ -121,16 +111,6 @@ pub fn plan_to_planner_output(
         }
     }
 
-    let item_of = |raqe: usize| &workload.items[workload.raqe_items[raqe]];
-    // Each item once per deployment, however many occurrences it has.
-    let mut served: Vec<Vec<&OptimizerItem>> = vec![Vec::new(); solution.deployments.len()];
-    let mut seen = HashSet::new();
-    for (raqe, planned) in solution.raqes.iter().enumerate() {
-        if seen.insert((planned.deployment, workload.raqe_items[raqe])) {
-            served[planned.deployment].push(item_of(raqe));
-        }
-    }
-
     // A SQL aggregation names its table and value column, and its metric is
     // the table.
     let sql_columns: HashMap<String, (&str, &str)> = config
@@ -139,10 +119,21 @@ pub fn plan_to_planner_output(
         .map(|(metric, table, column)| (metric, (table.name.as_str(), column)))
         .collect();
 
+    // One aggregation per (deployment, labels its queries need). A Raqe
+    // doesn't carry a keyed sketch's key labels (a topk-of-sum heap's inner
+    // `sum by` labels), so the solver may give one deployment to queries
+    // needing different keys; those get one aggregation each.
+    // ponytail: the plan then prices one sketch where several are deployed;
+    // key labels in the Raqe would let the solver see them.
     let mut aggregations: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
-    let mut deployment_keys = Vec::with_capacity(served.len());
-    for (planned, items) in solution.deployments.iter().zip(&served) {
-        let mut aggregation = aggregation_config(&planned.deployment, items)?;
+    let mut item_keys: HashMap<(usize, usize), String> = HashMap::new();
+    for (raqe, planned) in solution.raqes.iter().enumerate() {
+        let item = workload.raqe_items[raqe];
+        if item_keys.contains_key(&(planned.deployment, item)) {
+            continue;
+        }
+        let deployment = &solution.deployments[planned.deployment].deployment;
+        let mut aggregation = aggregation_config(deployment, &workload.items[item])?;
         if let Some(&(table, column)) = sql_columns.get(&aggregation.metric) {
             aggregation.metric = table.to_string();
             aggregation.table_name = Some(table.to_string());
@@ -150,13 +141,14 @@ pub fn plan_to_planner_output(
         }
         let key = aggregation.identifying_key();
         aggregations.entry(key.clone()).or_insert(aggregation);
-        deployment_keys.push(key);
+        item_keys.insert((planned.deployment, item), key);
     }
 
     let mut queries: IndexMap<String, QueryPlanEntry> = IndexMap::new();
     for (raqe, planned) in solution.raqes.iter().enumerate() {
-        let key = &deployment_keys[planned.deployment];
-        for query in &item_of(raqe).query_strings {
+        let item = workload.raqe_items[raqe];
+        let key = &item_keys[&(planned.deployment, item)];
+        for query in &workload.items[item].query_strings {
             match queries.entry(query.clone()) {
                 Entry::Vacant(entry) => {
                     entry.insert(QueryPlanEntry::fully_planned(
@@ -199,12 +191,12 @@ pub fn plan_to_planner_output(
     }))
 }
 
-/// `items` are the optimizer items of the Raqes `deployment` serves; they
-/// share its capability and grouping (`plan_to_planner_output` refuses
-/// roll-ups), so the first one decides the labels.
+/// The aggregation `deployment` runs for `item`, one of the optimizer items
+/// it serves. Items share the deployment's capability and grouping
+/// (`plan_to_planner_output` refuses roll-ups); `item` decides the labels.
 fn aggregation_config(
     deployment: &Deployment,
-    items: &[&OptimizerItem],
+    item: &OptimizerItem,
 ) -> Result<IntermediateAggConfig, MilpOutputError> {
     let variant = deployment.config.sketch.as_str();
     let integer_param = |name: &'static str| {
@@ -270,25 +262,7 @@ fn aggregation_config(
         }
     };
 
-    // A Raqe doesn't carry the labels a keyed sketch is keyed by (a
-    // topk-of-sum heap's inner `sum by` labels), so the solver may share one
-    // deployment between queries that need different keys.
-    let first = items
-        .first()
-        .expect("every planned deployment serves a Raqe");
-    let (grouping_labels, aggregated_labels) = subpopulation_labels(first, aggregation_type);
-    if let Some(other) = items.iter().find(|item| {
-        subpopulation_labels(item, aggregation_type)
-            != (grouping_labels.clone(), aggregated_labels.clone())
-    }) {
-        let (other_grouping, other_aggregated) = subpopulation_labels(other, aggregation_type);
-        return Err(MilpOutputError::DeploymentLabelsDisagree {
-            first: first.query_strings[0].clone(),
-            other: other.query_strings[0].clone(),
-            first_labels: format!("grouping {grouping_labels:?}, aggregated {aggregated_labels:?}"),
-            other_labels: format!("grouping {other_grouping:?}, aggregated {other_aggregated:?}"),
-        });
-    }
+    let (grouping_labels, aggregated_labels) = subpopulation_labels(item, aggregation_type);
 
     Ok(IntermediateAggConfig {
         aggregation_type,
@@ -849,9 +823,10 @@ mod tests {
     }
 
     /// Both are global top-k Raqes on one metric, so the solver may give them
-    /// one deployment, but their heaps are keyed by different labels.
+    /// one deployment, but their heaps are keyed by different labels: each
+    /// query gets its own heap.
     #[test]
-    fn topk_of_sum_queries_needing_different_heap_keys_cannot_share_a_deployment() {
+    fn topk_of_sum_queries_needing_different_heap_keys_get_separate_heaps() {
         let by_job = "topk(5, sum by (job) (sum_over_time(http_requests_total[1m])))";
         let by_instance = "topk(5, sum by (instance) (sum_over_time(http_requests_total[1m])))";
         let (config, workload, mut solution) =
@@ -861,15 +836,18 @@ mod tests {
         }
         solution.deployments.truncate(1);
 
-        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
-            .err()
-            .unwrap();
-        assert!(
-            matches!(&err, MilpOutputError::DeploymentLabelsDisagree { first, other, .. }
-                if [first, other].contains(&&by_job.to_string())
-                    && [first, other].contains(&&by_instance.to_string())),
-            "{err}"
-        );
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+
+        assert_eq!(output.streaming_aggregation_count(), 2);
+        for (query, key) in [(by_job, "job"), (by_instance, "instance")] {
+            let aggregation = aggregation_for(&output, query);
+            assert_eq!(
+                aggregation.aggregated_labels,
+                KeyByLabelNames::new(vec![key.to_string()]),
+                "{query}"
+            );
+        }
     }
 
     #[test]
