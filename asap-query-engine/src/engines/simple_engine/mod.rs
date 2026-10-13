@@ -1361,9 +1361,6 @@ impl SimpleEngine {
                     }
                 },
                 None => match value_precompute.get_keys() {
-                    Some(keys) if keys.is_empty() => {
-                        vec![(fallback_key.clone(), fallback_key.clone())]
-                    }
                     Some(keys) => keys
                         .into_iter()
                         .filter_map(|self_key| {

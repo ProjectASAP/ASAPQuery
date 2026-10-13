@@ -27,6 +27,9 @@ mod tests {
         template_sql: &str,
         agg_id: u64,
         window_size_ms: u64,
+        aggregation_type: AggregationType,
+        grouping_labels: &[&str],
+        aggregated_labels: &[&str],
     ) -> (SimpleEngine, Arc<SimpleMapStore>) {
         // Schema: cpu_usage table
         let labels: HashSet<String> = ["L1", "L2", "L3", "L4"]
@@ -55,20 +58,25 @@ mod tests {
         // Streaming config
         let agg_config = AggregationConfig {
             aggregation_id: agg_id,
-            aggregation_type: AggregationType::Sum,
-            aggregation_sub_type: String::new(),
-            parameters: HashMap::new(),
-            grouping_labels: if template_sql.contains("GROUP BY") {
-                KeyByLabelNames::new(
-                    ["L1", "L2", "L3", "L4"]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                )
+            aggregation_type,
+            aggregation_sub_type: if aggregation_type == AggregationType::MultipleSum {
+                "sum".to_string()
             } else {
-                KeyByLabelNames::empty()
+                String::new()
             },
-            aggregated_labels: KeyByLabelNames::empty(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::new(
+                grouping_labels
+                    .iter()
+                    .map(|label| label.to_string())
+                    .collect(),
+            ),
+            aggregated_labels: KeyByLabelNames::new(
+                aggregated_labels
+                    .iter()
+                    .map(|label| label.to_string())
+                    .collect(),
+            ),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
             window_size_ms,
@@ -108,7 +116,14 @@ mod tests {
     fn test_temporal_query_matches_now_template() {
         // Template in inference_config uses NOW()
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(
+            template,
+            1,
+            10_000,
+            AggregationType::Sum,
+            &["L1", "L2", "L3", "L4"],
+            &[],
+        );
 
         // Incoming query uses absolute timestamps for the same 10s window
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
@@ -126,7 +141,7 @@ mod tests {
     fn test_spatiotemporal_query_matches_now_template() {
         // SpatioTemporal: same metric, spans multiple intervals, GROUP BY subset of labels
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(template, 1, 10_000, AggregationType::Sum, &["L1"], &[]);
 
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1";
         let query_time = 1727740810.0_f64;
@@ -139,16 +154,37 @@ mod tests {
     }
 
     #[test]
-    fn global_aggregate_does_not_fallback_to_grouped_config() {
+    fn global_aggregate_does_not_fallback_to_internally_partitioned_config() {
         let template = "SELECT L1, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(
+            template,
+            1,
+            10_000,
+            AggregationType::MultipleSum,
+            &[],
+            &["L1"],
+        );
         let query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10'";
 
         assert!(
             engine
                 .build_query_execution_context_sql(query.to_string(), 1_727_740_810.0)
                 .is_none(),
-            "a global aggregate must not use capability fallback to select a grouped config"
+            "a global aggregate must not use capability fallback to select an internally partitioned config"
+        );
+    }
+
+    #[test]
+    fn global_aggregate_falls_back_to_scalar_config() {
+        let template = "SELECT L1, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
+        let (engine, _) = build_sql_engine(template, 1, 10_000, AggregationType::Sum, &[], &[]);
+        let query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10'";
+
+        assert!(
+            engine
+                .build_query_execution_context_sql(query.to_string(), 1_727_740_810.0)
+                .is_some(),
+            "a global aggregate can use capability fallback to select a scalar config"
         );
     }
 
@@ -156,7 +192,7 @@ mod tests {
     fn global_sum_returns_one_unlabeled_result() {
         let template =
             "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW()";
-        let (engine, store) = build_sql_engine(template, 1, 1_000);
+        let (engine, store) = build_sql_engine(template, 1, 1_000, AggregationType::Sum, &[], &[]);
         let context = engine
             .build_query_execution_context_sql(template.to_string(), 1_000_000.0)
             .expect("global sum context builds");
@@ -187,7 +223,14 @@ mod tests {
         // Window equals the scrape interval (1s), GROUP BY all labels — classifies
         // the same as every other shape: SpatioTemporal.
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let (engine, _) = build_sql_engine(template, 1, 1000);
+        let (engine, _) = build_sql_engine(
+            template,
+            1,
+            1000,
+            AggregationType::Sum,
+            &["L1", "L2", "L3", "L4"],
+            &[],
+        );
 
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
         let query_time = 1727740810.0_f64;
@@ -203,7 +246,14 @@ mod tests {
     fn test_temporal_quantile_query_matches_now_template() {
         // QUANTILE aggregation, window > scrape interval, GROUP BY all labels
         let template = "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(
+            template,
+            1,
+            10_000,
+            AggregationType::Sum,
+            &["L1", "L2", "L3", "L4"],
+            &[],
+        );
 
         let incoming = "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
         let query_time = 1727740810.0_f64;
@@ -220,7 +270,7 @@ mod tests {
         // Nested SQL (spatial-of-temporal subquery) is unsupported: the matcher rejects
         // it with QueryError::NestedQueryUnsupported instead of mis-executing it (#499).
         let template = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(template, 1, 10_000, AggregationType::Sum, &["L1"], &[]);
 
         let incoming = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) GROUP BY L1";
         let query_time = 1727740810.0_f64;
@@ -237,7 +287,7 @@ mod tests {
         // Nested SQL with an outer ORDER BY + LIMIT is unsupported for the same reason:
         // the matcher rejects it before topk detection ever runs.
         let template = "SELECT L1, SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) sub GROUP BY L1";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(template, 1, 10_000, AggregationType::Sum, &["L1"], &[]);
 
         let incoming = "SELECT L1, SUM(result) AS rollup FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) sub GROUP BY L1 ORDER BY rollup DESC LIMIT 10";
         let query_time = 1727740810.0_f64;
@@ -253,7 +303,14 @@ mod tests {
     fn test_no_match_returns_none() {
         // Engine has a SUM template; incoming uses AVG — should never match
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let (engine, _) = build_sql_engine(template, 1, 10_000);
+        let (engine, _) = build_sql_engine(
+            template,
+            1,
+            10_000,
+            AggregationType::Sum,
+            &["L1", "L2", "L3", "L4"],
+            &[],
+        );
 
         let incoming = "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
         let query_time = 1727740810.0_f64;
