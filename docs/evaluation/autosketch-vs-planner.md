@@ -207,7 +207,7 @@ grid.
 
 | ID | Description | Purpose |
 | --- | --- | --- |
-| `synthetic` | Synthetic PromQL workload: the 10-template mixed set in "Synthetic workload" below, over Zipf data. Main figure. | Cost–latency trade-off across scales |
+| `synthetic` | Synthetic PromQL workload: the 8-template mixed set in "Synthetic workload" below, over Zipf data. Main figure. | Cost–latency trade-off across scales |
 | `traces` | Real-trace RQEs, one workload per dataset: Alibaba 2022 and Google 2011 (BOOM is left out for now). Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters are fit over each whole trace; the accuracy target is the p95 level (§5). | Appendix: real-trace results |
 
 ### Synthetic workload
@@ -243,8 +243,8 @@ ingests decides whether a sketch is worth it:
 |---|---|---|---|
 | per series, temporal (templates 4, 5, 6, 10; D1, D5) | C = 1e4 | `200 · S`: 1.8e5 (15m) to 1.7e7 (24h) | exact accumulator or quantile sketch |
 | `by (job)`, spatial, `S` = 1 s (1, 3; D2) | J = 10 | `2e5 · S` = 2e5 | exact accumulator or quantile sketch |
-| `by (job)`, temporal (7, 8; D3) | J = 10 | 1.8e8 to 1.7e10 | exact accumulator |
-| top-k over `label_0` (2, 9; D4) | 1 | `λ · S`: 1.8e9 to 1.7e11, over 1e4 keys | top-k sketch (CMS-heap) |
+| `by (job)`, temporal (8) | J = 10 | 1.8e8 to 1.7e10 | exact accumulator |
+| top-k over `label_0` (2) | 1 | `λ · S`: 1.8e9 to 1.7e11, over 1e4 keys | top-k sketch (CMS-heap) |
 
 Exact accumulators keep constant state and a constant per-item cost, so their
 size does not matter. Sketch accuracy is read from the saturation curve at the
@@ -269,18 +269,16 @@ uses k = 32.
 | # | PromQL | Capability | Grouping | RQEs |
 |---|---|---|---|---|
 | 1 | `sum by (job) (data)` | SumOrCount | `job` | 1 |
-| 2 | `topk(32, sum by (label_0) (sum_over_time(data[w])))` | TopK | none; keys `label_0` | 4 |
+| 2 | `topk(32, sum_over_time(data[w]))` | TopK | none; keys `label_0` | 4 |
 | 3 | `quantile by (job) (q, data)`, q ∈ {0.5, 0.75, 0.9, 0.95, 0.99} | Quantile | `job` | 5 |
 | 4 | `sum_over_time(data[w])` | SumOrCount | per series | 4 |
 | 5 | `quantile_over_time(q, data[w])`, same five q | Quantile | per series | 20 |
 | 6 | `rate(data[w])` | RateOrIncrease | per series | 4 |
-| 7 | `sum by (job) (rate(data[w]))` | RateOrIncrease | `job` | 4 |
 | 8 | `sum by (job) (sum_over_time(data[w]))` | SumOrCount | `job` | 4 |
-| 9 | `topk(32, sum by (label_0) (rate(data[w])))` | TopK over per-series increases | none; keys `label_0` | 4 |
 | 10 | `quantile_over_time(0.9, data[w]) / quantile_over_time(0.5, data[w])` | Two Quantile RQEs | per series | 8 |
 
-58 RQEs per replica. Template 10's operands are the same RQEs as template 5's
-q = 0.9 and q = 0.5, so 50 are distinct.
+50 RQEs per replica. Template 10's operands are the same RQEs as template 5's
+q = 0.9 and q = 0.5, so 42 are distinct.
 
 Mapping notes:
 - Capabilities are `rqe-optimizer`'s (#144). Sum and rate/increase are their
@@ -304,15 +302,15 @@ Mapping notes:
   is checked with `promql-parser`.
 
 <details>
-<summary>Every query of the 10-template set (54 queries, 58 RQEs)</summary>
+<summary>Every query of the 8-template set (46 queries, 50 RQEs)</summary>
 
 | # | Template | PromQL | Capability | Grouping | `S` | `T` | RQEs |
 |---|---|---|---|---|---|---|---|
 | 1 | 1 | `sum by (job) (data)` | SumOrCount | job | 1s | 1s | 1 |
-| 2 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
-| 3 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
-| 4 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
-| 5 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
+| 2 | 2 | `topk(32, sum_over_time(data[15m]))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
+| 3 | 2 | `topk(32, sum_over_time(data[1h]))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
+| 4 | 2 | `topk(32, sum_over_time(data[6h]))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
+| 5 | 2 | `topk(32, sum_over_time(data[24h]))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
 | 6 | 3 | `quantile by (job) (0.5, data)` | Quantile | job | 1s | 1s | 1 |
 | 7 | 3 | `quantile by (job) (0.75, data)` | Quantile | job | 1s | 1s | 1 |
 | 8 | 3 | `quantile by (job) (0.9, data)` | Quantile | job | 1s | 1s | 1 |
@@ -346,22 +344,14 @@ Mapping notes:
 | 36 | 6 | `rate(data[1h])` | RateOrIncrease | series | 1h | 1m | 1 |
 | 37 | 6 | `rate(data[6h])` | RateOrIncrease | series | 6h | 1m | 1 |
 | 38 | 6 | `rate(data[24h])` | RateOrIncrease | series | 24h | 1m | 1 |
-| 39 | 7 | `sum by (job) (rate(data[15m]))` | RateOrIncrease | job | 15m | 1m | 1 |
-| 40 | 7 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
-| 41 | 7 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
-| 42 | 7 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
-| 43 | 8 | `sum by (job) (sum_over_time(data[15m]))` | SumOrCount | job | 15m | 1m | 1 |
-| 44 | 8 | `sum by (job) (sum_over_time(data[1h]))` | SumOrCount | job | 1h | 1m | 1 |
-| 45 | 8 | `sum by (job) (sum_over_time(data[6h]))` | SumOrCount | job | 6h | 1m | 1 |
-| 46 | 8 | `sum by (job) (sum_over_time(data[24h]))` | SumOrCount | job | 24h | 1m | 1 |
-| 47 | 9 | `topk(32, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 48 | 9 | `topk(32, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 49 | 9 | `topk(32, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
-| 50 | 9 | `topk(32, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
-| 51 | 10 | `quantile_over_time(0.9, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
-| 52 | 10 | `quantile_over_time(0.9, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
-| 53 | 10 | `quantile_over_time(0.9, data[6h]) / quantile_over_time(0.5, data[6h])` | 2 × Quantile | series | 6h | 1m | 2 |
-| 54 | 10 | `quantile_over_time(0.9, data[24h]) / quantile_over_time(0.5, data[24h])` | 2 × Quantile | series | 24h | 1m | 2 |
+| 39 | 8 | `sum by (job) (sum_over_time(data[15m]))` | SumOrCount | job | 15m | 1m | 1 |
+| 40 | 8 | `sum by (job) (sum_over_time(data[1h]))` | SumOrCount | job | 1h | 1m | 1 |
+| 41 | 8 | `sum by (job) (sum_over_time(data[6h]))` | SumOrCount | job | 6h | 1m | 1 |
+| 42 | 8 | `sum by (job) (sum_over_time(data[24h]))` | SumOrCount | job | 24h | 1m | 1 |
+| 43 | 10 | `quantile_over_time(0.9, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
+| 44 | 10 | `quantile_over_time(0.9, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
+| 45 | 10 | `quantile_over_time(0.9, data[6h]) / quantile_over_time(0.5, data[6h])` | 2 × Quantile | series | 6h | 1m | 2 |
+| 46 | 10 | `quantile_over_time(0.9, data[24h]) / quantile_over_time(0.5, data[24h])` | 2 × Quantile | series | 24h | 1m | 2 |
 
 </details>
 
@@ -374,16 +364,13 @@ heavy, refreshed every 1 m, over the same windows `W`.
 |---|---|---|---|---|
 | D1 | `quantile_over_time(q, data[w])`, q ∈ {0.5, 0.9, 0.99} | Quantile | per series | 12 |
 | D2 | `quantile by (job) (q, data)`, q ∈ {0.5, 0.9, 0.99} | Quantile | `job` | 3 |
-| D3 | `sum by (job) (rate(data[w]))` | RateOrIncrease | `job` | 4 |
-| D4 | `topk(32, sum by (label_0) (rate(data[w])))`, w ∈ {15m, 1h} | TopK over per-series increases | none; keys `label_0` | 2 |
 | D5 | `quantile_over_time(0.99, data[w]) / quantile_over_time(0.5, data[w])`, w ∈ {15m, 1h} | Two Quantile RQEs | per series | 4 |
 
-25 RQEs per replica; D5's operands repeat D1's, so 21 are distinct. D1's
-quantiles share one stream across overlapping windows; D3 and D4 share the
-increase stream.
+19 RQEs per replica; D5's operands repeat D1's, so 15 are distinct. D1's
+quantiles share one stream across overlapping windows.
 
 <details>
-<summary>Every query of the dashboard set (23 queries, 25 RQEs)</summary>
+<summary>Every query of the dashboard set (17 queries, 19 RQEs)</summary>
 
 | # | Template | PromQL | Capability | Grouping | `S` | `T` | RQEs |
 |---|---|---|---|---|---|---|---|
@@ -402,28 +389,22 @@ increase stream.
 | 13 | D2 | `quantile by (job) (0.5, data)` | Quantile | job | 1s | 1s | 1 |
 | 14 | D2 | `quantile by (job) (0.9, data)` | Quantile | job | 1s | 1s | 1 |
 | 15 | D2 | `quantile by (job) (0.99, data)` | Quantile | job | 1s | 1s | 1 |
-| 16 | D3 | `sum by (job) (rate(data[15m]))` | RateOrIncrease | job | 15m | 1m | 1 |
-| 17 | D3 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
-| 18 | D3 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
-| 19 | D3 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
-| 20 | D4 | `topk(32, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 21 | D4 | `topk(32, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 22 | D5 | `quantile_over_time(0.99, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
-| 23 | D5 | `quantile_over_time(0.99, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
+| 16 | D5 | `quantile_over_time(0.99, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
+| 17 | D5 | `quantile_over_time(0.99, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
 
 </details>
 
 #### Workload grid
 
-The evaluated template set is the **mixed** set (the 10 templates, 50
+The evaluated template set is the **mixed** set (the 8 templates, 42
 distinct RQEs). The dashboard set above is kept as a description of a
 dashboard but is not evaluated (2026-10-08). A workload fixes every
 dimension; the sweep is the default, then each dimension alone.
 
 | Dimension | Values | What it varies |
 |---|---|---|
-| Shared replicas `r` | **1**, 8 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated (50 and 92 RQEs). Many users over the same metrics: the sharing benefit |
-| Metrics `m` | **1**, 8, 16 | `m` copies of the template set, copy `i` on its own metric `data_i` with the same data model; nothing is shared across copies, so RQEs grow as 50 · `m` (400, 800). Planning time vs. the number of RQEs |
+| Shared replicas `r` | **1**, 8 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated (42 and 76 RQEs). Many users over the same metrics: the sharing benefit |
+| Metrics `m` | **1**, 8, 16 | `m` copies of the template set, copy `i` on its own metric `data_i` with the same data model; nothing is shared across copies, so RQEs grow as 42 · `m` (336, 672). Planning time vs. the number of RQEs |
 
 Every workload runs every method at both weight settings, in both latency
 versions (§5). The data model is fixed (§6 "Data model and scale"); no grid
@@ -658,10 +639,10 @@ latency SLA (§5). Decided 2026-10-08.
   case where this does not hold. The result to report is the size of the gap and where it comes
   from, not that a gap exists.
 
-## 11. Results (synthetic, 2026-10-11: Hydra candidates, roll-ups, cube)
+## 11. Results (synthetic, 2026-10-13: Hydra candidates, roll-ups, cube)
 
 Absolute costs by use; latency is a plan's batch latency. Results, figures and
-the full analysis are in sketch-bench #203,
+the full analysis are in sketch-bench #210,
 `rqe-optimizer/results/autosketch-vs-asap-hydra/`.
 
 **What changed since the 2026-10-08 run (sketch-bench #138)**
@@ -673,7 +654,7 @@ the full analysis are in sketch-bench #203,
   measured on datasets with the eval's own label schemas, held to the worst
   error over the covered groups and the worst over N and seeds. Their cost
   rows come from those datasets. AutoSketch keeps skipping Hydra.
-- **Template sets.** **Classic** is the earlier 10 templates.
+- **Template sets.** **Classic** is the earlier templates 1–6, 8 and 10.
   **Multi-grouping** is templates 11–17 (#196) on two metrics, `http`
   (region × service × endpoint × status) and `flows` (dst_subnet × dst_port ×
   proto): distinct counts and p99s over several groupings of one stream, in
@@ -691,18 +672,18 @@ templates, 490 ms on multi-grouping alone).
 
 | Workload | RQEs | ASAP (latency) | ASAP, no roll-ups | PerQuery (latency) | AutoSketch (latency) | ASAP at AutoSketch's latency | PerQuery at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|
-| mixed | 50 | 3.54 (13.4 s) | 3.54 | 10.5 (3.33 s) | 3,716 (1015 ms) | 5.67 | 13.5 |
-| mixed, Fargate | 50 | 0.230 $/h | 0.230 | 0.752 $/h | 176 $/h | 0.307 | 0.864 |
-| mixed, m = 16 | 800 | 56.6 (13.4 s) | 56.6 | 168 (3.33 s) | 59,452 | 90.8 | 215 |
+| mixed | 42 | 2.38 (13.4 s) | 2.38 | 7.77 (3.33 s) | 2,739 (1015 ms) | 4.22 | 10.5 |
+| mixed, Fargate | 42 | 0.170 $/h | 0.170 | 0.623 $/h | 136 $/h | 0.242 | 0.732 |
+| mixed, m = 16 | 672 | 38.1 (13.4 s) | 38.1 | 124 (3.33 s) | 43,831 | 67.6 | 167 |
 | multi-grouping | 62 | 0.221 (0.56 s) | 0.551 | 1.07 (0.96 s) | 10.2 (490 ms) | 0.324 | 1.33 |
 | multi-grouping, Fargate | 62 | 0.0137 $/h | 0.0339 | 0.0597 $/h | 0.430 $/h | 0.0187 | 0.0701 |
 | multi-grouping, r = 8 | 124 | 0.242 (0.56 s) | 0.573 | 2.04 (0.96 s) | 12.3 | 0.344 | 2.33 |
 | multi-grouping, m = 16 | 992 | 3.53 (0.56 s) | 8.81 | 17.1 (0.96 s) | 163 | 5.18 | 21.2 |
-| mixed + multi-grouping | 112 | 3.76 (13.4 s) | 4.09 | 11.6 (3.33 s) | 3,726 (1015 ms) | 5.90 | 14.5 |
-| mixed + multi-grouping, Fargate | 112 | 0.243 $/h | 0.264 | 0.812 $/h | 176 $/h | 0.321 | 0.923 |
-| mixed + multi-grouping, r = 8 | 216 | 3.90 (2.68 s) | 4.23 | 20.5 (3.33 s) | 4,468 | 5.95 | 23.7 |
-| mixed + multi-grouping, m = 8 | 896 | 30.1 (13.4 s) | 32.7 | 92.7 (3.33 s) | 29,808 | 47.2 | 116 |
-| mixed + multi-grouping, m = 16 | 1792 | 60.2 (13.4 s) | 65.4 | 185 (3.33 s) | 59,615 | 94.3 | 232 |
+| mixed + multi-grouping | 104 | 2.60 (13.4 s) | 2.93 | 8.84 (3.33 s) | 2,750 (1015 ms) | 4.44 | 11.5 |
+| mixed + multi-grouping, Fargate | 104 | 0.184 $/h | 0.204 | 0.683 $/h | 136 $/h | 0.255 | 0.792 |
+| mixed + multi-grouping, r = 8 | 200 | 2.71 (2.68 s) | 3.04 | 15.6 (3.33 s) | 3,296 | 4.49 | 18.5 |
+| mixed + multi-grouping, m = 8 | 832 | 20.8 (13.4 s) | 23.5 | 70.7 (3.33 s) | 21,997 | 35.5 | 92.3 |
+| mixed + multi-grouping, m = 16 | 1664 | 41.7 (13.4 s) | 47.0 | 141 (3.33 s) | 43,995 | 71.1 | 185 |
 
 **Version 2**, cost at a batch-latency SLA (CPU only, vCPU). With the
 classic templates AutoSketch meets only the 3 s and 10 s SLAs; on
@@ -712,17 +693,17 @@ feasible bound, so the 100 and 300 ms SLAs have no plan.
 
 | Workload | SLA | ASAP | ASAP, no roll-ups | PerQuery | AutoSketch |
 |---|---|---|---|---|---|
-| mixed | 100 ms | 36.7 | 36.7 | 64.5 | 3,716 (misses) |
-| mixed | 1 s | 5.67 | 5.67 | 13.5 | 3,716 (misses) |
-| mixed | 3 s | 3.60 | 3.60 | 10.8 | 3,716 |
-| mixed, m = 16 | 100 ms | 588 | 588 | 1,030 | 59,452 (misses) |
-| mixed, m = 16 | 3 s | 57.6 | 57.6 | 173 | 59,452 |
+| mixed | 100 ms | 34.1 | 34.1 | 60.1 | 2,739 (misses) |
+| mixed | 1 s | 4.22 | 4.22 | 10.5 | 2,739 (misses) |
+| mixed | 3 s | 2.41 | 2.41 | 7.98 | 2,739 |
+| mixed, m = 16 | 100 ms | 546 | 546 | 962 | 43,831 (misses) |
+| mixed, m = 16 | 3 s | 38.6 | 38.6 | 128 | 43,831 |
 | multi-grouping | 1 s | 0.221 | 0.551 | 1.07 | 10.2 |
 | multi-grouping, m = 16 | 1 s | 3.53 | 8.81 | 17.1 | 163 |
-| mixed + multi-grouping | 1 s | 5.90 | 6.23 | 14.5 | 3,726 (misses) |
-| mixed + multi-grouping | 3 s | 3.82 | 4.15 | 11.9 | 3,726 |
-| mixed + multi-grouping, m = 16 | 1 s | 94.3 | 99.6 | 232 | 59,615 (misses) |
-| mixed + multi-grouping, m = 16 | 3 s | 61.1 | 66.4 | 190 | 59,615 |
+| mixed + multi-grouping | 1 s | 4.44 | 4.77 | 11.5 | 2,750 (misses) |
+| mixed + multi-grouping | 3 s | 2.64 | 2.97 | 9.05 | 2,750 |
+| mixed + multi-grouping, m = 16 | 1 s | 71.1 | 76.4 | 185 | 43,995 (misses) |
+| mixed + multi-grouping, m = 16 | 3 s | 42.2 | 47.4 | 145 | 43,995 |
 
 **Roll-ups cut multi-grouping cost by 60%.**
 - On multi-grouping, ASAP serves 52 of 62 RQEs from a finer deployment. Its
@@ -735,7 +716,7 @@ feasible bound, so the 100 and 300 ms SLAs have no plan.
 - A KLL or DDSketch merge summarizes the pooled data of the merged groups, so
   a roll-up answers a coarse group's p99, not a quantile of quantiles (KLL
   reads its measured merge curve).
-- On mixed + multi-grouping, roll-ups save 8% (4.09 to 3.76 vCPU; 34 to 13
+- On mixed + multi-grouping, roll-ups save 11% (2.93 to 2.60 vCPU; 32 to 11
   deployments): the classic templates, whose streams have one grouping each,
   are most of the cost.
 - On classic, roll-ups never apply. ASAP's ~3× advantage over PerQuery there
@@ -761,12 +742,12 @@ approxbench accuracy runs at 1e8 items):
 
 | Workload | RQEs | ASAP | PerQuery | AutoSketch |
 |---|---|---|---|---|
-| mixed | 50 | 0.72 s | 0.64 s | 0.002 s + 212 s |
-| mixed, m = 16 | 800 | 13.7 s | 11.4 s | 0.035 s + 3,394 s |
+| mixed | 42 | 0.44 s | 0.49 s | 0.002 s + 212 s |
+| mixed, m = 16 | 672 | 8.1 s | 8.9 s | 0.027 s + 3,394 s |
 | multi-grouping | 62 | 0.41 s | 0.22 s | 0.002 s + 269 s |
 | multi-grouping, m = 16 | 992 | 7.0 s | 4.1 s | 0.037 s + 4,309 s |
-| mixed + multi-grouping | 112 | 1.12 s | 0.88 s | 0.004 s + 481 s |
-| mixed + multi-grouping, m = 16 | 1792 | 22.5 s | 16.7 s | 0.079 s + 7,702 s |
+| mixed + multi-grouping | 104 | 0.94 s | 0.64 s | 0.005 s + 481 s |
+| mixed + multi-grouping, m = 16 | 1664 | 15.6 s | 13.0 s | 0.137 s + 7,702 s |
 
 **Caveats.**
 - The cost model charges a per-group sketch its insert only, not routing a
