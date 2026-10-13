@@ -85,10 +85,11 @@ func TestCheckedInNativeDagSuites(t *testing.T) {
 }
 
 // Every rollup suite query must have a query config in the fixed planner
-// output; a mismatched string would make the engine reject it rather than
-// exercise a roll-up.
+// output, naming aggregations that exist, on a metric and labels the dataset
+// has; a mismatch would otherwise surface only as a slow Docker-suite failure.
 func TestCheckedInRollupSuiteMatchesFixedPlannerOutput(t *testing.T) {
-	if _, err := seeder.LoadFixture("../datasets/rollup.yaml"); err != nil {
+	fixture, err := seeder.LoadFixture("../datasets/rollup.yaml")
+	if err != nil {
 		t.Fatalf("LoadFixture: %v", err)
 	}
 	suite, err := LoadSuiteFile("../suites/rollup.yaml")
@@ -104,11 +105,60 @@ func TestCheckedInRollupSuiteMatchesFixedPlannerOutput(t *testing.T) {
 	}
 	var inference struct {
 		Queries []struct {
-			Query string `yaml:"query"`
+			Query        string `yaml:"query"`
+			Aggregations []struct {
+				AggregationID int `yaml:"aggregation_id"`
+			} `yaml:"aggregations"`
 		} `yaml:"queries"`
 	}
 	if err := yaml.Unmarshal(contents, &inference); err != nil {
 		t.Fatalf("parse inference config: %v", err)
+	}
+	streamingContents, err := os.ReadFile(filepath.Join(suite.PlannerOutputDir, plannerStreamingConfigFile))
+	if err != nil {
+		t.Fatalf("read streaming config: %v", err)
+	}
+	var streaming struct {
+		Aggregations []struct {
+			AggregationID int    `yaml:"aggregationId"`
+			Metric        string `yaml:"metric"`
+			Labels        struct {
+				Grouping []string `yaml:"grouping"`
+			} `yaml:"labels"`
+		} `yaml:"aggregations"`
+	}
+	if err := yaml.Unmarshal(streamingContents, &streaming); err != nil {
+		t.Fatalf("parse streaming config: %v", err)
+	}
+	datasetLabels := make(map[string]map[string]struct{})
+	for _, series := range fixture.Series {
+		if datasetLabels[series.Metric] == nil {
+			datasetLabels[series.Metric] = make(map[string]struct{})
+		}
+		for label := range series.Labels {
+			datasetLabels[series.Metric][label] = struct{}{}
+		}
+	}
+	aggregationIDs := make(map[int]struct{}, len(streaming.Aggregations))
+	for _, aggregation := range streaming.Aggregations {
+		aggregationIDs[aggregation.AggregationID] = struct{}{}
+		labels, ok := datasetLabels[aggregation.Metric]
+		if !ok {
+			t.Errorf("aggregation %d is on metric %q, which the dataset lacks", aggregation.AggregationID, aggregation.Metric)
+			continue
+		}
+		for _, label := range aggregation.Labels.Grouping {
+			if _, ok := labels[label]; !ok {
+				t.Errorf("aggregation %d groups by %q, which %q series lack", aggregation.AggregationID, label, aggregation.Metric)
+			}
+		}
+	}
+	for _, query := range inference.Queries {
+		for _, reference := range query.Aggregations {
+			if _, ok := aggregationIDs[reference.AggregationID]; !ok {
+				t.Errorf("query %q names aggregation %d, which the streaming config lacks", query.Query, reference.AggregationID)
+			}
+		}
 	}
 	configured := make(map[string]struct{}, len(inference.Queries))
 	for _, query := range inference.Queries {

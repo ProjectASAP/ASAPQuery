@@ -144,8 +144,10 @@ The path is relative to the suite file. The directory must contain
 `streaming_config.yaml` and `inference_config.yaml` in the planner's output
 format; the runner fails at load time if either is missing. The planner
 service then does not run, and the query engine reads the directory in place
-of the planner's output volume. With already-running targets the field has no
-effect. `suites/rollup.yaml` is an example.
+of the planner's output volume. This needs Docker Compose v2.24.4 or later
+(for `!override`); the runner checks the version first. With
+already-running targets the field has no effect, and the planner input is
+generated and validated as usual. `suites/rollup.yaml` is an example.
 
 ## Configure tolerance
 
