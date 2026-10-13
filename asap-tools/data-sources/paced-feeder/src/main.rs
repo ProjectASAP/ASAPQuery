@@ -17,7 +17,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
-use workload::{Row, Workload};
+use workload::{series_batches, Row, Workload};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -85,9 +85,10 @@ struct Args {
     #[arg(long)]
     start_ms: Option<i64>,
 
-    /// Rows per HTTP request. Defaults to 50,000 for remote write, which keeps
-    /// a compressed request under axum's 2 MB body limit in ASAPQuery's ingest,
-    /// and 100,000 for ClickHouse, where each INSERT creates a part.
+    /// Rows per HTTP request, rounded down to whole series (at least one).
+    /// Defaults to 50,000 for remote write, which keeps a compressed request
+    /// under axum's 2 MB body limit in ASAPQuery's ingest, and 100,000 for
+    /// ClickHouse, where each INSERT creates a part.
     #[arg(long)]
     batch_rows: Option<usize>,
     /// Concurrent requests within one tick.
@@ -349,25 +350,23 @@ async fn main() -> Result<()> {
         let started = Instant::now();
 
         let (mut rows, mut bytes) = (0, 0);
-        // A tick's requests go out concurrently, so a group's samples within
-        // the tick may arrive out of order. That is safe for ASAPQuery: the
-        // tick lies in one window (see `slot_rows`) and is under one second
-        // behind the watermark, within the allowed lateness.
+        // A tick's requests go out concurrently, each holding whole series
+        // (see `series_batches`): a series' samples arrive in order, but a
+        // group's samples across series may not. That is safe for ASAPQuery:
+        // the tick lies in one window (see `tick_rows`) and is under one
+        // second behind the watermark, within the allowed lateness.
+        let per_series = workload.samples_per_sec as usize;
         let mut tasks = tokio::task::JoinSet::new();
         for metric in 0..workload.metrics.len() {
-            let metric_rows: Arc<Vec<Row>> = Arc::new(
-                (0..workload.samples_per_sec)
-                    .flat_map(|slot| workload.slot_rows(metric, tick, slot, start_ms))
-                    .collect(),
-            );
-            for begin in (0..metric_rows.len()).step_by(batch_rows) {
-                let end = (begin + batch_rows).min(metric_rows.len());
+            let metric_rows = Arc::new(workload.tick_rows(metric, tick, start_ms));
+            for range in series_batches(metric_rows.len(), per_series, batch_rows) {
                 let (metric_rows, sink) = (Arc::clone(&metric_rows), Arc::clone(&sink));
                 let permit = Arc::clone(&permits).acquire_owned().await?;
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let sent = sink.send(metric, &metric_rows[begin..end]).await;
-                    sent.map(|bytes| (end - begin, bytes))
+                    let rows = range.len();
+                    let sent = sink.send(metric, &metric_rows[range]).await;
+                    sent.map(|bytes| (rows, bytes))
                 });
             }
         }

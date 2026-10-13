@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn remote_write_decodes_to_one_series_per_row() {
         let w = grouped();
-        let rows = w.slot_rows(0, 2, 0, 1_700_000_000_000);
+        let rows = w.tick_rows(0, 2, 1_700_000_000_000);
         let request =
             decode_remote_write(&RemoteWriteEncoder::new(&w.metrics[0], "data").encode(&rows));
         assert_eq!(request.timeseries.len(), rows.len());
@@ -232,7 +232,7 @@ mod tests {
     fn remote_write_sorts_labels_by_name() {
         let w = multi_label();
         let metric = &w.metrics[0];
-        let rows = w.slot_rows(0, 0, 0, 1_000);
+        let rows = w.tick_rows(0, 0, 1_000);
         let request =
             decode_remote_write(&RemoteWriteEncoder::new(metric, &metric.name).encode(&rows));
         assert_eq!(request.timeseries.len(), 12);
@@ -289,7 +289,7 @@ mod tests {
         let w = grouped();
         let metric = &w.metrics[0];
         assert_eq!(row_binary_columns(metric), "ts, label_0, instance, value");
-        let rows = w.slot_rows(0, 0, 0, 42_000);
+        let rows = w.tick_rows(0, 0, 42_000);
         let decoded = decode_row_binary(&RowBinaryEncoder::new(metric).encode(&rows), 2);
         let expected: Vec<_> = rows
             .iter()
@@ -306,7 +306,7 @@ mod tests {
             row_binary_columns(metric),
             "ts, zone, job, label_0, Az, value"
         );
-        let rows = w.slot_rows(0, 3, 0, 0);
+        let rows = w.tick_rows(0, 3, 0);
         let decoded = decode_row_binary(&RowBinaryEncoder::new(metric).encode(&rows), 4);
         assert_eq!(decoded.len(), 12);
         assert_eq!(
