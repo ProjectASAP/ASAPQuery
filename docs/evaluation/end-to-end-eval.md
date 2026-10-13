@@ -168,6 +168,26 @@ plans exactly with the same binary):
   (`align_to_interval`, #841; floored in the ClickHouse SQL, #844), with a 10 s
   offset for ingestion to settle.
 
+### ASAPQuery's retention: memory, then disk
+
+The baselines keep their whole history on disk and can answer any range.
+ASAPQuery keeps sketch windows instead, in two tiers (#800):
+
+- **Memory: CircularBuffer.** Each aggregation keeps its last
+  `retained_instance_count` windows (`num_aggregates_to_retain`), which is
+  exactly what the MILP charges memory for, sized for its longest-lookback
+  reader. Today the MILP output uses `NoCleanup` and keeps every window, so
+  memory grows for the whole run.
+- **Disk: spill, not drop.** A window that leaves the buffer is written to disk
+  (its serialized accumulator, indexed by window start) and kept for a
+  configured retention. A query reaching past the in-memory windows reads the
+  older ones from disk. The scheduled RQEs never need it, since the buffer
+  holds their whole lookback; ad-hoc and longer-range queries do.
+- **Accounting.** The cost model is unchanged: memory is the retained windows,
+  and disk is not charged, as in §6.3. In the runs, spill writes count in
+  ASAPQuery's measured CPU, and its disk bytes are reported next to the
+  baselines' (§9).
+
 ## 8. Procedure
 
 1. **Plan.** Regenerate the tables and plans at 10 samples/s (§6), convert the
@@ -190,6 +210,8 @@ Per (system, workload), over the measurement hour:
 - **CPU**: core-seconds of the system's own processes (ASAPQuery split into
   ingest/precompute and query threads), mean vCPU.
 - **Memory**: RSS, mean and peak, in GiB.
+- **Disk**: bytes on disk at the end of the run (TSDB, ClickHouse parts,
+  ASAPQuery's spilled windows), reported, not charged.
 - **Latency**: per query, median and p99; misses counted per §8.
 - **Results**: every answer saved; accuracy for ASAPQuery per §7
   (quantile rank error / relative error, top-k precision, relative error for
@@ -263,12 +285,16 @@ between rounds.
    three data seeds (sketch-bench #211). *Proposed: run with the plan as
    solved, report precision per query; revisit if #211 changes the accuracy
    check.*
+7. **Q7, the disk tier is not ready when the runs start.** *Proposed: run
+   with CircularBuffer alone and say in the paper that ASAPQuery keeps only the
+   windows its RQEs read; add the disk tier's write cost from a short separate
+   measurement.*
 
 ## 13. Blocked on others
 
 | Item | Owner | Blocks |
 |---|---|---|
-| #800: MILP output uses `NoCleanup` (`milp_output.rs:230`), so planner YAML carries no retention and every window is kept | Milind (proposal: CircularBuffer with `num_aggregates_to_retain = retained_instance_count`, exactly what the MILP charges memory for) | ASAPQuery's memory grows for the whole 25 h run and no longer matches the plan. Needed before the long runs. |
+| #800: MILP output uses `NoCleanup` (`milp_output.rs:230`), so planner YAML carries no retention and every window is kept | Milind. Agreed design (§7, "ASAPQuery's retention"): CircularBuffer with `num_aggregates_to_retain = retained_instance_count`, then evicted windows spilled to disk instead of dropped | CircularBuffer: needed before the long runs, since ASAPQuery's memory otherwise grows for 25 h and stops matching the plan. Disk tier: separate PR, ideally before the runs too. |
 | #856: `--planner saved` for SQL (with sketch-bench #209's proposed SQL strings) | Milind | ASAPQuery on all's multi-grouping queries |
 | Engine roll-ups for keyed aggregations (#846) | Milind | the all plan's 52 rolled-up multi-grouping queries, if #851/#852 don't cover them |
 
