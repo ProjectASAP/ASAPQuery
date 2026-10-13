@@ -254,9 +254,9 @@ mod tests {
     }
 
     #[test]
-    fn grouped_values_keep_the_seeded_pareto_draw() {
-        // The grouped workload's values are the plain Pareto draw of
-        // `(seed, series, sample index)`, as before metrics had scales.
+    fn grouped_values_are_the_seeded_pareto_draw() {
+        // Every series of the grouped workload has scale 1, so its values are
+        // the plain Pareto draw of `(seed, series, sample index)`.
         let w = workload();
         let u = unit_uniform(7, 3, 9);
         assert_eq!(w.metrics[0].value(3, 9), u.powf(-1.0 / 1.5));
