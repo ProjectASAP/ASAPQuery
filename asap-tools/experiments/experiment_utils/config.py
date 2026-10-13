@@ -559,7 +559,7 @@ def _is_planned(query, planned):
 
 
 def copy_prebuilt_controller_output(
-    src, dest, controller_input_config, scrape_interval_ms
+    src, dest, controller_input_config, scrape_interval_ms, query_language="promql"
 ):
     """Replaces `dest` with the planner configs in `src`, after checking they
     plan every query of `controller_input_config` at this scrape interval."""
@@ -571,7 +571,13 @@ def copy_prebuilt_controller_output(
             f"dir {dest} must not contain one another"
         )
     with open(os.path.join(src, "inference_config.yaml")) as f:
-        planned = {q["query"] for q in yaml.safe_load(f)["queries"]}
+        inference_config = yaml.safe_load(f)
+    if query_language == "sql" and not isinstance(inference_config.get("tables"), list):
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml is not an SQL "
+            "inference config: missing tables"
+        )
+    planned = {q["query"] for q in inference_config["queries"]}
     with open(controller_input_config) as f:
         groups = yaml.safe_load(f)["query_groups"]
     unplanned = [q for g in groups for q in g["queries"] if not _is_planned(q, planned)]

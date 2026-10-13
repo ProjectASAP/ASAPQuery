@@ -123,6 +123,28 @@ def _start_clickhouse_controller(controller_service, cfg, **kwargs):
     controller_service.start(punting=cfg.controller.punting, **kwargs)
 
 
+def _deploy_prebuilt_clickhouse_controller_output(
+    provider,
+    prebuilt_output_dir: str,
+    local_controller_dir: str,
+    remote_controller_dir: str,
+    controller_client_config: str,
+    data_ingestion_interval_ms: int,
+    node_offset: int,
+) -> None:
+    """Validate and deploy a frozen SQL planner output without starting a planner."""
+    config.copy_prebuilt_controller_output(
+        prebuilt_output_dir,
+        local_controller_dir,
+        controller_client_config,
+        data_ingestion_interval_ms,
+        query_language="sql",
+    )
+    sync.rsync_streaming_configs(
+        provider, local_controller_dir, remote_controller_dir, node_offset
+    )
+
+
 def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> None:
     """Enrich the saved experiment_params.yaml by inlining SQL from sql_file references.
 
@@ -352,6 +374,7 @@ def main(cfg: DictConfig) -> None:
     profile_query_engine = bool(cfg.profiling.query_engine)
     profile_prometheus_time = cfg.profiling.prometheus_time
     monitor_interval_seconds = float(cfg.flow.monitor_interval_seconds)
+    controller_prebuilt_output_dir = cfg.controller.get("prebuilt_output_dir")
     minimum_experiment_running_time = config.get_minimum_experiment_running_time(
         cfg.experiment_params
     )
@@ -524,45 +547,65 @@ def main(cfg: DictConfig) -> None:
             )
             os.makedirs(local_controller_dir, exist_ok=True)
 
-            # Generate and rsync the planner input config to the node
-            planner_input_yaml = config.generate_sql_planner_input(
-                ep.query_groups,
-                dataset_cfg,
-                cfg.get("sketch_parameters", None),
-                cfg.get("windowing", None),
+            controller_client_config = os.path.join(
+                local_experiment_root_dir,
+                "controller_client_configs",
+                f"{experiment_mode}.yaml",
             )
-            local_planner_input = os.path.join(
-                local_controller_dir, "planner_input.yaml"
-            )
-            with open(local_planner_input, "w") as _f:
-                _f.write(planner_input_yaml)
-            sync.rsync_streaming_configs(
-                provider, local_controller_dir, remote_controller_dir, node_offset
-            )
+            if controller_prebuilt_output_dir:
+                print(
+                    "Skipping the planner: using configs from "
+                    f"{controller_prebuilt_output_dir}"
+                )
+                _deploy_prebuilt_clickhouse_controller_output(
+                    provider,
+                    controller_prebuilt_output_dir,
+                    local_controller_dir,
+                    remote_controller_dir,
+                    controller_client_config,
+                    data_ingestion_interval_ms,
+                    node_offset,
+                )
+            else:
+                # Generate and rsync the planner input config to the node.
+                planner_input_yaml = config.generate_sql_planner_input(
+                    ep.query_groups,
+                    dataset_cfg,
+                    cfg.get("sketch_parameters", None),
+                    cfg.get("windowing", None),
+                )
+                local_planner_input = os.path.join(
+                    local_controller_dir, "planner_input.yaml"
+                )
+                with open(local_planner_input, "w") as _f:
+                    _f.write(planner_input_yaml)
+                sync.rsync_streaming_configs(
+                    provider, local_controller_dir, remote_controller_dir, node_offset
+                )
 
-            # Run asap-planner (SQL mode) — writes streaming_config.yaml + inference_config.yaml
-            controller_service = ControllerService(
-                provider=provider, use_container=False, node_offset=node_offset
-            )
-            _start_clickhouse_controller(
-                controller_service,
-                cfg,
-                controller_input_file=os.path.join(
-                    remote_controller_dir, "planner_input.yaml"
-                ),
-                streaming_engine="precompute",
-                controller_remote_output_dir=remote_controller_dir,
-                discovery_backend=DiscoveryBackend(
-                    type="clickhouse",
-                    url=clickhouse_url,
-                    database=CLICKHOUSE_DATABASE,
-                ),
-                query_language="sql",
-                data_ingestion_interval_ms=data_ingestion_interval_ms,
-            )
-            sync.rsync_controller_config_remote_to_local(
-                provider, remote_controller_dir, local_controller_dir, node_offset
-            )
+                # Run asap-planner (SQL mode) — writes the engine configs.
+                controller_service = ControllerService(
+                    provider=provider, use_container=False, node_offset=node_offset
+                )
+                _start_clickhouse_controller(
+                    controller_service,
+                    cfg,
+                    controller_input_file=os.path.join(
+                        remote_controller_dir, "planner_input.yaml"
+                    ),
+                    streaming_engine="precompute",
+                    controller_remote_output_dir=remote_controller_dir,
+                    discovery_backend=DiscoveryBackend(
+                        type="clickhouse",
+                        url=clickhouse_url,
+                        database=CLICKHOUSE_DATABASE,
+                    ),
+                    query_language="sql",
+                    data_ingestion_interval_ms=data_ingestion_interval_ms,
+                )
+                sync.rsync_controller_config_remote_to_local(
+                    provider, remote_controller_dir, local_controller_dir, node_offset
+                )
 
             # Start query engine (precompute + JSON ingest + ClickHouse fallback)
             query_engine_service = QueryEngineRustService(

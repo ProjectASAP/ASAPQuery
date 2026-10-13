@@ -41,6 +41,15 @@ class CopyPrebuiltControllerOutputTest(unittest.TestCase):
             src or self.src, dest or self.dest, self.client, scrape_interval_ms
         )
 
+    def copy_sql(self, src=None, dest=None, scrape_interval_ms=1000):
+        copy_prebuilt_controller_output(
+            src or self.src,
+            dest or self.dest,
+            self.client,
+            scrape_interval_ms,
+            query_language="sql",
+        )
+
     def test_replaces_stale_output(self):
         os.makedirs(self.dest)
         with open(os.path.join(self.dest, "controller.log"), "w") as f:
@@ -81,6 +90,32 @@ class CopyPrebuiltControllerOutputTest(unittest.TestCase):
     def test_refuses_another_scrape_interval(self):
         with self.assertRaisesRegex(ValueError, "15000 ms scrape interval"):
             self.copy(scrape_interval_ms=15000)
+
+    def test_sql_output_requires_a_sql_schema(self):
+        with self.assertRaisesRegex(ValueError, "not an SQL inference config"):
+            self.copy_sql()
+
+    def test_sql_output_with_a_sql_schema_is_copied(self):
+        self.write(
+            os.path.join(self.src, "inference_config.yaml"),
+            {
+                "tables": [
+                    {
+                        "name": "hits",
+                        "time_column": "EventTime",
+                        "value_columns": ["ResolutionWidth"],
+                        "metadata_columns": [],
+                    }
+                ],
+                "queries": [{"query": QUERY}],
+            },
+        )
+
+        self.copy_sql()
+
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.dest, "inference_config.yaml"))
+        )
 
 
 if __name__ == "__main__":
