@@ -298,9 +298,11 @@ fn query_plan_entry(
         deployment: label_names(fine),
         reason,
     };
-    match deployment.capability {
-        Capability::Sum | Capability::Count | Capability::Min | Capability::Max => {}
-        _ => return Err(unsupported(RollupBlocker::Aggregation)),
+    if !matches!(
+        aggregation_type,
+        AggregationType::MultipleSum | AggregationType::MultipleMinMax
+    ) {
+        return Err(unsupported(RollupBlocker::Aggregation));
     }
     if let Some(reason) = stage_blocker {
         return Err(unsupported(reason));
@@ -1225,6 +1227,26 @@ mod tests {
                 "grouping": {"mode": "by", "labels": ["job"]},
                 "parameter": null,
             })
+        );
+    }
+
+    /// A roll-up regroups the query's outer aggregation; a query without one
+    /// can't be regrouped. Unreachable from real workloads today (a leaf with
+    /// no aggregation keeps every label, so it is never a roll-up), hence the
+    /// swapped-in query string.
+    #[test]
+    fn exact_rollup_of_a_query_without_an_aggregation_is_unregroupable() {
+        let query = "sum_over_time(http_requests_total[1m])";
+        let (config, mut workload, mut solution) =
+            plan(&group("sum by (job) (http_requests_total)", 0.99));
+        widen_to_instance_job(&mut solution);
+        workload.items[0].query_strings = vec![query.to_string()];
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&err, MilpOutputError::UnregroupableQuery(q) if q == query),
+            "{err}"
         );
     }
 

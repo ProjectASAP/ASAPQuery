@@ -1207,6 +1207,33 @@ async fn e2e_exact_rollup_sums_a_keyed_count_over_time_at_query_time() {
     .await;
 }
 
+/// `sum without (instance)` regroups the keyed (instance, job) output by a
+/// `without` stage, which keeps `job`.
+#[tokio::test]
+async fn e2e_exact_rollup_regroups_a_keyed_sum_without_a_label_at_query_time() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+    assert_exact_rollup(
+        19436,
+        "sum without (instance) (exact_rollup_requests)",
+        AggregationType::MultipleSum,
+        "sum",
+        "sum by (instance, job) (exact_rollup_requests)",
+        QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Sum,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::Without,
+                labels: vec!["instance".to_string()],
+            },
+            parameter: None,
+        },
+        EXACT_ROLLUP_SAMPLES,
+        &[(&["api"], 11.0), (&["worker"], 13.0)],
+    )
+    .await;
+}
+
 /// A query with no output labels reduces every keyed group into one.
 #[tokio::test]
 async fn e2e_exact_rollup_reduces_a_keyed_sum_to_all_at_query_time() {
