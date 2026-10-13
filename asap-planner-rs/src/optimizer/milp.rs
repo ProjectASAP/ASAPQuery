@@ -486,6 +486,11 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
 
     // TopK keeps one heap per `topk by` bucket; its `grouping_labels` is the
     // output label set (every label), which would cost one heap per series.
+    // ponytail: a topk-of-sum heap holds one key per inner `sum by` group, but
+    // the Raqe has no field for those labels, so it is priced from the
+    // bucket grouping's shape. Key count is bounded by the series count, but
+    // accuracy curves measured per series may not match summed values; needs
+    // key labels in sketch-bench's Raqe.
     let grouping_labels: LabelSet = match capability {
         Capability::TopKByValue | Capability::TopKByCount => req
             .topk_by_labels
@@ -752,6 +757,22 @@ metrics:
         assert!((r.accuracy_sla - 0.9).abs() < 1e-6);
         // Not the all-labels output set, which would cost one heap per series.
         assert_eq!(r.grouping_labels, labels(&["job"]));
+    }
+
+    #[test]
+    fn topk_of_sum_is_one_global_heap_keyed_by_the_inner_labels() {
+        let w = workload(&group(
+            "topk(5, sum by (job) (sum_over_time(http_requests_total[5m])))",
+            0.9,
+        ));
+        let r = &w.raqes[0];
+        assert_eq!(r.capability, Capability::TopKByValue);
+        assert_eq!(r.grouping_labels, LabelSet::new());
+        assert_eq!(r.topk_k, Some(5));
+        assert_eq!(
+            w.items[0].requirements.grouping_labels,
+            promql_utilities::data_model::KeyByLabelNames::new(vec!["job".into()])
+        );
     }
 
     #[test]

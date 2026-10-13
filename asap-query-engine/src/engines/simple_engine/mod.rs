@@ -29,9 +29,11 @@ use crate::AggregateCore;
 
 use asap_types::capability_matching::key_agg_compatible_with_value;
 use asap_types::enums::WindowType;
+use promql_utilities::ast_matching::collapsable_patterns::{
+    build_one_temporal_one_spatial_patterns, build_topk_of_sum_patterns,
+};
 use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::get_is_collapsable;
 use promql_utilities::query_logics::enums::{
     AggregationOperator, AggregationType, PromQLFunction, Statistic,
 };
@@ -507,71 +509,14 @@ impl SimpleEngine {
             PromQLPattern::new(blocks[pattern_type].clone())
         }
 
-        // A spatial aggregation wrapping a temporal function only collapses into a
-        // single equivalent statistic for specific (function, op) pairs (see
-        // `get_is_collapsable`) — e.g. `sum(min_over_time(x[5m]))` cannot be served
-        // by a single precomputed statistic the way `sum(sum_over_time(x[5m]))` can.
-        // Building one narrow pattern per collapsable pair (rather than a broad
-        // any-op-wrapping-any-function pattern) means a non-collapsable combination
-        // never structurally matches at all, instead of matching and then silently
-        // dropping the outer aggregation (see #508).
-        let one_temporal_one_spatial_collapsable_patterns: Vec<PromQLPattern> = [
-            PromQLFunction::Rate,
-            PromQLFunction::Increase,
-            PromQLFunction::SumOverTime,
-            PromQLFunction::CountOverTime,
-            PromQLFunction::AvgOverTime,
-            PromQLFunction::MinOverTime,
-            PromQLFunction::MaxOverTime,
-            PromQLFunction::QuantileOverTime,
-        ]
-        .into_iter()
-        .flat_map(|func| {
-            [
-                AggregationOperator::Sum,
-                AggregationOperator::Count,
-                AggregationOperator::Avg,
-                AggregationOperator::Quantile,
-                AggregationOperator::Min,
-                AggregationOperator::Max,
-                AggregationOperator::Topk,
-            ]
-            .into_iter()
-            .filter_map(move |op| {
-                if !get_is_collapsable(func, op) {
-                    return None;
-                }
-                let range_vector = PromQLPatternBuilder::matrix_selector(
-                    PromQLPatternBuilder::metric(None, None, None, Some("metric")),
-                    None,
-                    Some("range_vector"),
-                );
-                let function_pattern = PromQLPatternBuilder::function(
-                    vec![func.as_str()],
-                    vec![range_vector],
-                    Some("function"),
-                    Some("function_args"),
-                );
-                let pattern = PromQLPatternBuilder::aggregation(
-                    vec![op.as_str()],
-                    function_pattern,
-                    None,
-                    None,
-                    None,
-                    Some("aggregation"),
-                );
-                Some(PromQLPattern::new(pattern))
-            })
-        })
-        .collect();
-
         // Create controller patterns: tried in order until one matches.
         let mut controller_patterns = vec![
             temporal_pattern("quantile", &temporal_pattern_blocks),
             temporal_pattern("generic", &temporal_pattern_blocks),
             spatial_pattern("generic", &spatial_pattern_blocks),
         ];
-        controller_patterns.extend(one_temporal_one_spatial_collapsable_patterns);
+        controller_patterns.extend(build_one_temporal_one_spatial_patterns());
+        controller_patterns.extend(build_topk_of_sum_patterns());
 
         Self {
             store,

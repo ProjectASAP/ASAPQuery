@@ -1,10 +1,13 @@
+use promql_utilities::ast_matching::collapsable_patterns::{
+    build_one_temporal_one_spatial_patterns, build_topk_of_sum_patterns,
+};
 use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::query_logics::enums::{AggregationOperator, PromQLFunction};
-use promql_utilities::query_logics::logics::get_is_collapsable;
 
 /// Build all patterns in priority order: ONLY_TEMPORAL (2), ONLY_SPATIAL (1),
-/// ONE_TEMPORAL_ONE_SPATIAL (one per collapsable (function, op) pair). Tried
-/// in order until one matches.
+/// ONE_TEMPORAL_ONE_SPATIAL (one per collapsable (function, op) pair),
+/// TOPK_OF_SUM (one per function collapsable under both `sum` and `topk`).
+/// Tried in order until one matches.
 pub fn build_patterns() -> Vec<PromQLPattern> {
     let metric_pattern = || PromQLPatternBuilder::metric(None, None, None, Some("metric"));
     let range_vector_pattern =
@@ -65,58 +68,9 @@ pub fn build_patterns() -> Vec<PromQLPattern> {
         Some("aggregation"),
     ));
 
-    // ONE_TEMPORAL_ONE_SPATIAL: one narrow pattern per collapsable (function, op)
-    // pair (see `get_is_collapsable`) — e.g. `sum(min_over_time(x[5m]))` cannot be
-    // served by a single precomputed statistic the way `sum(sum_over_time(x[5m]))`
-    // can. A broad any-op-wrapping-any-function pattern would structurally match
-    // non-collapsable combinations too, silently dropping the outer aggregation
-    // instead of rejecting the query (see #508).
-    let one_temporal_one_spatial_collapsable: Vec<PromQLPattern> = [
-        PromQLFunction::Rate,
-        PromQLFunction::Increase,
-        PromQLFunction::SumOverTime,
-        PromQLFunction::CountOverTime,
-        PromQLFunction::AvgOverTime,
-        PromQLFunction::MinOverTime,
-        PromQLFunction::MaxOverTime,
-        PromQLFunction::QuantileOverTime,
-    ]
-    .into_iter()
-    .flat_map(|func| {
-        [
-            AggregationOperator::Sum,
-            AggregationOperator::Count,
-            AggregationOperator::Avg,
-            AggregationOperator::Quantile,
-            AggregationOperator::Min,
-            AggregationOperator::Max,
-            AggregationOperator::Topk,
-        ]
-        .into_iter()
-        .filter_map(move |op| {
-            if !get_is_collapsable(func, op) {
-                return None;
-            }
-            let pattern = PromQLPatternBuilder::aggregation(
-                vec![op.as_str()],
-                PromQLPatternBuilder::function(
-                    vec![func.as_str()],
-                    vec![range_vector_pattern()],
-                    Some("function"),
-                    Some("function_args"),
-                ),
-                None,
-                None,
-                None,
-                Some("aggregation"),
-            );
-            Some(PromQLPattern::new(pattern))
-        })
-    })
-    .collect();
-
     let mut patterns = vec![ot_quantile, ot_temporal_funcs, os_spatial];
-    patterns.extend(one_temporal_one_spatial_collapsable);
+    patterns.extend(build_one_temporal_one_spatial_patterns());
+    patterns.extend(build_topk_of_sum_patterns());
     patterns
 }
 
@@ -135,8 +89,30 @@ mod tests {
     fn exactly_six_collapsable_one_temporal_one_spatial_patterns() {
         // 2 ONLY_TEMPORAL + 1 ONLY_SPATIAL + 6 collapsable ONE_TEMPORAL_ONE_SPATIAL
         // (sum+sum_over_time, sum+count_over_time, min+min_over_time,
-        // max+max_over_time, topk+sum_over_time, topk+count_over_time).
-        assert_eq!(build_patterns().len(), 9);
+        // max+max_over_time, topk+sum_over_time, topk+count_over_time)
+        // + 2 TOPK_OF_SUM (sum_over_time, count_over_time).
+        assert_eq!(build_patterns().len(), 11);
+    }
+
+    #[test]
+    fn topk_of_sum_matches_only_linear_functions() {
+        assert!(matches_some_pattern(
+            "topk(32, sum by (label_0) (sum_over_time(data[15m])))"
+        ));
+        assert!(matches_some_pattern(
+            "topk(3, sum by (job) (count_over_time(x[5m])))"
+        ));
+        // The counter shapes need per-series deltas before grouping.
+        assert!(!matches_some_pattern(
+            "topk(32, sum by (label_0) (rate(data_total[15m])))"
+        ));
+        assert!(!matches_some_pattern(
+            "sum by (job) (rate(data_total[15m]))"
+        ));
+        // A CMS sums, so only `sum` can sit between topk and the function.
+        assert!(!matches_some_pattern(
+            "topk(3, max by (job) (sum_over_time(x[5m])))"
+        ));
     }
 
     #[test]
