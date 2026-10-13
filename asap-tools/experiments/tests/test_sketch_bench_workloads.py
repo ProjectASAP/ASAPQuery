@@ -151,7 +151,8 @@ BRANCHES_HIT = set()
 
 
 def in_window(samples: Samples, t_ms: int, w_ms: int) -> Samples:
-    return [(t, v) for t, v in samples if t_ms - w_ms < t <= t_ms]
+    # Prometheus 2.x selects [t - w, t]; 3.x made it left-open (t - w, t].
+    return [(t, v) for t, v in samples if t_ms - w_ms <= t <= t_ms]
 
 
 def prom_quantile(q: float, values: List[float]) -> float:

@@ -78,8 +78,8 @@ def rate_from_samples(
     cols: str, samples: str, end: str, window: int, is_rate: bool
 ) -> str:
     """extrapolatedRate over `samples`, a query yielding per series `cols`,
-    first_v, last_v, first_t, last_t (unix seconds) and n >= 2 samples in
-    (end - window, end]."""
+    first_v, last_v, first_t, last_t (unix seconds) and n >= 2 samples in the
+    window of `window` seconds ending at `end`."""
     durations = (
         f"SELECT {cols}, last_v - first_v AS delta, first_v, "
         f"last_t - first_t AS sampled, sampled / (n - 1) AS avg_step, "

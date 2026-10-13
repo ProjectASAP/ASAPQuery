@@ -12,10 +12,12 @@ For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
 - <stem>_clickhouse.yaml: a baseline-only experiment_run_clickhouse.py config
   with one query group per T, repeating every T seconds.
 
-Semantics are generate_workloads.py's (Prometheus 2.53, left-open windows):
-range vectors [d] at T read (T - d, T]; instant vectors read the latest sample
-of each series in (T - 1s, T]; quantiles use quantileExactInclusive; rate and
-increase reproduce extrapolatedRate (counters never reset). T is the client's
+Semantics are those of Prometheus 2.53 (the version installation/prometheus
+installs for bare-metal runs), whose windows are closed on both ends: range
+vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
+each series in [T - 1s, T] (a lookback of one scrape interval); quantiles use
+quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
+never reset). T is the client's
 {{ end_time }} floored to a multiple of the query's interval. Unsupported
 query shapes raise.
 
@@ -177,9 +179,10 @@ def eval_time(interval_secs: int) -> str:
 
 
 def render(
-    q: Query, series: Tuple[str, ...], source: str, time_col: str, agg: Callable
+    q: Query, series: Tuple[str, ...], source: str, where: Callable, agg: Callable
 ) -> str:
-    """SQL for `q` reading `source` rows with `time_col` in the window.
+    """SQL for `q` reading the `source` rows that `where(end, window_secs)`
+    keeps for the window [end - window_secs, end].
 
     `series` is the table's full label list; `agg(stat, quantile)` gives the
     aggregate expression of a statistic over the source rows: sum, count,
@@ -187,10 +190,7 @@ def render(
     rate_from_samples reads).
     """
     end = eval_time(q.interval_secs)
-    window = (
-        f"FROM {source} WHERE {time_col} > {end} - {q.window_secs} "
-        f"AND {time_col} <= {end}"
-    )
+    window = f"FROM {source} WHERE {where(end, q.window_secs)}"
     group = ", ".join(q.grouping)
     cols = ", ".join(series)
     if q.series_fn is None:
@@ -241,7 +241,7 @@ def raw_sql(q: Query, labels: Dict[str, List[str]]) -> str:
         q,
         tuple(labels[q.table]),
         q.table,
-        "ts",
+        lambda end, w: f"ts >= {end} - {w} AND ts <= {end}",
         lambda stat, quantile: raw_agg(stat, quantile, q.value),
     )
 
