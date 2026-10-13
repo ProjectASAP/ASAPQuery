@@ -21,8 +21,10 @@ the way the planner defines it (§9).
 - **ASAPQuery runs the §6.3 planner's plan**, converted with
   `asap-planner --planner saved` ([#828](https://github.com/ProjectASAP/ASAPQuery/issues/828)). The planner is not re-run inside the
   experiment.
-- **Every system gets identical data**: one paced feeder per system, same seed
-  and start time ([#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)–[#843](https://github.com/ProjectASAP/ASAPQuery/issues/843)).
+- **Every system gets identical data**: the same feeder, seed, event-time
+  interval, and per-series timestamp order. It bulk-loads the 24 h history,
+  then sends the measurement tail at the paced rate
+  ([#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)–[#843](https://github.com/ProjectASAP/ASAPQuery/issues/843)).
 - **One system per CloudLab node**, so each system's CPU and memory are measured
   alone.
 - **At 1/20 of the §6.3 rate** (§5), so that every system can ingest it on one
@@ -89,6 +91,20 @@ own plan (PromQL→SQL for PilotDB, its sampling modes).
   each series' samples of a tick go in one request, in timestamp order, and
   requests run concurrently ([#840](https://github.com/ProjectASAP/ASAPQuery/issues/840)). ASAPQuery's allowed lateness stays at its
   5 s default. Prometheus needs no out-of-order window.
+- **History and logical time.** Before each measurement, the feeder sends the
+  largest lookback as historical event-time data at the system's maximum
+  sustainable write rate. The history's last timestamp, rather than wall-clock
+  `now`, anchors the query clients' evaluation time. The following measurement
+  hour advances that logical time at the stated paced rate. Thus every query
+  still sees the intended 15 m–24 h of samples without waiting 24 wall-clock
+  hours to fill it.
+- **Bulk-sender policy.** The accelerated feeder keeps one documented request
+  shape, timestamp ordering, batch size, and bounded in-flight request/byte
+  limit; it removes pacing only. The accelerated-backfill pilot selects one
+  conservative configuration that drains without receiver errors or runaway
+  backlog, then freezes it for every workload and repetition. Each system's
+  backpressure determines its achieved bulk rate. There is no separate
+  bulk-rate benchmark or per-system concurrency tuning.
 
 **Windows are not scaled.** The windows (15m–24h) define the RQEs; the rate
 only sets how much data a window holds. Keeping them makes the e2e workload the
@@ -175,7 +191,8 @@ plans exactly with the same binary):
   queries over the whole last interval.
 - **Evaluation times** are aligned to multiples of T on every system
   (`align_to_interval`, [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841); floored in the ClickHouse SQL, [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844)), with a 10 s
-  offset for ingestion to settle.
+  offset for ingestion to settle. They are explicit logical timestamps during
+  the historical backfill and paced tail, not implicit wall-clock `now`.
 
 ### ASAPQuery's retention: memory, then disk
 
@@ -201,12 +218,26 @@ ASAPQuery keeps sketch windows instead, in two tiers ([#800](https://github.com/
 
 1. **Plan.** Regenerate the tables and plans at 10 samples/s (§6), convert the
    ASAPQuery plan with `--planner saved`, run `--verify-facts` on the table.
-2. **Pilot (≈2 h).** All systems, real windows, check the 15m and 1h answers
-   and every monitor, before the long runs.
-3. **Run.** Per workload, one node per system, all started together: feed for
-   the largest window (24 h; sliding-window queries answer only once every
-   sub-window is present) plus a measurement hour, querying throughout. Only
-   the measurement hour is reported.
+2. **Accelerated-backfill pilot (≈2 h).** On all systems, bulk-load a
+   representative 1 h event-time history, then run a short paced tail. Compare
+   15 m and 1 h answers, ASAPQuery accuracy, and retained data with an
+   equivalent paced pilot at identical explicit evaluation timestamps. Confirm
+   that every receiver accepts the historical timestamps, no write or late-data
+   rejections occur, monitors split the phases, and the systems reach a stable
+   post-load flush/compaction state. Use this pilot to choose and freeze one
+   conservative bulk-sender configuration (§5); do not create a separate
+   bulk-rate benchmark. ASAPQuery uses
+   `wall_clock_grace_period_ms: 0` for the pilot and runs: its normal
+   wall-clock fallback would treat historical panes as idle; strict event-time
+   closure is required instead.
+3. **Run.** Per workload, one node per system, all started together: bulk-load
+   the largest lookback (24 h) with the frozen bulk-sender configuration (§5),
+   allowing each system's backpressure to determine its achieved rate; wait for
+   each system's feeder backlog to drain and every scheduled baseline query to
+   return an answer, then feed and query for one paced measurement hour. A
+   final event-time tail advances the watermark so ASAPQuery closes the last
+   panes. Phase boundaries and logical evaluation times are recorded with the
+   results.
 4. **No timeouts.** Baseline queries run to completion: [#861](https://github.com/ProjectASAP/ASAPQuery/issues/861) lifts
    Prometheus' 2-minute `--query.timeout`, VictoriaMetrics' 30 s query limit
    and the ClickHouse client's 30 s timeout. A query still running when its
@@ -216,8 +247,13 @@ ASAPQuery keeps sketch windows instead, in two tiers ([#800](https://github.com/
 
 Per (system, workload), over the measurement hour:
 
-- **CPU**: core-seconds of the system's own processes (ASAPQuery split into
-  ingest/precompute and query threads), mean vCPU.
+- **CPU**: core-seconds of the system's own processes for both the bulk-history
+  phase and paced measurement phase (ASAPQuery split into ingest/precompute and
+  query threads), plus mean vCPU during the paced measurement hour. Bulk CPU
+  seconds capture the total work to construct the 24 h history; they are not
+  assumed equal to paced-ingestion CPU seconds, since batching, concurrency,
+  and storage compaction can change work. Preserve phase boundaries and raw
+  samples so the analysis can later choose whether and how to amortize them.
 - **Memory**: RSS, mean and peak, in GiB.
 - **Disk**: bytes on disk at the end of the run (TSDB, ClickHouse parts,
   ASAPQuery's spilled windows), reported, not charged.
@@ -227,8 +263,10 @@ Per (system, workload), over the measurement hour:
   exact accumulators).
 - **Cost**, as the planner defines it (cost by use, sketch-bench [#188](https://github.com/ProjectASAP/sketch-bench/issues/188)):
   `w_cpu · mean vCPU + w_mem · mean GiB`, reported with cpu weights (vCPU) and
-  with Fargate prices (0.0405 $/vCPU-h, 0.00445 $/GB-h). Absolute costs per
-  system, not ratios.
+  with Fargate prices (0.0405 $/vCPU-h, 0.00445 $/GB-h). Retain both phase
+  measurements before choosing whether the final figures use paced steady-state
+  cost, total CPU work, or an amortized combination. Absolute costs per system,
+  not ratios.
 
 Figures and tables:
 
@@ -244,10 +282,10 @@ Figures and tables:
 | Step | Wall time | Nodes |
 |---|---|---|
 | Re-plan at 10/s, build, verify | < 1 h | 1 |
-| Pilot | ≈ 2 h | 5 |
-| mixed: 24 h fill + 1 h measure + ≈1 h setup | ≈ 26 h | 5 (ASAPQuery, Prometheus, VictoriaMetrics, ClickHouse, ClickHouse + MV) |
-| all: same | ≈ 26 h | 3 (ASAPQuery, ClickHouse, ClickHouse + MV); Prometheus and VictoriaMetrics reuse mixed's run, since their data and queries are identical |
-| **Total** | **≈ 2.3 days** | the five c6320 nodes (clnode109, 155, 178, 138, 167) |
+| Accelerated-backfill pilot | ≈ 2 h | 5 |
+| mixed: bulk 24 h history + settle + 1 h measure + ≈1 h setup | bulk duration + ≈2 h | 5 (ASAPQuery, Prometheus, VictoriaMetrics, ClickHouse, ClickHouse + MV) |
+| all: same | bulk duration + ≈2 h | 3 (ASAPQuery, ClickHouse, ClickHouse + MV); Prometheus and VictoriaMetrics reuse mixed's run, since their data and queries are identical |
+| **Total** | determined by measured bulk throughput; expected below 2.3 days | the five c6320 nodes (clnode109, 155, 178, 138, 167) |
 
 On one node, one system at a time, the same runs take ≈ 8.5 days.
 
@@ -263,7 +301,7 @@ between rounds.
 | Workload tables with e2e blocks; templates 7/9 dropped; §6.3 rerun | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209), [#210](https://github.com/ProjectASAP/sketch-bench/issues/210) | open |
 | Paced feeder: facts-driven classic data, records, per-series order | [#840](https://github.com/ProjectASAP/ASAPQuery/issues/840) → [#842](https://github.com/ProjectASAP/ASAPQuery/issues/842) → [#843](https://github.com/ProjectASAP/ASAPQuery/issues/843) | open |
 | ClickHouse SQL and exact MV arms from the tables | [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844) → [#845](https://github.com/ProjectASAP/ASAPQuery/issues/845) | open (base was [#837](https://github.com/ProjectASAP/ASAPQuery/issues/837), merged: retarget to `main`) |
-| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841) | open (base was [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), merged: retarget to `main`) |
+| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841) | open (base was [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), merged: retarget to `main`); add bulk-history mode with a bounded, frozen sender configuration, explicit logical evaluation times, and phase-boundary metadata |
 | `--planner saved`; prebuilt configs in both runners | [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), [#860](https://github.com/ProjectASAP/ASAPQuery/issues/860) | merged |
 | Tables and plans at 10 samples/s | sketch-bench [#212](https://github.com/ProjectASAP/sketch-bench/issues/212) | open |
 | Feeder → VictoriaMetrics (remote write into vmsingle) | `experiment_run_e2e.py` | to do |
@@ -298,6 +336,12 @@ between rounds.
    with CircularBuffer alone and say in the paper that ASAPQuery keeps only the
    windows its RQEs read; add the disk tier's write cost from a short separate
    measurement.*
+8. **Q8, accelerated history.** *Proposed: bulk-load the real 24 h event-time
+   history through each system's normal write path and retain phase-tagged CPU
+   measurements for both history construction and the paced tail.* The analysis
+   chooses their final cost presentation after inspecting the measurements. The
+   accelerated-backfill pilot in §8 must pass before this replaces the original
+   paced 24 h fill.
 
 ## 13. Blocked on others
 
@@ -315,6 +359,9 @@ windows don't answer on partial data (the 24 h fill avoids it).
 
 - One data seed per run; the top-k result depends on the seed ([#211](https://github.com/ProjectASAP/sketch-bench/issues/211)).
 - 1/20 of the §6.3 rate; costs are not the §6.3 numbers scaled.
+- History is bulk-loaded, not paced for 24 wall-clock hours. Bulk CPU seconds
+  are retained with a separate phase label; batching and compaction can produce
+  a different physical layout and CPU cost from paced ingestion.
 - The feeder shares the node with the system it feeds; only the system's own
   processes are measured.
 - Prometheus and VictoriaMetrics answer only the classic queries.
