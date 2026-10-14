@@ -181,6 +181,13 @@ The manifest also contains the label hierarchy, cardinalities of every legal
 grouping, value/key distribution facts, feeder seed, and support class
 (`common-promql`, `counter-gated-promql`, or `sql-only`).
 
+The `data_facts` contract fixes a 100 ms scrape cadence and 20-minute
+backfill, a deterministic Zipf-like ranking of the 10,000 leaf series, a
+rank-scaled gauge and monotonic counter (no resets), plus a 10,000-ID user
+universe.  Each leaf rotates through 1,000 deterministically assigned IDs;
+the pools overlap across leaves.  The eventual feeder and every baseline
+adapter must implement these facts rather than choose their own distributions.
+
 Sampling is constrained rather than purely independent:
 
 - exactly ten atomic queries per workload and no binary queries;

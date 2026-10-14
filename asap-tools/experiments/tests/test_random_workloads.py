@@ -60,6 +60,16 @@ class GenerateWorkloadsTest(unittest.TestCase):
                     self.assertEqual(query["lookback_ms"], workloads.SECOND_MS)
                     self.assertEqual(query["interval_ms"], workloads.SECOND_MS)
 
+    def test_manifest_declares_deterministic_feeder_facts(self):
+        facts = workloads.generate_workloads(seed=4)[0]["data_facts"]
+
+        self.assertEqual(facts["scrape_interval_ms"], 100)
+        self.assertEqual(facts["series"]["leaf_count"], 10_000)
+        self.assertEqual(facts["series"]["ranking"]["exponent"], 1.1)
+        self.assertEqual(facts["metrics"]["data_total"]["resets"], "none")
+        self.assertEqual(facts["events"]["user_id_universe_size"], 10_000)
+        self.assertEqual(facts["events"]["user_ids_per_leaf"], 1_000)
+
     def test_workloads_do_not_repeat_an_atomic_rqe(self):
         for workload in workloads.generate_workloads(seed=1):
             keys = []

@@ -13,7 +13,8 @@ import random_workloads as workloads  # noqa: E402
 
 class RenderArtifactsTest(unittest.TestCase):
     def test_promql_input_groups_non_sql_queries_by_repeat_interval(self):
-        rendered = artifacts.render(workloads.generate_workloads(seed=862)[0])
+        workload = workloads.generate_workloads(seed=862)[0]
+        rendered = artifacts.render(workload)
 
         planner = rendered["promql_planner"]
         expected = [q for q in rendered["queries"] if q["promql"]]
@@ -24,6 +25,7 @@ class RenderArtifactsTest(unittest.TestCase):
             {tuple(metric["labels"]) for metric in planner["metrics"]},
             {("region", "service", "job", "label_0")},
         )
+        self.assertEqual(rendered["data_facts"], workload["data_facts"])
         for group in planner["query_groups"]:
             self.assertTrue(all(query["interval_ms"] == group["repetition_delay_ms"]
                                 for query in expected if query["promql"] in group["queries"]))

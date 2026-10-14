@@ -42,6 +42,8 @@ def render(workload):
     labels = [label["name"] for label in workload["labels"]]
     queries = workload["queries"]
     return {
+        "workload_id": workload["id"],
+        "data_facts": workload["data_facts"],
         "queries": queries,
         "promql_planner": {
             "metrics": [{"metric": metric, "labels": labels} for metric in PROMQL_METRICS],
@@ -69,7 +71,18 @@ def main():
         path.write_text(yaml.safe_dump(rendered[name], sort_keys=False))
         print(path)
     schedule = args.out / "queries.json"
-    schedule.write_text(json.dumps(rendered["queries"], indent=2, sort_keys=True) + "\n")
+    schedule.write_text(
+        json.dumps(
+            {
+                "workload_id": rendered["workload_id"],
+                "data_facts": rendered["data_facts"],
+                "queries": rendered["queries"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     print(schedule)
 
 

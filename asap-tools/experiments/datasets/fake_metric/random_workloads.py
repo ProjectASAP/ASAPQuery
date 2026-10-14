@@ -45,6 +45,11 @@ TEMPORAL_TIMES = (
 )
 QUANTILES = (0.50, 0.75, 0.90, 0.95, 0.99)
 TOPK_VALUES = (4, 8)
+BACKFILL_HISTORY_MS = 20 * MINUTE_MS
+LEAF_SERIES_COUNT = math.prod(LABEL_CARDINALITIES.values())
+ZIPF_EXPONENT = 1.1
+USER_ID_UNIVERSE_SIZE = 10_000
+USER_IDS_PER_LEAF = 1_000
 
 
 def duration(milliseconds):
@@ -59,6 +64,43 @@ def grouping_text(grouping):
 def choose_temporal_time(rng):
     lookback_ms, intervals = rng.choice(TEMPORAL_TIMES)
     return lookback_ms, rng.choice(intervals)
+
+
+def workload_data_facts(seed):
+    """Return the feeder contract shared by every workload from one seed."""
+    return {
+        "feeder_seed": seed,
+        "scrape_interval_ms": SPATIAL_LOOKBACK_MS // 10,
+        "backfill_history_ms": BACKFILL_HISTORY_MS,
+        "series": {
+            "leaf_count": LEAF_SERIES_COUNT,
+            "ranking": {
+                "kind": "deterministic_zipf_like",
+                "exponent": ZIPF_EXPONENT,
+                "rank_scope": "leaf_series",
+            },
+        },
+        "metrics": {
+            "data": {
+                "kind": "gauge",
+                "value_range": [0.0, 1_000.0],
+                "value_shape": "rank_scaled_deterministic_variation",
+            },
+            "data_total": {
+                "kind": "counter",
+                "increment_shape": "rank_scaled_positive_deterministic",
+                "resets": "none",
+            },
+        },
+        "events": {
+            "table": "events",
+            "time_column": "ts",
+            "distinct_key": "user_id",
+            "user_id_universe_size": USER_ID_UNIVERSE_SIZE,
+            "user_ids_per_leaf": USER_IDS_PER_LEAF,
+            "assignment": "deterministic_rotating_pool_with_cross_leaf_overlap",
+        },
+    }
 
 
 def query(
@@ -231,6 +273,7 @@ def generate_workload(seed, index):
         "seed": seed,
         "labels": METRIC_LABELS,
         "samples_per_sec_per_series": SAMPLES_PER_SEC_PER_SERIES,
+        "data_facts": workload_data_facts(seed),
         "queries": queries,
     }
     validate_workload(workload)
@@ -240,6 +283,16 @@ def generate_workload(seed, index):
 def validate_workload(workload):
     """Reject manifests that violate the experiment's stable public contract."""
     queries = workload["queries"]
+    data_facts = workload["data_facts"]
+    if data_facts["scrape_interval_ms"] != SECOND_MS // SAMPLES_PER_SEC_PER_SERIES:
+        raise ValueError("data facts must declare the 100 ms scrape interval")
+    if data_facts["series"]["leaf_count"] != LEAF_SERIES_COUNT:
+        raise ValueError("data facts must declare every leaf series")
+    if data_facts["metrics"]["data_total"]["resets"] != "none":
+        raise ValueError("the pilot counter contract must be monotonic")
+    events = data_facts["events"]
+    if not 0 < events["user_ids_per_leaf"] <= events["user_id_universe_size"]:
+        raise ValueError("distinct user pools must fit in the declared universe")
     if len(queries) != QUERIES_PER_WORKLOAD:
         raise ValueError(f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries")
     if len({query["id"] for query in queries}) != len(queries):

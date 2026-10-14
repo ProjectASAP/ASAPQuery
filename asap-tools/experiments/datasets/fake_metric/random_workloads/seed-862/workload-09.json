@@ -1,4 +1,40 @@
 {
+  "data_facts": {
+    "backfill_history_ms": 1200000,
+    "events": {
+      "assignment": "deterministic_rotating_pool_with_cross_leaf_overlap",
+      "distinct_key": "user_id",
+      "table": "events",
+      "time_column": "ts",
+      "user_id_universe_size": 10000,
+      "user_ids_per_leaf": 1000
+    },
+    "feeder_seed": 862,
+    "metrics": {
+      "data": {
+        "kind": "gauge",
+        "value_range": [
+          0.0,
+          1000.0
+        ],
+        "value_shape": "rank_scaled_deterministic_variation"
+      },
+      "data_total": {
+        "increment_shape": "rank_scaled_positive_deterministic",
+        "kind": "counter",
+        "resets": "none"
+      }
+    },
+    "scrape_interval_ms": 100,
+    "series": {
+      "leaf_count": 10000,
+      "ranking": {
+        "exponent": 1.1,
+        "kind": "deterministic_zipf_like",
+        "rank_scope": "leaf_series"
+      }
+    }
+  },
   "id": "workload-09",
   "labels": [
     {
