@@ -9,7 +9,9 @@
 //! Options for both: --weights cpu,fargate (a subset of the weight
 //! settings), --slas-ms 100,1000 (version 2's SLA grid, in ms), --no-chosen
 //! (drop per-RQE choices). The synthetic --target is the accuracy level;
-//! there is one, p95, which traces use too.
+//! `accNN` is NN% accuracy in each family's own metric (acc90, acc95, acc99;
+//! `p95`, the name of the committed runs, is acc95): acc95 is the paper's
+//! level and the one traces use; acc90 and acc99 are the target sweep.
 //! ```
 //!
 //! Every plan is priced by use (`usage::usage_cost`, sketch-bench
@@ -237,16 +239,22 @@ fn main() {
 
 // ---------------------------------------------------------------- workloads
 
-/// Per-capability accuracy target at the evaluation's one accuracy level,
-/// p95 (95% in each family's own metric). Exact accumulators must have zero
-/// error.
+/// Per-capability accuracy target at accuracy level `accNN`: NN% accuracy
+/// in each family's own metric (acc95 is the paper's level; `p95` names it in
+/// the committed runs). Exact accumulators must have zero error.
 fn strictness_target(level: &str, capability: Capability) -> f64 {
-    assert_eq!(level, "p95", "the evaluation has one accuracy level, p95");
+    // (error bound, precision), written out so 95% is exactly 0.05.
+    let (error, precision) = match level {
+        "acc90" => (0.10, 0.90),
+        "acc95" | "p95" => (0.05, 0.95),
+        "acc99" => (0.01, 0.99),
+        _ => panic!("accuracy level {level}: one of acc90, acc95 (p95), acc99"),
+    };
     match capability {
-        // 95% accuracy in each family's own metric: error at most 0.05 for
-        // rank, relative value and relative errors; precision at least 0.95.
-        Capability::Quantile | Capability::Cardinality => 0.05,
-        Capability::TopKByValue | Capability::TopKByCount => 0.95,
+        // Error at most 1 − accuracy for rank, relative value and relative
+        // errors; precision at least the accuracy.
+        Capability::Quantile | Capability::Cardinality => error,
+        Capability::TopKByValue | Capability::TopKByCount => precision,
         Capability::Sum
         | Capability::Count
         | Capability::Min
@@ -1679,10 +1687,15 @@ mod tests {
     }
 
     #[test]
-    fn one_95_percent_level_in_each_familys_metric() {
+    fn each_level_in_each_familys_metric() {
         assert_eq!(strictness_target("p95", Capability::Sum), 0.0);
         assert_eq!(strictness_target("p95", Capability::RateOrIncrease), 0.0);
         assert_eq!(strictness_target("p95", Capability::Quantile), 0.05);
         assert_eq!(strictness_target("p95", Capability::TopKByValue), 0.95);
+        assert_eq!(strictness_target("acc95", Capability::Quantile), 0.05);
+        assert_eq!(strictness_target("acc90", Capability::Cardinality), 0.10);
+        assert_eq!(strictness_target("acc99", Capability::Quantile), 0.01);
+        assert_eq!(strictness_target("acc99", Capability::TopKByCount), 0.99);
+        assert_eq!(strictness_target("acc99", Capability::Max), 0.0);
     }
 }
