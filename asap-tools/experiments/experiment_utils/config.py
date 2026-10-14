@@ -538,6 +538,21 @@ def get_prometheus_data_ingestion_interval_ms(prometheus_config):
         raise ValueError(f"Invalid scrape interval string: {s}")
 
 
+def get_retention_slack_ms(query_groups, data_ingestion_interval_ms: int) -> int:
+    """How far in the past the query client evaluates (the largest
+    client_options.query_time_offset, in seconds), plus one ingestion interval
+    for windows still closing. The query engine keeps this much extra
+    CircularBuffer history so delayed queries find their windows."""
+    max_offset_s = max(
+        (
+            (group.get("client_options") or {}).get("query_time_offset", 0)
+            for group in query_groups or []
+        ),
+        default=0,
+    )
+    return int(max_offset_s * 1000) + data_ingestion_interval_ms
+
+
 PLANNER_OUTPUT_FILES = ("streaming_config.yaml", "inference_config.yaml")
 QUERY_LANGUAGE_PROMQL = "promql"
 QUERY_LANGUAGE_SQL = "sql"
@@ -702,6 +717,7 @@ class Args:
 
         # Query engine options
         self.lock_strategy = cfg.query_engine.lock_strategy
+        self.spill = cfg.query_engine.spill
 
         # Controller configuration
         self.controller_punting = cfg.controller.punting
@@ -968,6 +984,8 @@ def generate_sql_planner_input(
     dataset_cfg: Any,
     sketch_parameters: Any = None,
     windowing: Any = None,
+    *,
+    cleanup_policy: str,
 ) -> str:
     """Generate the YAML input file for asap-planner in SQL mode.
 
@@ -998,6 +1016,7 @@ def generate_sql_planner_input(
         windowing: Optional DictConfig/dict mirroring ``config.yaml``'s
             top-level ``windowing`` section. When ``None``, the planner uses
             its default tumbling-window behavior.
+        cleanup_policy: ``aggregate_cleanup.policy`` from ``config.yaml``.
 
     Returns:
         YAML string ready to write to disk and pass to asap-planner.
@@ -1065,7 +1084,7 @@ def generate_sql_planner_input(
     planner_input = {
         "tables": tables,
         "query_groups": planner_query_groups,
-        "aggregate_cleanup": {"policy": "read_based"},
+        "aggregate_cleanup": {"policy": cleanup_policy},
     }
     if sketch_parameters is not None:
         if isinstance(sketch_parameters, (DictConfig, ListConfig)):

@@ -85,6 +85,10 @@ backend:
 # Query engine options
 query_engine:
   lock_strategy: "per-key"  # Lock strategy for SimpleMapStore: "global" or "per-key" (Rust query engine only)
+  # Append windows the store evicts to query_engine_output/spill instead of
+  # dropping them; the run records their size and fails if any write failed.
+  # Spill files stay on the node; results syncs skip them.
+  spill: false
 
 # Controller configuration
 controller:
@@ -104,11 +108,11 @@ controller:
 
 # Aggregate cleanup configuration
 # Policy options:
-#   - "circular_buffer": Keep N most recent aggregates (fixed-count cleanup)
-#   - "read_based": Remove aggregates after N reads (default)
+#   - "circular_buffer": Keep N most recent aggregates (fixed-count cleanup) (default)
+#   - "read_based": Remove aggregates after N reads; windows no query reads are never removed
 #   - "no_cleanup": Never clean up aggregates (retain all indefinitely)
 aggregate_cleanup:
-  policy: "read_based"
+  policy: "circular_buffer"
 
 # Sketch parameters configuration
 # These control the accuracy and memory usage of sketch data structures

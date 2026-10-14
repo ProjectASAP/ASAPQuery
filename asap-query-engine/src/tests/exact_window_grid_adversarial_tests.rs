@@ -20,7 +20,7 @@
 //!
 //! - **Store-level** (`SimpleMapStore` directly): pin the `Store` trait
 //!   contract itself -- empty-range edge cases, boundary containment,
-//!   overlapping sliding windows, and sealed/mutable epoch spans. These
+//!   overlapping sliding windows, and spans after CircularBuffer eviction. These
 //!   exercise the store's own (unchanged) `query_precomputed_output`, so they
 //!   document the ground truth the rest of the pipeline must reproduce.
 //! - **Engine-level** (`SimpleEngine` + PromQL): exercise the actual query
@@ -345,19 +345,17 @@ mod tests {
         );
     }
 
-    /// Range query spanning both sealed epochs and the still-open (mutable)
-    /// current epoch, in one call. Mirrors
-    /// `store_correctness_tests::test_exact_query_correct_after_epoch_rotation`
+    /// Range query over everything CircularBuffer retained, in one call. Mirrors
+    /// `store_correctness_tests::test_exact_query_correct_after_eviction`
     /// but drives the tolerant range scan (`query_precomputed_output`)
     /// instead of the exact lookup, and checks correctness across the whole
     /// retained span in a single query rather than probing one window at a
     /// time.
     ///
-    /// capacity=2, 10 inserts => retention_limit=8, evicting windows 0 and 1
-    /// (oldest sealed epoch). Windows 2..10 remain, spread across multiple
-    /// sealed epochs plus the current (newest, still "mutable") epoch.
+    /// retain=2, 11 inserts => windows 9 and 10 remain, windows 0..9 are
+    /// evicted.
     #[test]
-    fn store_query_range_spans_sealed_and_mutable_epochs() {
+    fn store_query_range_spans_retained_windows_after_eviction() {
         let store = make_store(
             vec![(
                 1,
@@ -372,7 +370,7 @@ mod tests {
             )],
             CleanupPolicy::CircularBuffer,
         );
-        let n = 10u64;
+        let n = 11u64;
         for i in 0..n {
             let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
             store.insert_precomputed_output(out, acc).unwrap();
@@ -382,15 +380,16 @@ mod tests {
             .query_precomputed_output("cpu_usage", 1, 0, n * 60_000)
             .unwrap();
         let ts = timestamps_for_none_key(&result);
-        let expected: Vec<(u64, u64)> = (2..n).map(|i| (i * 60_000, (i + 1) * 60_000)).collect();
+        let expected: Vec<(u64, u64)> =
+            (n - 2..n).map(|i| (i * 60_000, (i + 1) * 60_000)).collect();
         assert_eq!(
             ts, expected,
-            "range query spanning sealed + mutable epochs must return exactly windows 2..10, \
-             with windows 0,1 evicted"
+            "range query over the retained windows must return exactly windows 9 and 10, \
+             with windows 0..9 evicted"
         );
 
         let buckets = result.get(&None).unwrap();
-        for i in 2..n {
+        for i in n - 2..n {
             let range = (i * 60_000, (i + 1) * 60_000);
             let acc = &buckets.iter().find(|(r, _)| *r == range).unwrap().1;
             let expected_json = SumAccumulator::with_sum(i as f64)
@@ -399,7 +398,7 @@ mod tests {
             assert_eq!(
                 acc.serialize_to_json().unwrap(),
                 expected_json,
-                "window {i} must return its own value across the sealed/mutable epoch boundary"
+                "window {i} must return its own value after eviction"
             );
         }
     }

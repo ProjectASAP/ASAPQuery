@@ -32,11 +32,13 @@ class ControllerOptionKeysTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(ValueError, "latency_sla"):
-            generate_sql_planner_input(groups, dataset_cfg)
+            generate_sql_planner_input(
+                groups, dataset_cfg, cleanup_policy="circular_buffer"
+            )
 
 
 class LatencySlaMsTest(unittest.TestCase):
-    def _planner_latency(self, controller_options):
+    def _planner_input(self, controller_options, cleanup_policy="circular_buffer"):
         with tempfile.TemporaryDirectory() as tmp:
             sql_path = os.path.join(tmp, "q.sql")
             with open(sql_path, "w") as f:
@@ -58,12 +60,22 @@ class LatencySlaMsTest(unittest.TestCase):
                     },
                 }
             )
-            planner_input = yaml.safe_load(
-                generate_sql_planner_input(groups, dataset_cfg)
+            return yaml.safe_load(
+                generate_sql_planner_input(
+                    groups, dataset_cfg, cleanup_policy=cleanup_policy
+                )
             )
+
+    def _planner_latency(self, controller_options):
+        planner_input = self._planner_input(controller_options)
         return planner_input["query_groups"][0]["controller_options"].get(
             "latency_sla_ms"
         )
+
+    def test_cleanup_policy_comes_from_the_experiment_config(self):
+        for policy in ["circular_buffer", "read_based", "no_cleanup"]:
+            planner_input = self._planner_input({"accuracy_sla": 0.99}, policy)
+            self.assertEqual(planner_input["aggregate_cleanup"], {"policy": policy})
 
     def test_omitted_latency_sla_ms_means_no_limit(self):
         # Same meaning as the PromQL path and the planner.

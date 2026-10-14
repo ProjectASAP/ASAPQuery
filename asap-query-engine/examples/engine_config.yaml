@@ -65,6 +65,7 @@ backend:
 
 store:
   lock_strategy: "per-key"       # global | per-key
+  # spill_dir: "./spill"         # append evicted windows here; unset drops them
 
 # ---------------------------------------------------------------------------
 # Ingest source — choose exactly one type.

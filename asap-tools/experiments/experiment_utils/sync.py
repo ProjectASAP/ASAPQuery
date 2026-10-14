@@ -38,10 +38,12 @@ def rsync_experiment_data(
     local_experiment_dir: str,
     node_offset: int,
 ):
-    """Sync experiment data from remote to local machine."""
+    """Sync experiment data from remote to local machine. The query engine's
+    spill files (GBs per run) stay on the node."""
     if not provider.is_remote():
         return
-    cmd = 'rsync -azh -e "ssh {}" {}@node{}.{}:{}/ {}/'.format(
+    cmd = 'rsync -azh --exclude "query_engine_output/{}/" -e "ssh {}" {}@node{}.{}:{}/ {}/'.format(
+        constants.QUERY_ENGINE_SPILL_SUBDIR,
         constants.SSH_OPTIONS,
         provider.username,
         node_offset,

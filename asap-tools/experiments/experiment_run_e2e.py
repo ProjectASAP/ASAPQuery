@@ -428,6 +428,11 @@ def main(cfg: DictConfig):
                 lock_strategy=args.lock_strategy,
                 backend_config=backend_config,
                 http_port=http_port,
+                spill=args.spill,
+                retention_slack_ms=config.get_retention_slack_ms(
+                    cfg.experiment_params.get("query_groups"),
+                    data_ingestion_interval_ms,
+                ),
                 remote_write_port=args.remote_write_base_port,
             )
             # For precompute mode the query engine IS the Prometheus remote-write
@@ -551,6 +556,10 @@ def main(cfg: DictConfig):
         ):
             sync.copy_prometheus_data(provider, local_experiment_dir, args.node_offset)
 
+        spill_error = None
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            spill_error = query_engine_service.record_spill()
+
         # Skip teardown if the no_teardown flag is set
         if not args.no_teardown:
             if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
@@ -597,6 +606,10 @@ def main(cfg: DictConfig):
             local_experiment_dir,
             node_offset=args.node_offset,
         )
+        # Raised only after teardown and sync, so results come back and the
+        # node is clean for the next run.
+        if spill_error:
+            raise RuntimeError(spill_error)
 
 
 if __name__ == "__main__":

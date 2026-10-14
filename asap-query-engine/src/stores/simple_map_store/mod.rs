@@ -1,6 +1,7 @@
 mod common;
 pub mod global;
 pub mod per_key;
+pub mod spill;
 
 use crate::data_model::{
     AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig,
@@ -8,6 +9,7 @@ use crate::data_model::{
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use global::SimpleMapStoreGlobal;
 use per_key::SimpleMapStorePerKey;
+use spill::SpillWriter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -62,6 +64,25 @@ impl SimpleMapStore {
                 SimpleMapStore::PerKey(SimpleMapStorePerKey::new(streaming_config, cleanup_policy))
             }
         }
+    }
+
+    /// Write every window cleanup evicts to `spill` before it leaves memory.
+    pub fn with_spill(mut self, spill: Arc<SpillWriter>) -> Self {
+        match &mut self {
+            SimpleMapStore::Global(store) => store.spill = Some(spill),
+            SimpleMapStore::PerKey(store) => store.spill = Some(spill),
+        }
+        self
+    }
+
+    /// Keep `retention_slack_ms` of extra windows under CircularBuffer, so queries
+    /// evaluated that far in the past still find their windows.
+    pub fn with_retention_slack_ms(mut self, retention_slack_ms: u64) -> Self {
+        match &mut self {
+            SimpleMapStore::Global(store) => store.retention_slack_ms = retention_slack_ms,
+            SimpleMapStore::PerKey(store) => store.retention_slack_ms = retention_slack_ms,
+        }
+        self
     }
 
     /// Replace the streaming config at runtime. Delegates to the active variant.

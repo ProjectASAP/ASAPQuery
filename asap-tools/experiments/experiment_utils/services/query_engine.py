@@ -2,6 +2,7 @@
 Query Engine service management for experiments.
 """
 
+import json
 import os
 import subprocess
 from typing import Optional
@@ -12,6 +13,19 @@ import constants
 import utils
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
+
+SPILL_SUBDIR = constants.QUERY_ENGINE_SPILL_SUBDIR
+SPILL_ERRORS_METRIC = "asap_store_spill_write_errors_total"
+SPILL_REPORT_FILE = "spill_report.json"
+
+
+def parse_spill_write_errors(metrics_text: str) -> int:
+    """The spill write-error count from the engine's Prometheus /metrics text."""
+    for line in metrics_text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == SPILL_ERRORS_METRIC:
+            return int(float(fields[1]))
+    raise ValueError(f"{SPILL_ERRORS_METRIC} missing from the engine's /metrics")
 
 
 def resolve_backend_config(
@@ -82,6 +96,10 @@ class QueryEngineRustService(BaseQueryEngineService):
         """
         super().__init__(provider, use_container, node_offset)
         self.container_name = constants.QUERY_ENGINE_RS_CONTAINER_NAME
+        # Set by start() when spill is on; read by record_spill().
+        self.remote_spill_dir: Optional[str] = None
+        self.local_spill_report: Optional[str] = None
+        self.http_port: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Config-file helpers (used by both bare-metal and containerized paths)
@@ -100,6 +118,8 @@ class QueryEngineRustService(BaseQueryEngineService):
         lock_strategy: str,
         profile_query_engine: bool,
         ingest_json_config: Optional[dict],
+        spill: bool,
+        retention_slack_ms: int,
     ) -> dict:
         """
         Build an EngineConfig dict matching asap-query-engine's engine_config.rs schema.
@@ -119,6 +139,8 @@ class QueryEngineRustService(BaseQueryEngineService):
             remote_write_port: Port to listen on for Prometheus remote write;
                                should match streaming.remote_write.base_port in the Hydra config
             lock_strategy: Lock strategy for SimpleMapStore ('global' or 'per-key')
+            spill: Append evicted windows under <output_dir>/spill instead of dropping them
+            retention_slack_ms: Extra CircularBuffer history for queries evaluated in the past
 
         Returns:
             Dict matching the EngineConfig YAML schema
@@ -137,6 +159,13 @@ class QueryEngineRustService(BaseQueryEngineService):
                 "port": remote_write_port,
             }
 
+        store = {
+            "lock_strategy": lock_strategy,
+            "retention_slack_ms": retention_slack_ms,
+        }
+        if spill:
+            store["spill_dir"] = os.path.join(output_dir, SPILL_SUBDIR)
+
         return {
             "output_dir": output_dir,
             "log_level": log_level,
@@ -144,7 +173,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             "streaming_engine": streaming_engine,
             "http_server": {"port": http_port},
             "backend": backend,  # already fully resolved by caller
-            "store": {"lock_strategy": lock_strategy},
+            "store": store,
             "ingest": ingest,
             "inference_config": os.path.join(
                 controller_config_dir, "inference_config.yaml"
@@ -212,6 +241,8 @@ class QueryEngineRustService(BaseQueryEngineService):
         lock_strategy: str,
         backend_config: dict,
         http_port: int,
+        spill: bool,
+        retention_slack_ms: int,
         remote_write_port: int = 8080,
         ingest_json_config: Optional[dict] = None,
     ) -> None:
@@ -235,9 +266,20 @@ class QueryEngineRustService(BaseQueryEngineService):
                             Matches the BackendConfig tagged union in
                             asap-query-engine/src/engine_config.rs.
             http_port: Port for the query engine's HTTP API server
+            spill: Append evicted windows to disk; check them with record_spill()
+            retention_slack_ms: Extra CircularBuffer history for queries evaluated in
+                                the past; see config.get_retention_slack_ms
             remote_write_port: Port the precompute engine listens on for Prometheus remote
                                write; should match streaming.remote_write.base_port (default 8080)
         """
+        if spill:
+            self.remote_spill_dir = os.path.join(
+                experiment_output_dir, "query_engine_output", SPILL_SUBDIR
+            )
+            self.local_spill_report = os.path.join(
+                local_experiment_dir, "query_engine_output", SPILL_REPORT_FILE
+            )
+            self.http_port = http_port
         if self.use_container:
             self._start_containerized(
                 experiment_output_dir,
@@ -253,6 +295,8 @@ class QueryEngineRustService(BaseQueryEngineService):
                 remote_write_port,
                 lock_strategy,
                 ingest_json_config,
+                spill,
+                retention_slack_ms,
             )
         else:
             self._start_bare_metal(
@@ -269,6 +313,8 @@ class QueryEngineRustService(BaseQueryEngineService):
                 remote_write_port,
                 lock_strategy,
                 ingest_json_config,
+                spill,
+                retention_slack_ms,
             )
 
     def _start_bare_metal(
@@ -286,6 +332,8 @@ class QueryEngineRustService(BaseQueryEngineService):
         remote_write_port: int,
         lock_strategy: str,
         ingest_json_config: Optional[dict],
+        spill: bool,
+        retention_slack_ms: int,
     ) -> None:
         """Start Rust QueryEngine using bare metal deployment."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
@@ -324,6 +372,8 @@ class QueryEngineRustService(BaseQueryEngineService):
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
             ingest_json_config=ingest_json_config,
+            spill=spill,
+            retention_slack_ms=retention_slack_ms,
         )
         self._write_engine_config_to_remote(
             config_dict=config,
@@ -370,6 +420,8 @@ class QueryEngineRustService(BaseQueryEngineService):
         remote_write_port: int,
         lock_strategy: str,
         ingest_json_config: Optional[dict],
+        spill: bool,
+        retention_slack_ms: int,
     ) -> None:
         """Start Rust QueryEngine using containerized deployment with Jinja template."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
@@ -393,6 +445,8 @@ class QueryEngineRustService(BaseQueryEngineService):
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
             ingest_json_config=ingest_json_config,
+            spill=spill,
+            retention_slack_ms=retention_slack_ms,
         )
         # Write the config to the host path that is volume-mounted as /app/outputs,
         # so the container finds it at /app/outputs/engine_config.yaml.
@@ -451,6 +505,46 @@ class QueryEngineRustService(BaseQueryEngineService):
             except Exception as e:
                 print(f"Failed to start Rust QueryEngine container: {e}")
                 raise
+
+    def record_spill(self) -> Optional[str]:
+        """
+        Write the spill directory's size and the engine's spill write-error count
+        to query_engine_output/spill_report.json. Call while the engine is still
+        running. Returns why the run should fail (a failed spill write, or the
+        check itself failing), or None. Never raises, so callers can sync results
+        and tear down before failing the run. No-op when spill is off.
+        """
+        if self.remote_spill_dir is None:
+            return None
+        try:
+            spill_bytes = int(
+                self._run_on_node(f"du -sb {self.remote_spill_dir} | cut -f1")
+            )
+            metrics = self._run_on_node(
+                f"curl -fsS --max-time {constants.HTTP_READINESS_CURL_TIMEOUT_SECONDS} "
+                f"http://127.0.0.1:{self.http_port}/metrics"
+            )
+            write_errors = parse_spill_write_errors(metrics)
+            with open(self.local_spill_report, "w") as f:
+                json.dump({"spill_bytes": spill_bytes, "write_errors": write_errors}, f)
+        except Exception as e:
+            return f"spill check failed: {e}"
+        print(f"Spill: {spill_bytes} bytes on disk, {write_errors} failed writes")
+        if write_errors > 0:
+            return f"{write_errors} spill writes failed; see the query engine log"
+        return None
+
+    def _run_on_node(self, cmd: str) -> str:
+        result = self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=cmd,
+            cmd_dir=None,
+            nohup=False,
+            popen=False,
+            ignore_errors=False,
+        )
+        assert isinstance(result, subprocess.CompletedProcess)
+        return result.stdout.strip()
 
     def stop(self, **kwargs) -> None:
         """

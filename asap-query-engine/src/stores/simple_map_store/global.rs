@@ -2,9 +2,10 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
-    MutableEpoch, SealedEpoch, TimestampRange,
+    resolve_exact_windows, retained_windows, sort_buckets_chronologically, EpochID, EvictedEntry,
+    InternTable, MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange,
 };
+use crate::stores::simple_map_store::spill::{resolve_evicted, SpillEntry, SpillWriter};
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -24,15 +25,9 @@ struct PerKeyState {
     /// Sealed (immutable) epochs stored as flat sorted Vecs (Optimization 2).
     sealed_epochs: BTreeMap<EpochID, SealedEpoch>,
 
-    /// Monotonically increasing ID of the current epoch.
-    current_epoch_id: EpochID,
-
-    /// Max distinct time-windows per epoch before sealing.
-    /// None = unlimited (set on first insert from num_aggregates_to_retain).
-    epoch_capacity: Option<usize>,
-
-    /// Max total epochs (1 current + sealed) to retain.
-    max_epochs: usize,
+    /// Distinct windows CircularBuffer keeps. None = unlimited (set on first
+    /// insert from the planned retention plus slack).
+    window_limit: Option<usize>,
 }
 
 impl PerKeyState {
@@ -41,74 +36,34 @@ impl PerKeyState {
             intern: InternTable::new(),
             current_epoch: MutableEpoch::new(),
             sealed_epochs: BTreeMap::new(),
-            current_epoch_id: 0,
-            epoch_capacity: None,
-            max_epochs: 4,
+            window_limit: None,
         }
     }
 
-    /// Set epoch_capacity on first insert (no-op after first call).
-    fn configure_epochs(&mut self, num_aggregates_to_retain: Option<u64>) {
-        if self.epoch_capacity.is_none() {
-            if let Some(cap) = num_aggregates_to_retain {
-                self.epoch_capacity = Some(cap as usize);
+    /// Set window_limit on first insert (no-op after first call).
+    fn configure_window_limit(&mut self, retained_windows: Option<u64>) {
+        if self.window_limit.is_none() {
+            if let Some(limit) = retained_windows {
+                self.window_limit = Some(limit as usize);
             }
         }
     }
 
-    /// Seal the current epoch when full, then evict the minimum number of oldest windows
-    /// to keep total distinct windows ≤ `epoch_capacity * max_epochs`.
-    /// Returns the evicted windows so the caller can clean up `read_counts`.
-    fn maybe_rotate_epoch(&mut self) -> Vec<TimestampRange> {
-        let capacity = match self.epoch_capacity {
-            Some(c) if c > 0 => c,
+    /// Evict the oldest distinct windows beyond `window_limit`, returning the evicted
+    /// entries. CircularBuffer never seals, so every window stays in the current epoch
+    /// and its distinct-window count is exact even when a window's series arrive in
+    /// batches interleaved with other windows' (one batch per precompute worker).
+    fn evict_beyond_window_limit(&mut self) -> Vec<EvictedEntry> {
+        let limit = match self.window_limit {
+            Some(l) if l > 0 => l,
             _ => return Vec::new(), // unlimited
         };
-        let retention_limit = capacity * self.max_epochs;
-
-        // Step 1: seal current epoch if it has hit the window capacity threshold.
-        if self.current_epoch.window_count() >= capacity {
-            let hint = self.current_epoch.len();
-            let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
-            self.sealed_epochs.insert(self.current_epoch_id, old.seal());
-            self.current_epoch_id += 1;
-        }
-
-        // Step 2: evict oldest windows until total distinct windows ≤ retention_limit.
-        let total: usize = self.current_epoch.window_count()
-            + self
-                .sealed_epochs
-                .values()
-                .map(|e| e.distinct_window_count())
-                .sum::<usize>();
-
-        if total <= retention_limit {
+        let over = self.current_epoch.window_count().saturating_sub(limit);
+        if over == 0 {
             return Vec::new();
         }
-        let mut over = total - retention_limit;
-        let mut evicted = Vec::new();
-
-        while over > 0 {
-            let oldest_id = match self.sealed_epochs.keys().next().copied() {
-                Some(id) => id,
-                None => break,
-            };
-            let oldest_windows = self.sealed_epochs[&oldest_id].unique_windows();
-            let n_evict = over.min(oldest_windows.len());
-            let to_remove = oldest_windows[..n_evict].to_vec();
-            over -= n_evict;
-            evicted.extend_from_slice(&to_remove);
-
-            if n_evict == oldest_windows.len() {
-                self.sealed_epochs.remove(&oldest_id);
-            } else {
-                self.sealed_epochs
-                    .get_mut(&oldest_id)
-                    .unwrap()
-                    .remove_windows(&to_remove);
-            }
-        }
-        evicted
+        let to_remove = self.current_epoch.oldest_windows(over);
+        self.current_epoch.remove_windows(&to_remove)
     }
 }
 
@@ -142,6 +97,12 @@ pub struct SimpleMapStoreGlobal {
 
     // Policy for cleaning up old aggregates
     cleanup_policy: CleanupPolicy,
+
+    // Where evicted windows are archived; None drops them.
+    pub(super) spill: Option<Arc<SpillWriter>>,
+
+    // Query delay CircularBuffer retention covers beyond the planned windows.
+    pub(super) retention_slack_ms: u64,
 }
 
 impl SimpleMapStoreGlobal {
@@ -156,6 +117,8 @@ impl SimpleMapStoreGlobal {
             }),
             streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
+            spill: None,
+            retention_slack_ms: 0,
         }
     }
 
@@ -226,7 +189,7 @@ type GroupedBatch = HashMap<
 struct BatchConfig {
     metric: String,
     is_delta: bool,
-    num_aggregates_to_retain: Option<u64>,
+    retained_windows: Option<u64>,
     read_count_threshold: Option<u64>,
 }
 
@@ -275,7 +238,12 @@ impl Store for SimpleMapStoreGlobal {
                         metric: aggregation_config.metric.clone(),
                         is_delta: aggregation_config.aggregation_type
                             == AggregationType::DeltaSetAggregator,
-                        num_aggregates_to_retain: aggregation_config.num_aggregates_to_retain,
+                        retained_windows: retained_windows(
+                            aggregation_config.num_aggregates_to_retain,
+                            aggregation_config.window_size_ms,
+                            aggregation_config.slide_interval_ms,
+                            self.retention_slack_ms,
+                        ),
                         read_count_threshold: aggregation_config.read_count_threshold,
                     },
                     u64::MAX,
@@ -292,6 +260,8 @@ impl Store for SimpleMapStoreGlobal {
         let lock_wait_start = Instant::now();
 
         let mut data = self.lock.lock().unwrap();
+        // Evicted entries to spill once the lock is released, keys already resolved.
+        let mut to_spill: Vec<(StoreKey, Vec<SpillEntry>)> = Vec::new();
 
         #[cfg(feature = "lock_profiling")]
         {
@@ -319,8 +289,8 @@ impl Store for SimpleMapStoreGlobal {
 
             let batch_len = items.len() as u64;
 
-            // Ensure PerKeyState exists and configure epoch capacity once per group (Opt 4).
-            // configure_epochs is a no-op after the first call, so calling it once here
+            // Ensure PerKeyState exists and configure the window limit once per group (Opt 4).
+            // configure_window_limit is a no-op after the first call, so calling it once here
             // avoids the is_none() check on every inner iteration.
             {
                 let per_key = data
@@ -328,10 +298,11 @@ impl Store for SimpleMapStoreGlobal {
                     .entry(store_key)
                     .or_insert_with(PerKeyState::new);
                 if !cfg.is_delta {
-                    per_key.configure_epochs(cfg.num_aggregates_to_retain);
+                    per_key.configure_window_limit(cfg.retained_windows);
                 }
             } // per_key borrow ends here
 
+            let mut evicted = Vec::new();
             for (output, precompute) in items {
                 // Get per_key fresh each iteration so the borrow of data.stores ends before
                 // the cleanup branches borrow data.read_counts (different field — NLL splits
@@ -347,61 +318,68 @@ impl Store for SimpleMapStoreGlobal {
                     .current_epoch
                     .insert(metric_id, timestamp_range, Arc::from(precompute));
 
-                // Apply retention policy if configured (but exclude DeltaSetAggregator).
+                // Apply ReadBased retention if configured (but exclude DeltaSetAggregator).
                 // per_key is last used above; NLL ends its borrow so data.read_counts can
-                // be accessed in the cleanup branches below.
-                if !cfg.is_delta {
-                    match self.cleanup_policy {
-                        CleanupPolicy::CircularBuffer => {
-                            let dropped_windows = data
-                                .stores
-                                .get_mut(&store_key)
-                                .unwrap()
-                                .maybe_rotate_epoch();
-                            if !dropped_windows.is_empty() {
-                                if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
-                                    for window in &dropped_windows {
-                                        rc_map.remove(window);
-                                    }
-                                }
-                                for window in &dropped_windows {
-                                    debug!(
-                                        "Removed old aggregate for {} aggregation_id {} window {}-{} (epoch rotation)",
-                                        cfg.metric, store_key, window.0, window.1
-                                    );
-                                }
-                            }
-                        }
-                        CleanupPolicy::ReadBased => {
-                            if let Some(threshold) = cfg.read_count_threshold {
-                                let rc_map = data.read_counts.entry(store_key).or_default();
-                                let windows_to_remove: Vec<TimestampRange> = rc_map
-                                    .iter()
-                                    .filter(|(_, &count)| count >= threshold)
-                                    .map(|(range, _)| *range)
-                                    .collect();
+                // be accessed below.
+                if !cfg.is_delta && matches!(self.cleanup_policy, CleanupPolicy::ReadBased) {
+                    if let Some(threshold) = cfg.read_count_threshold {
+                        let rc_map = data.read_counts.entry(store_key).or_default();
+                        let windows_to_remove: Vec<TimestampRange> = rc_map
+                            .iter()
+                            .filter(|(_, &count)| count >= threshold)
+                            .map(|(range, _)| *range)
+                            .collect();
 
-                                if !windows_to_remove.is_empty() {
-                                    for window in &windows_to_remove {
-                                        debug!(
-                                            "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
-                                            cfg.metric, store_key, window.0, window.1, threshold
-                                        );
-                                        rc_map.remove(window);
-                                    }
-
-                                    let per_key = data.stores.get_mut(&store_key).unwrap();
-                                    per_key.current_epoch.remove_windows(&windows_to_remove);
-                                    per_key.sealed_epochs.retain(|_, epoch| {
-                                        epoch.remove_windows(&windows_to_remove);
-                                        !epoch.is_empty()
-                                    });
-                                }
+                        if !windows_to_remove.is_empty() {
+                            for window in &windows_to_remove {
+                                debug!(
+                                    "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
+                                    cfg.metric, store_key, window.0, window.1, threshold
+                                );
+                                rc_map.remove(window);
                             }
+
+                            let per_key = data.stores.get_mut(&store_key).unwrap();
+                            evicted
+                                .extend(per_key.current_epoch.remove_windows(&windows_to_remove));
+                            per_key.sealed_epochs.retain(|_, epoch| {
+                                evicted.extend(epoch.remove_windows(&windows_to_remove));
+                                !epoch.is_empty()
+                            });
                         }
-                        CleanupPolicy::NoCleanup => {}
                     }
                 }
+            }
+
+            if !cfg.is_delta && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer) {
+                let dropped = data
+                    .stores
+                    .get_mut(&store_key)
+                    .unwrap()
+                    .evict_beyond_window_limit();
+                let mut dropped_windows: Vec<TimestampRange> =
+                    dropped.iter().map(|(window, _, _)| *window).collect();
+                // Entries come in insertion order, so a window's entries aren't adjacent.
+                dropped_windows.sort_unstable();
+                dropped_windows.dedup();
+                if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
+                    for window in &dropped_windows {
+                        rc_map.remove(window);
+                    }
+                }
+                for window in &dropped_windows {
+                    debug!(
+                        "Removed old aggregate for {} aggregation_id {} window {}-{} (circular buffer)",
+                        cfg.metric, store_key, window.0, window.1
+                    );
+                }
+                evicted.extend(dropped);
+            }
+            if self.spill.is_some() && !evicted.is_empty() {
+                to_spill.push((
+                    store_key,
+                    resolve_evicted(&data.stores[&store_key].intern, evicted),
+                ));
             }
 
             // Opt 4: one count update per group (was one per item)
@@ -421,6 +399,12 @@ impl Store for SimpleMapStoreGlobal {
                 lock_hold_duration.as_secs_f64() * 1000.0,
                 batch_size
             );
+        }
+        drop(data);
+        if let Some(spill) = &self.spill {
+            for (aggregation_id, entries) in &to_spill {
+                spill.spill(*aggregation_id, entries);
+            }
         }
 
         let batch_insert_duration = batch_insert_start_time.elapsed();

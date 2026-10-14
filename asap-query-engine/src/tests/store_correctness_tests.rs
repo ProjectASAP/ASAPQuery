@@ -192,7 +192,7 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_exact_query_sees_window_inserted_after_a_prior_exact_query(strategy);
     test_exact_query_miss_then_hit_after_insert(strategy);
     test_exact_query_correct_across_interleaved_inserts_and_queries(strategy);
-    test_exact_query_correct_after_epoch_rotation(strategy);
+    test_exact_query_correct_after_eviction(strategy);
 
     // Batched exact-query correctness (#609)
     test_batch_exact_query_empty_windows_returns_empty(strategy);
@@ -211,10 +211,12 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     // Cleanup policies
     test_cleanup_circular_buffer_evicts_oldest_window(strategy);
     test_cleanup_circular_buffer_retains_newest_windows(strategy);
+    test_retention_slack_keeps_windows_for_delayed_queries(strategy);
+    test_circular_buffer_keeps_every_series_of_retained_windows(strategy);
     test_cleanup_read_based_evicts_after_threshold_reads(strategy);
     test_cleanup_read_based_unread_window_is_retained(strategy);
     test_delta_set_aggregator_bypasses_cleanup(strategy);
-    test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy);
+    test_buckets_returned_in_chronological_order_after_eviction(strategy);
 
     // Keyed (label-grouped) entries
     test_keyed_entries_grouped_by_key(strategy);
@@ -508,23 +510,21 @@ fn test_exact_query_correct_across_interleaved_inserts_and_queries(strategy: Loc
     }
 }
 
-fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
-    // capacity=2, max_epochs=4 (hardcoded in StoreKeyData/PerKeyState) =>
-    // retention_limit = 8. Inserting 10 windows evicts exactly the oldest 2
-    // (windows 0 and 1, both in the oldest sealed epoch), leaving windows
-    // 2..10 spread across sealed epochs and the current (still-open) epoch.
+fn test_exact_query_correct_after_eviction(strategy: LockStrategy) {
+    // retain=2 => the store keeps the 2 newest windows. After 11 inserts,
+    // windows 9 and 10 remain and windows 0..9 are evicted.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
         &[(1, AggregationType::Sum, Some(2), None)],
     );
-    let n = 10u64;
+    let n = 11u64;
     for i in 0..n {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
         store.insert_precomputed_output(out, acc).unwrap();
     }
 
-    for i in 0u64..2 {
+    for i in 0u64..n - 2 {
         let evicted = store
             .query_precomputed_output_exact("cpu_usage", 1, i * 60_000, (i + 1) * 60_000)
             .unwrap();
@@ -535,14 +535,14 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
         );
     }
 
-    for i in 2u64..n {
+    for i in n - 2..n {
         let result = store
             .query_precomputed_output_exact("cpu_usage", 1, i * 60_000, (i + 1) * 60_000)
             .unwrap();
         assert_eq!(
             total_bucket_count(&result),
             1,
-            "[{}] window {i} must be retrievable via exact query after epoch rotation",
+            "[{}] window {i} must be retrievable via exact query after eviction",
             label(strategy)
         );
         let expected = SumAccumulator::with_sum(i as f64)
@@ -552,8 +552,8 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
         assert_eq!(
             actual,
             expected,
-            "[{}] window {i} must return its own value after epoch rotation, \
-             not a value from a sealed epoch's stale offset",
+            "[{}] window {i} must return its own value after eviction, \
+             not a value from a stale offset",
             label(strategy)
         );
     }
@@ -886,14 +886,14 @@ fn test_earliest_timestamp_tracked_per_agg_id(strategy: LockStrategy) {
 // ── cleanup: circular buffer ──────────────────────────────────────────────────
 
 fn test_cleanup_circular_buffer_evicts_oldest_window(strategy: LockStrategy) {
-    // retention_limit = num_aggregates_to_retain * 4 = 2 * 4 = 8.
-    // Inserting a 9th window triggers eviction of the oldest 1.
+    // retention_limit = num_aggregates_to_retain = 2.
+    // Inserting a 3rd window triggers eviction of the oldest 1.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
         &[(1, AggregationType::Sum, Some(2), None)],
     );
-    for i in 0u64..9 {
+    for i in 0u64..3 {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
         store.insert_precomputed_output(out, acc).unwrap();
     }
@@ -917,15 +917,125 @@ fn test_cleanup_circular_buffer_retains_newest_windows(strategy: LockStrategy) {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
         store.insert_precomputed_output(out, acc).unwrap();
     }
+    // Retains exactly num_aggregates_to_retain windows, the count the planner
+    // sizes memory for.
     let result = store
-        .query_precomputed_output("cpu_usage", 1, 60_000, 9 * 60_000)
+        .query_precomputed_output("cpu_usage", 1, 0, 9 * 60_000)
         .unwrap();
     assert_eq!(
-        total_bucket_count(&result),
-        8,
-        "[{}] circular buffer must retain the 8 newest windows after eviction",
+        timestamps_for_none_key(&result),
+        vec![(7 * 60_000, 8 * 60_000), (8 * 60_000, 9 * 60_000)],
+        "[{}] circular buffer must retain exactly the 2 newest windows after eviction",
         label(strategy)
     );
+}
+
+/// An instant query planned with retain=1 but evaluated 10s in the past (the
+/// harness's query_time_offset) found its window already evicted and fell back
+/// to Prometheus on every request. Slack keeps that window in memory.
+fn test_retention_slack_keeps_windows_for_delayed_queries(strategy: LockStrategy) {
+    let window_ms = 1_000;
+    let slack_ms = 10_000;
+    let config = AggregationConfig::new(
+        1,
+        AggregationType::Sum,
+        "".to_string(),
+        HashMap::new(),
+        KeyByLabelNames::empty(),
+        KeyByLabelNames::empty(),
+        KeyByLabelNames::empty(),
+        "".to_string(),
+        window_ms,
+        window_ms,
+        WindowType::Tumbling,
+        "".to_string(),
+        "cpu_usage".to_string(),
+        Some(1),
+        None,
+        None,
+        None,
+    );
+    let streaming = Arc::new(StreamingConfig::new(HashMap::from([(1, config)])));
+    let store =
+        SimpleMapStore::new_with_strategy(streaming, CleanupPolicy::CircularBuffer, strategy)
+            .with_retention_slack_ms(slack_ms);
+    let n = 30u64;
+    for i in 0..n {
+        let (out, acc) = sum_entry(1, i * window_ms, (i + 1) * window_ms, i as f64);
+        store.insert_precomputed_output(out, acc).unwrap();
+    }
+
+    // 1 planned + 10 slack windows: the window 10s before the newest is kept,
+    // the one before that is evicted.
+    let retained = (n - 11..n).map(|i| (i * window_ms, (i + 1) * window_ms));
+    let result = store
+        .query_precomputed_output("cpu_usage", 1, 0, n * window_ms)
+        .unwrap();
+    assert_eq!(
+        timestamps_for_none_key(&result),
+        retained.collect::<Vec<_>>(),
+        "[{}] retain=1 plus 10s of 1s windows must keep exactly the newest 11",
+        label(strategy)
+    );
+}
+
+/// Sealing an epoch once it held N windows split a window whose series arrived
+/// after the seal across two epochs; the window was counted twice and its early
+/// series evicted while it was still retained. Precompute workers each send
+/// their own batch per window, so a window's series arrive interleaved with
+/// other windows' — modelled here by inserting window w's series b, then
+/// window w+1's series a, then window w's series c.
+fn test_circular_buffer_keeps_every_series_of_retained_windows(strategy: LockStrategy) {
+    let series = |host: &str, w: u64| {
+        keyed_entry(
+            1,
+            w * 60_000,
+            (w + 1) * 60_000,
+            key(&[host]),
+            Box::new(SumAccumulator::with_sum(1.0)),
+        )
+    };
+    for retain in [1u64, 3] {
+        let store = make_store(
+            strategy,
+            CleanupPolicy::CircularBuffer,
+            &[(1, AggregationType::Sum, Some(retain), None)],
+        );
+        let n = 6u64;
+        let (out, acc) = series("a", 0);
+        store.insert_precomputed_output(out, acc).unwrap();
+        for w in 0..n {
+            let (out, acc) = series("b", w);
+            store.insert_precomputed_output(out, acc).unwrap();
+            if w + 1 < n {
+                let (out, acc) = series("a", w + 1);
+                store.insert_precomputed_output(out, acc).unwrap();
+            }
+            let (out, acc) = series("c", w);
+            store.insert_precomputed_output(out, acc).unwrap();
+        }
+
+        for w in n - retain..n {
+            let window = store
+                .query_precomputed_output_exact("cpu_usage", 1, w * 60_000, (w + 1) * 60_000)
+                .unwrap();
+            assert_eq!(
+                total_bucket_count(&window),
+                3,
+                "[{}] retain={retain}: window {w} must keep all 3 series",
+                label(strategy)
+            );
+        }
+        let all = store
+            .query_precomputed_output("cpu_usage", 1, 0, n * 60_000)
+            .unwrap();
+        assert_eq!(
+            total_bucket_count(&all),
+            3 * retain as usize,
+            "[{}] retain={retain}: exactly {retain} windows of 3 series remain",
+            label(strategy)
+        );
+    }
 }
 
 // ── cleanup: read-based ───────────────────────────────────────────────────────
@@ -1005,7 +1115,7 @@ fn test_cleanup_read_based_unread_window_is_retained(strategy: LockStrategy) {
 
 fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
     // The store skips cleanup entirely when aggregation_type == "DeltaSetAggregator".
-    // retention_limit = 2 * 4 = 8. Inserting 10 windows must not evict any.
+    // retention_limit = 2. Inserting 10 windows must not evict any.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
@@ -1045,15 +1155,13 @@ fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
 /// moment an order-sensitive accumulator (`DeltaSetAggregator` included, if
 /// its rotation exemption is ever relaxed) hits this path.
 ///
-/// capacity=2 with 7 inserts forces 3 epoch seals, leaving exactly 1 window
-/// in the current epoch (the newest) alongside 3 sealed epochs (the 6
-/// oldest) — the exact shape under which "current checked first" prepends a
-/// newer window ahead of older ones.
+/// retain=2 with 7 inserts leaves windows 5 and 6; the returned order must
+/// still be chronological.
 ///
 /// Deliberately does NOT use `timestamps_for_none_key` — that helper sorts
 /// before returning, which would mask exactly the bug this test exists to
 /// catch.
-fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: LockStrategy) {
+fn test_buckets_returned_in_chronological_order_after_eviction(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
@@ -1076,8 +1184,8 @@ fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: L
         .collect();
     assert_eq!(
         returned_order.len(),
-        n as usize,
-        "[{}] no windows should have been evicted yet (7 <= retention_limit 8)",
+        2,
+        "[{}] the 2 newest windows should remain (retention_limit 2)",
         label(strategy)
     );
 
@@ -1087,7 +1195,7 @@ fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: L
         returned_order,
         chronological,
         "[{}] buckets must be returned in chronological (ascending start) order \
-         even after epoch rotation has occurred",
+         even after eviction has occurred",
         label(strategy)
     );
 }
