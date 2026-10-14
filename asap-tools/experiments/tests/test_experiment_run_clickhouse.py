@@ -178,6 +178,8 @@ class StartClickHouseFeedTest(unittest.TestCase):
         self.assertEqual(
             [c[0] for c in calls.mock_calls], ["loader.run_init_sql", "feeder.start"]
         )
+        # The feed starts on a boundary of the aligned intervals' LCM.
+        self.assertEqual(calls.feeder.start.call_args.kwargs["align_secs"], 60)
         self.assertEqual(
             calls.feeder.start.call_args.kwargs["sinks"],
             {"clickhouse": "http://localhost:8123/?database=default"},
