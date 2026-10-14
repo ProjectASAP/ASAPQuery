@@ -33,8 +33,8 @@ Each workload is one file, `synthetic-templates<set>-shared<r>[-metrics<m>]-tp95
 | Name part | Meaning |
 |---|---|
 | `templatesclassic` | the mixed set: 8 PromQL templates on one metric (42 RQEs); templates 7 and 9 (`sum by (job) (rate(...))`, `topk(32, sum by (label_0) (rate(...)))`) are dropped, as ASAPQuery would need per-series counter deltas to serve them |
-| `templatesmultigroup` | the multi-grouping templates alone: distinct counts and p99s over several groupings of `http` and `flows`, including p99 `GROUP BY CUBE(region, service, endpoint)` (62 RQEs) |
-| `templatesall` | classic + multi-grouping (104 RQEs) |
+| `templatesmultigroup` | the multi-grouping templates alone: distinct counts and p99s over several groupings of `http` and `flows`, including p99 `GROUP BY CUBE(region, service, endpoint)` (62 RQEs, exported with `--keep-duplicate-queries`; 52 without) |
+| `templatesall` | classic + multi-grouping (104 RQEs, exported with `--keep-duplicate-queries`; 94 without) |
 | `shared8` | 8 users query the same streams with their own windows, quantiles and repeat intervals |
 | `metrics8`, `metrics16` | 8 or 16 independent copies of the workload, each on its own metric |
 | `tp95` | every RQE must meet 95% accuracy in its sketch's own metric |
@@ -146,7 +146,7 @@ Every table also has `workloads[0].e2e`, for running a plan end to end
 
 | Field | Meaning |
 |---|---|
-| `e2e.queries` | classic: one entry per PromQL query and repeat interval: `promql`, `interval_secs`, and the `rqes` it reads (template 10's ratio reads two). Multi-grouping (no PromQL): one entry per distinct query and interval: canonical ASAPQuery `sql` over `NOW()` (the planner floors and replaces it), plus `table`, `value`, `capability`, `grouping`, `quantile` (p99: 0.99), `window_secs`, `interval_secs`, and the `rqes` it reads (sorted; templates 14, 15 and 17 share some groupings) |
+| `e2e.queries` | classic: one entry per PromQL query and repeat interval: `promql`, `interval_secs`, and the `rqes` it reads (template 10's ratio reads two). Multi-grouping (no PromQL): one entry per distinct query and interval: canonical ASAPQuery `sql` over `NOW()` (the planner floors and replaces it), plus `table`, `value`, `capability`, `grouping`, `quantile` (p99: 0.99), `window_secs`, `interval_secs`, and the `rqes` it reads: only the strictest of templates 14, 15 and 17 where they share a grouping, or every one, sorted, with `--keep-duplicate-queries` |
 | `e2e.metrics` | the metrics to generate. Classic: gauge `data` (sums, quantiles, top-k by sum) and counter `data_total` (rates), with `labels` in the `schemas` format (`label_0` is `child_of: job`, 1,000 per job, so 1e4 series), samples/s per series, and each stream's value shape. Multi-grouping: `type: "records"` tables `http` and `flows` (`data_1_http` for metric `data_1/http` in `metrics=m` tables) with the schema's `labels`, `records_per_sec` and `values` (shape, `scaled_by`, `anomaly`, `burst`) |
 
 ### Accuracy and cost

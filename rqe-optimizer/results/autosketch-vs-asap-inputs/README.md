@@ -21,7 +21,7 @@ and `../autosketch-vs-asap-synthetic-sla/`), as run on 2026-10-08.
   `scripts/merge_study_parts.py`, which refuses a point measured twice. Their
   raw records are `raw/dense_*`.
 - `tables/`: the synthetic mixed-set workloads from
-  `scripts/export_autosketch_eval_table.py --synthetic` (RQEs, streams,
+  `scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries` (RQEs, streams,
   targets, data shapes) and `plan.tsv` (one run per table).
 
 AutoSketch's measured benchmark times are next to each figure's results

@@ -200,8 +200,8 @@ zcat plans/synthetic-templatesmultigroup-shared1.plans.json.gz | jq '.plans[]
 - The accuracy curves (`out_grid_1e7_cost/`, `out_1e9/`) are the committed
   #138 study's, in `../autosketch-vs-asap-inputs/saturation/` (#194), with
   #213's new KLL and DDSketch configs appended.
-- `inputs/tables/`: the workloads, `export_autosketch_eval_table.py
-  --synthetic` (classic, multigroup and all × r ∈ {1, 8} × m ∈ {1, 8, 16}).
+- `inputs/tables/`: the workloads, `export_autosketch_eval_table.py --synthetic
+  --keep-duplicate-queries` (classic, multigroup and all × r ∈ {1, 8} × m ∈ {1, 8, 16}).
 
 ## Reproduce
 

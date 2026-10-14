@@ -74,7 +74,7 @@ approxbench accuracy benchmark, serially, alone on clnode109
 ```sh
 # The inputs these results used are committed: TABLES=../autosketch-vs-asap-inputs/tables,
 # DIR=../autosketch-vs-asap-inputs/saturation (paths from this directory).
-python3 scripts/export_autosketch_eval_table.py --synthetic --out TABLES
+python3 scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries --out TABLES
 # For each row of TABLES/plan.tsv:
 target/release/examples/autosketch_vs_asap synthetic --table TABLES/T --target p95 \
     --saturation-dir DIR --out OUT/R --runs 3

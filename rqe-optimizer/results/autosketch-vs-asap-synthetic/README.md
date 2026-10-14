@@ -165,7 +165,7 @@ python3 scripts/study_saturation.py --phase accuracy --n-max 1e9 --seeds 3 \
 python3 scripts/study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost
 
 # Workload tables and plan.tsv, then the runs.
-python3 scripts/export_autosketch_eval_table.py --synthetic --out TABLES
+python3 scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries --out TABLES
 # Or use the committed inputs: TABLES=rqe-optimizer/results/autosketch-vs-asap-inputs/tables,
 # DIR=rqe-optimizer/results/autosketch-vs-asap-inputs/saturation.
 SATURATION_DIR=DIR scripts/run_autosketch_vs_asap_synthetic.sh TABLES run

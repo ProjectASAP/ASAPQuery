@@ -10,7 +10,7 @@ table, p95 targets, runner) is the same as `../autosketch-vs-asap-hydra/`.
 ## Files
 
 - `inputs/tables/`: the tables, `export_autosketch_eval_table.py --synthetic
-  --samples-per-sec 10` (classic, all, multigroup at shared = 1). Each one's
+  --samples-per-sec 10 --keep-duplicate-queries` (classic, all, multigroup at shared = 1). Each one's
   `workloads[0].e2e` holds the queries and metrics to generate.
 - `plans/<table>.plans.json.gz`: each method's chosen plans, in the format of
   `../autosketch-vs-asap-hydra/README.md`, "Plans" (`--runs 1`, kept, then
@@ -88,9 +88,9 @@ bound stays 490 ms (SLAs from 1,000 ms); classic's is 21 ms.
 ```sh
 cargo build --release -p rqe-optimizer --examples
 DIR=rqe-optimizer/results/e2e-rate10; TMP=$(mktemp -d)
-python3 scripts/export_autosketch_eval_table.py --synthetic --samples-per-sec 10 \
+python3 scripts/export_autosketch_eval_table.py --synthetic --samples-per-sec 10 --keep-duplicate-queries \
     --revision 44ac160dd350f695a09224fd124f0dcfe3dd825a --out $TMP/classic   # classic tables
-python3 scripts/export_autosketch_eval_table.py --synthetic --samples-per-sec 10 \
+python3 scripts/export_autosketch_eval_table.py --synthetic --samples-per-sec 10 --keep-duplicate-queries \
     --revision beacf68 --out $TMP/rest                                        # all, multigroup
 # copy synthetic-templates{classic,all,multigroup}-shared1.json to $DIR/inputs/tables/
 # SAT: the saturation dir of ../autosketch-vs-asap-hydra/README.md, "Reproduce"
