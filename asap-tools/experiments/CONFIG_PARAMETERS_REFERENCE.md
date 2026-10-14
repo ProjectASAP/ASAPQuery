@@ -460,7 +460,7 @@ These parameters come from the `experiment_type` config group and are prefixed w
 #### Paced Feeder Parameters
 
 `paced_feeder` runs `asap-tools/data-sources/paced-feeder` (built by
-`installation/common/setup_dependencies.sh`) bare-metal on the worker nodes,
+its `installation/install.sh`) bare-metal on the worker nodes,
 one process per (sink, metric). It pushes over remote write instead of being
 scraped: in `sketchdb` mode to the query engine's ingest
 (`streaming.remote_write`, which must have `parallelism: 1`), plus Prometheus
