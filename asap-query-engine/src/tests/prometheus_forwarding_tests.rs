@@ -207,6 +207,7 @@ fn native_range_error_configs() -> (InferenceConfig, Arc<StreamingConfig>) {
         query_configs: vec![QueryConfig::new("sum(native_metric)".to_string())
             .add_aggregation(AggregationReference::new(1, None))],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
     (inference_config, streaming_config)
 }

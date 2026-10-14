@@ -53,6 +53,7 @@ mod tests {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         // Streaming config

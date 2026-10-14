@@ -5180,6 +5180,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(
@@ -5438,6 +5439,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -5586,6 +5588,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -5668,6 +5671,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -5792,6 +5796,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                     .add_aggregation(AggregationReference::new(2, None)),
             ],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,

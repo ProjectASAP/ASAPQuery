@@ -1666,6 +1666,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         let agg_config = AggregationConfig {
@@ -1882,6 +1883,7 @@ mod topk_pipeline_tests {
                     .add_aggregation(AggregationReference::new(AGG_ID, None)),
             ],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
 
         let context = engine
@@ -1951,6 +1953,7 @@ mod topk_pipeline_tests {
             )
             .add_aggregation(AggregationReference::new(AGG_ID, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
 
         assert!(matches!(
@@ -2042,6 +2045,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         let agg_config = AggregationConfig {

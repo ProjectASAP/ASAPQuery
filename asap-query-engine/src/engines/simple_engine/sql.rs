@@ -980,6 +980,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         let agg_config = AggregationConfig {
@@ -1071,6 +1072,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         let agg_config = AggregationConfig {
@@ -1149,6 +1151,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         let agg_config = AggregationConfig {
@@ -1235,6 +1238,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         // sub_type "sum" ⇒ the heap is weighted by the summed value rather
@@ -1367,6 +1371,7 @@ mod topk_pipeline_tests {
             schema: SchemaConfig::SQL(netflow_sql_schema()),
             query_configs: vec![],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         SimpleEngine::new(
             store,
@@ -1743,6 +1748,7 @@ mod spatiotemporal_timestamp_alignment_tests {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         let agg_config = AggregationConfig {

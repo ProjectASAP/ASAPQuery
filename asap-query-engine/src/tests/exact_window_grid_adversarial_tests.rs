@@ -862,6 +862,7 @@ mod tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(

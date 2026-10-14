@@ -90,6 +90,7 @@ mod tests {
             )
             .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
         let Some((_, result)) = engine
             .handle_query_promql(query, 1_000.0)
@@ -317,6 +318,7 @@ mod tests {
             )
             .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
 
         assert!(matches!(
@@ -374,6 +376,7 @@ mod tests {
             )
             .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
 
         for result in [
@@ -414,6 +417,7 @@ mod tests {
             )
             .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
 
         assert!(matches!(
@@ -455,6 +459,7 @@ mod tests {
             )
             .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
 
         // Prometheus omits an absent grouping label; this native representation

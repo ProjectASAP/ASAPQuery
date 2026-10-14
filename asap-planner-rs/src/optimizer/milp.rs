@@ -327,6 +327,19 @@ pub struct MilpWorkload {
     pub raqe_items: Vec<usize>,
 }
 
+impl MilpWorkload {
+    /// Appends `item` as a single Raqe named `id`, returning the Raqe's index.
+    pub(crate) fn push_item(&mut self, item: OptimizerItem, id: &str) -> Result<usize, MilpError> {
+        self.raqes.push(Raqe {
+            id: id.to_string(),
+            ..item_to_raqe(&item)?
+        });
+        self.raqe_items.push(self.items.len());
+        self.items.push(item);
+        Ok(self.raqes.len() - 1)
+    }
+}
+
 /// One Raqe per query occurrence: a `Raqe` has no frequency weight, so two
 /// dashboards running the same query at the same cadence become two
 /// identical Raqes, which the MILP serves from one shared deployment.

@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use asap_types::enums::CleanupPolicy;
 use asap_types::query_config::QueryTimeAggregation;
@@ -31,6 +31,7 @@ pub(crate) const KEY_QUERIES: &str = "queries";
 pub(crate) const KEY_QUERY: &str = "query";
 pub(crate) const KEY_QUERY_TIME_AGGREGATIONS: &str = "query_time_aggregations";
 pub(crate) const KEY_READ_COUNT_THRESHOLD: &str = "read_count_threshold";
+pub(crate) const KEY_RQE_CONFIGS: &str = "rqe_configs";
 pub(crate) const KEY_SLIDE_INTERVAL_MS: &str = "slideIntervalMs";
 pub(crate) const KEY_SPATIAL_FILTER: &str = "spatialFilter";
 pub(crate) const KEY_TABLE_NAME: &str = "table_name";
@@ -46,6 +47,14 @@ pub(crate) const KEY_WINDOW_TYPE: &str = "windowType";
 pub struct QueryPlanEntry {
     pub aggregation_keys: Vec<(String, Option<u64>)>,
     pub planned_subquery: String,
+    pub query_time_aggregations: Vec<QueryTimeAggregation>,
+}
+
+/// How the engine answers one RQE leaf: the aggregations it reads, and the
+/// query-time stages that regroup them to the RQE's grouping.
+#[derive(Debug, Clone)]
+pub struct RqePlanEntry {
+    pub aggregation_keys: Vec<(String, Option<u64>)>,
     pub query_time_aggregations: Vec<QueryTimeAggregation>,
 }
 
@@ -144,6 +153,50 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
     YamlValue::Mapping(map)
 }
 
+/// The `aggregations` list of a query or RQE config: each aggregation's id
+/// and, by cleanup policy, how many aggregates it retains or reads.
+fn aggregation_refs_yaml(
+    cleanup_policy: CleanupPolicy,
+    aggregation_keys: &[(String, Option<u64>)],
+    id_map: &HashMap<String, u32>,
+) -> YamlValue {
+    YamlValue::Sequence(
+        aggregation_keys
+            .iter()
+            .map(|(key, cleanup_param)| {
+                let agg_id = id_map[key];
+                let mut agg_map = serde_yaml::Mapping::new();
+                agg_map.insert(
+                    YamlValue::String(KEY_AGGREGATION_ID.to_string()),
+                    YamlValue::Number(agg_id.into()),
+                );
+                if let Some(param) = cleanup_param {
+                    match cleanup_policy {
+                        CleanupPolicy::CircularBuffer => {
+                            agg_map.insert(
+                                YamlValue::String(KEY_NUM_AGG_TO_RETAIN.to_string()),
+                                YamlValue::Number((*param).into()),
+                            );
+                        }
+                        CleanupPolicy::ReadBased => {
+                            agg_map.insert(
+                                YamlValue::String(KEY_READ_COUNT_THRESHOLD.to_string()),
+                                YamlValue::Number((*param).into()),
+                            );
+                        }
+                        CleanupPolicy::NoCleanup => {}
+                    }
+                }
+                YamlValue::Mapping(agg_map)
+            })
+            .collect(),
+    )
+}
+
+fn query_time_aggregations_yaml(stages: &[QueryTimeAggregation]) -> YamlValue {
+    serde_yaml::to_value(stages).expect("query-time aggregation pipeline should serialize to YAML")
+}
+
 pub fn build_queries_yaml(
     cleanup_policy: CleanupPolicy,
     query_plan_map: &IndexMap<String, QueryPlanEntry>,
@@ -152,41 +205,10 @@ pub fn build_queries_yaml(
     query_plan_map
         .iter()
         .map(|(query_str, plan)| {
-            let aggregations: Vec<YamlValue> = plan
-                .aggregation_keys
-                .iter()
-                .map(|(key, cleanup_param)| {
-                    let agg_id = id_map[key];
-                    let mut agg_map = serde_yaml::Mapping::new();
-                    agg_map.insert(
-                        YamlValue::String(KEY_AGGREGATION_ID.to_string()),
-                        YamlValue::Number(agg_id.into()),
-                    );
-                    if let Some(param) = cleanup_param {
-                        match cleanup_policy {
-                            CleanupPolicy::CircularBuffer => {
-                                agg_map.insert(
-                                    YamlValue::String(KEY_NUM_AGG_TO_RETAIN.to_string()),
-                                    YamlValue::Number((*param).into()),
-                                );
-                            }
-                            CleanupPolicy::ReadBased => {
-                                agg_map.insert(
-                                    YamlValue::String(KEY_READ_COUNT_THRESHOLD.to_string()),
-                                    YamlValue::Number((*param).into()),
-                                );
-                            }
-                            CleanupPolicy::NoCleanup => {}
-                        }
-                    }
-                    YamlValue::Mapping(agg_map)
-                })
-                .collect();
-
             let mut q_map = serde_yaml::Mapping::new();
             q_map.insert(
                 YamlValue::String(KEY_AGGREGATIONS.to_string()),
-                YamlValue::Sequence(aggregations),
+                aggregation_refs_yaml(cleanup_policy, &plan.aggregation_keys, id_map),
             );
             q_map.insert(
                 YamlValue::String(KEY_QUERY.to_string()),
@@ -198,12 +220,36 @@ pub fn build_queries_yaml(
             );
             q_map.insert(
                 YamlValue::String(KEY_QUERY_TIME_AGGREGATIONS.to_string()),
-                serde_yaml::to_value(&plan.query_time_aggregations)
-                    .expect("query-time aggregation pipeline should serialize to YAML"),
+                query_time_aggregations_yaml(&plan.query_time_aggregations),
             );
             YamlValue::Mapping(q_map)
         })
         .collect()
+}
+
+/// The `rqe_configs` mapping: RQE id -> its aggregations and query-time stages.
+pub fn build_rqe_configs_yaml(
+    cleanup_policy: CleanupPolicy,
+    rqe_plans: &BTreeMap<String, RqePlanEntry>,
+    id_map: &HashMap<String, u32>,
+) -> YamlValue {
+    YamlValue::Mapping(
+        rqe_plans
+            .iter()
+            .map(|(id, plan)| {
+                let mut rqe_map = serde_yaml::Mapping::new();
+                rqe_map.insert(
+                    YamlValue::String(KEY_AGGREGATIONS.to_string()),
+                    aggregation_refs_yaml(cleanup_policy, &plan.aggregation_keys, id_map),
+                );
+                rqe_map.insert(
+                    YamlValue::String(KEY_QUERY_TIME_AGGREGATIONS.to_string()),
+                    query_time_aggregations_yaml(&plan.query_time_aggregations),
+                );
+                (YamlValue::String(id.clone()), YamlValue::Mapping(rqe_map))
+            })
+            .collect(),
+    )
 }
 
 pub fn params_to_yaml(params: &HashMap<String, JsonValue>) -> YamlValue {
