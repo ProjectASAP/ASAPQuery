@@ -38,6 +38,19 @@ class RenderArtifactsTest(unittest.TestCase):
         sql = [query for group in rendered["sql_planner"]["query_groups"] for query in group["queries"]]
         self.assertTrue(all("COUNT(DISTINCT user_id)" in query for query in sql))
 
+    def test_paced_feeder_table_preserves_all_manifest_data_facts(self):
+        table = artifacts.paced_feeder_table(workloads.generate_workloads(seed=862)[0])
+        metrics = table["workloads"][0]["e2e"]["metrics"]
+
+        self.assertEqual(metrics["data"]["samples_per_sec_per_series"], 10)
+        self.assertEqual(metrics["data"]["values"]["value"]["keys"], 10_000)
+        self.assertEqual(metrics["data_total"]["type"], "counter")
+        self.assertEqual(metrics["events"]["records_per_sec"], 100_000)
+        self.assertEqual(
+            metrics["events"]["values"]["user_id"]["rotating_pool"],
+            {"universe_keys": 10_000, "keys_per_series": 1_000},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

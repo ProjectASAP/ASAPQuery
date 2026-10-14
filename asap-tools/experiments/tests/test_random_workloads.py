@@ -66,6 +66,7 @@ class GenerateWorkloadsTest(unittest.TestCase):
         self.assertEqual(facts["scrape_interval_ms"], 100)
         self.assertEqual(facts["series"]["leaf_count"], 10_000)
         self.assertEqual(facts["series"]["ranking"]["exponent"], 1.1)
+        self.assertEqual(facts["metrics"]["data"]["pareto_shape"], 2.0)
         self.assertEqual(facts["metrics"]["data_total"]["resets"], "none")
         self.assertEqual(facts["events"]["user_id_universe_size"], 10_000)
         self.assertEqual(facts["events"]["user_ids_per_leaf"], 1_000)

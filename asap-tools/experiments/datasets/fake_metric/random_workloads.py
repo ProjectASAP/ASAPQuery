@@ -83,8 +83,8 @@ def workload_data_facts(seed):
         "metrics": {
             "data": {
                 "kind": "gauge",
-                "value_range": [0.0, 1_000.0],
-                "value_shape": "rank_scaled_deterministic_variation",
+                "value_shape": "rank_scaled_pareto",
+                "pareto_shape": 2.0,
             },
             "data_total": {
                 "kind": "counter",

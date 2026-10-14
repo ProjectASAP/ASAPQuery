@@ -19,6 +19,62 @@ SQL_EVENTS_TABLE = {
 }
 
 
+def paced_feeder_table(workload):
+    """Render the manifest's data facts as a paced-feeder workload table."""
+    facts = workload["data_facts"]
+    labels = workload["labels"]
+    series = facts["series"]
+    samples_per_sec = workload["samples_per_sec_per_series"]
+    return {
+        "workloads": [
+            {
+                "e2e": {
+                    "metrics": {
+                        "data": {
+                            "type": "gauge",
+                            "labels": labels,
+                            "samples_per_sec_per_series": samples_per_sec,
+                            "values": {
+                                "value": {
+                                    "zipf": series["ranking"]["exponent"],
+                                    "keys": series["leaf_count"],
+                                },
+                                "dist": {
+                                    "pareto": facts["metrics"]["data"]["pareto_shape"]
+                                },
+                            },
+                        },
+                        "data_total": {
+                            "type": "counter",
+                            "labels": labels,
+                            "samples_per_sec_per_series": samples_per_sec,
+                            "values": {
+                                "increment": {
+                                    "zipf": series["ranking"]["exponent"],
+                                    "keys": series["leaf_count"],
+                                }
+                            },
+                        },
+                        "events": {
+                            "type": "records",
+                            "records_per_sec": series["leaf_count"] * samples_per_sec,
+                            "labels": [{**label, "skew": 0.0} for label in labels],
+                            "values": {
+                                facts["events"]["distinct_key"]: {
+                                    "rotating_pool": {
+                                        "universe_keys": facts["events"]["user_id_universe_size"],
+                                        "keys_per_series": facts["events"]["user_ids_per_leaf"],
+                                    }
+                                }
+                            },
+                        },
+                    }
+                }
+            }
+        ]
+    }
+
+
 def query_groups(queries, query_key):
     """Group rendered query text by its fixed repetition interval."""
     grouped = defaultdict(list)
@@ -45,6 +101,7 @@ def render(workload):
         "workload_id": workload["id"],
         "data_facts": workload["data_facts"],
         "queries": queries,
+        "paced_feeder_table": paced_feeder_table(workload),
         "promql_planner": {
             "metrics": [{"metric": metric, "labels": labels} for metric in PROMQL_METRICS],
             "query_groups": query_groups(queries, "promql"),
@@ -84,6 +141,9 @@ def main():
         + "\n"
     )
     print(schedule)
+    table = args.out / "paced_feeder_table.json"
+    table.write_text(json.dumps(rendered["paced_feeder_table"], indent=2, sort_keys=True) + "\n")
+    print(table)
 
 
 if __name__ == "__main__":

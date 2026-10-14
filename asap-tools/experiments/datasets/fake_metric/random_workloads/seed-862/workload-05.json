@@ -13,11 +13,8 @@
     "metrics": {
       "data": {
         "kind": "gauge",
-        "value_range": [
-          0.0,
-          1000.0
-        ],
-        "value_shape": "rank_scaled_deterministic_variation"
+        "pareto_shape": 2.0,
+        "value_shape": "rank_scaled_pareto"
       },
       "data_total": {
         "increment_shape": "rank_scaled_positive_deterministic",
