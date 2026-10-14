@@ -16,6 +16,9 @@ services:
       - "-retentionPeriod=3d"
       - "-search.maxQueryDuration=24h"
       - "-search.maxQueueDuration=24h"
+      # Raise the per-query caps so 24 h windows over many series aren't rejected.
+      - "-search.maxSamplesPerQuery=10000000000"
+      - "-search.maxPointsPerTimeseries=1000000"
     {% if cpu_limit or memory_limit -%}
     deploy:
       resources:

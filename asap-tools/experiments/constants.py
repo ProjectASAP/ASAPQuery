@@ -44,6 +44,9 @@ PROMETHEUS_CONFIG_FILE = "prometheus.yml"
 # Long-window baseline queries can run for minutes; Prometheus would cancel
 # them after its 2-minute default.
 PROMETHEUS_QUERY_TIMEOUT = "24h"
+# The 50M default rejects 24h windows over a few hundred 1s-scraped series.
+# Peak query memory is roughly 16 B per sample (~8 GB at this cap).
+PROMETHEUS_QUERY_MAX_SAMPLES = 500_000_000
 PROMETHEUS_REMOTE_WRITE_ENDPOINT = "/api/v1/write"
 HTTP_READINESS_CURL_TIMEOUT_SECONDS = 5
 QUERY_ENGINE_RUNTIME_INFO_ENDPOINT = "/api/v1/status/runtimeinfo"

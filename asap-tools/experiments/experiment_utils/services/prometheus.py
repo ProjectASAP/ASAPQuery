@@ -11,6 +11,7 @@ from experiment_utils.providers.base import InfrastructureProvider
 from constants import (
     PROMETHEUS_CONFIG_DIR,
     PROMETHEUS_CONFIG_FILE,
+    PROMETHEUS_QUERY_MAX_SAMPLES,
     PROMETHEUS_QUERY_TIMEOUT,
 )
 
@@ -96,6 +97,7 @@ class PrometheusService(BaseService):
         cmd = (
             f"./prometheus --config.file={PROMETHEUS_CONFIG_FILE}"
             f" --query.timeout={PROMETHEUS_QUERY_TIMEOUT}"
+            f" --query.max-samples={PROMETHEUS_QUERY_MAX_SAMPLES}"
             " > /dev/null 2>&1 < /dev/null &"
         )
         self.provider.execute_command(
