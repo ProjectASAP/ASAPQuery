@@ -293,7 +293,10 @@ def handle_query_group(
     streaming_serializer: Optional[Any] = None,
 ) -> ResultDict:
     logger.debug(f"Starting query group {query_group.id}")
-    if query_group.starting_delay:
+    # See classes/query_time.py. Aligned groups apply the starting delay in
+    # event time and ignore query_start_times.
+    align_to_interval = getattr(query_group, "align_to_interval", False)
+    if query_group.starting_delay and not align_to_interval:
         logger.debug(
             f"Waiting for {query_group.starting_delay} seconds before starting"
         )
@@ -321,18 +324,24 @@ def handle_query_group(
         for server_name in servers
     }
 
-    # See classes/query_time.py. Aligned groups ignore query_start_times.
-    align_to_interval = getattr(query_group, "align_to_interval", False)
     simulated_start_time = getattr(query_group, "simulated_start_time", None)
     if align_to_interval and simulated_start_time is not None:
         raise ValueError(
-            "align_to_interval follows the wall clock; it can't be combined "
+            "align_to_interval follows data_start_time; it can't be combined "
             "with simulated_start_time"
         )
     if align_to_interval:
+        data_start_time = getattr(query_group, "data_start_time", None)
+        data_lag_secs = getattr(query_group, "data_lag_secs", None)
+        if data_start_time is None or data_lag_secs is None:
+            raise ValueError(
+                "align_to_interval needs client_options.data_start_time and "
+                "data_lag_secs (set by the paced feeder runner)"
+            )
+        lag_secs = float(data_lag_secs)
         offset_secs = getattr(query_group, "query_time_offset", 0)
         first_eval_time = first_aligned_eval_time(
-            time.time(), query_group.repetition_delay_ms, offset_secs
+            data_start_time, query_group.repetition_delay_ms, query_group.starting_delay
         )
 
     for repetition_idx in range(query_group.repetitions):
@@ -340,7 +349,9 @@ def handle_query_group(
             query_unix_time = aligned_eval_time(
                 first_eval_time, query_group.repetition_delay_ms, repetition_idx
             )
-            time.sleep(secs_until_send(query_unix_time, offset_secs, time.time()))
+            time.sleep(
+                secs_until_send(query_unix_time, lag_secs, offset_secs, time.time())
+            )
             logger.debug("Aligned evaluation time: {}", query_unix_time)
         else:
             if simulated_start_time is None:

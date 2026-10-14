@@ -7,6 +7,7 @@ ASAPQuery's ingest and/or Prometheus' remote-write receiver. Every process gets
 the same seed and table, so each system receives identical data.
 """
 
+import functools
 import json
 import math
 import os
@@ -30,8 +31,8 @@ RECORDS_METRIC_TYPE = "records"
 PACED_FEEDER_BINARY = "./target/release/paced_feeder"
 # The brackets keep pgrep/pkill from matching the shell that runs them.
 PACED_FEEDER_PROCESS_PATTERN = "[t]arget/release/paced_feeder"
-# Feeders launched one after another over SSH all start at this much later
-# event time, so the sinks of one mode get the same timestamps.
+# Feeders are launched over SSH, one node after another, and all send their
+# first tick this long after the launches begin.
 PACED_FEEDER_START_LEAD_SECS = 5
 # A feeder stops after its first tick if every request fails (e.g. a wrong
 # URL), so check the processes one tick after the shared start.
@@ -42,12 +43,42 @@ SINK_PROMETHEUS = "prometheus"
 
 
 def paced_feeder_metric_names(experiment_params) -> List[str]:
-    """Metrics the paced feeder sends, per the experiment's `metrics` list."""
-    return [
-        m["metric"]
-        for m in experiment_params.get("metrics", [])
-        if m["exporter"] == PACED_FEEDER_EXPORTER
+    """Metrics the paced feeder sends, per its own config block."""
+    exporter_list = experiment_params.get("exporters", {}).get("exporter_list", {})
+    feeder = exporter_list.get(PACED_FEEDER_EXPORTER)
+    return list(feeder["metrics"]) if feeder is not None else []
+
+
+def backdated_start_ms(send_at_ms: int, align_secs: int) -> int:
+    """The last multiple of `align_secs` at or before `send_at_ms`: the feeder
+    stamps its data from there, so every mode's data starts on the same
+    boundary of each aligned query group's interval."""
+    align_ms = align_secs * 1000
+    return send_at_ms // align_ms * align_ms
+
+
+def aligned_interval_lcm(client_config: Dict[str, Any]) -> int:
+    """LCM, in seconds, of the repeat intervals of the client config's
+    `align_to_interval` groups; 1 if there are none."""
+    intervals = [
+        g["repetition_delay_ms"] // 1000
+        for g in client_config["query_groups"]
+        if g.get("client_options", {}).get("align_to_interval")
     ]
+    # math.lcm needs Python 3.9.
+    return functools.reduce(lambda a, b: a * b // math.gcd(a, b), intervals, 1)
+
+
+def set_data_start(
+    client_config: Dict[str, Any], start_ms: int, send_at_ms: int
+) -> None:
+    """Tell the client's aligned groups when the data starts in event time and
+    how far it runs behind the wall clock (see the client's query_time.py)."""
+    for group in client_config["query_groups"]:
+        options = group.get("client_options", {})
+        if options.get("align_to_interval"):
+            options["data_start_time"] = start_ms // 1000
+            options["data_lag_secs"] = (send_at_ms - start_ms) / 1000
 
 
 def feeds_prometheus(mode: Dict[str, Any]) -> bool:
@@ -62,8 +93,8 @@ def paced_feeder_min_duration_secs(
 ) -> float:
     """Seconds of data that last until the final query: queries end at most
     startup check + steady_state_wait + the query groups' running time after
-    launch, and the data starts PACED_FEEDER_START_LEAD_SECS after launch (not
-    subtracted, for slack)."""
+    launch. Aligned groups need less (their last evaluation is at most the
+    starting delay + running time into the data), so this covers both."""
     return PACED_FEEDER_STARTUP_CHECK_SECS + steady_state_wait + query_running_secs
 
 
@@ -79,11 +110,28 @@ def check_paced_feeder_config(
     modes: List[Dict[str, Any]],
     parallelism: int,
     min_feed_secs: float,
+    forward_unsupported_queries: bool,
+    auto_discover_labels: bool,
 ) -> None:
     """Fail before the experiment starts on a config the feeder would reject,
-    one sending records to Prometheus, or one that stops sending before the
-    queries end."""
+    one sending records to Prometheus, one that stops sending before the
+    queries end, or one whose queries would read a Prometheus without the
+    data."""
     prometheus_modes = [m["mode"] for m in modes if feeds_prometheus(m)]
+    sketchdb_modes = [
+        m for m in modes if m["mode"] == constants.SKETCHDB_EXPERIMENT_NAME
+    ]
+    if forward_unsupported_queries and not all(map(feeds_prometheus, sketchdb_modes)):
+        raise ValueError(
+            "sketchdb mode without query_prometheus_too gives Prometheus no "
+            "paced_feeder data, so queries ASAPQuery forwards there would come "
+            "back empty; set streaming.forward_unsupported_queries=false"
+        )
+    if auto_discover_labels:
+        raise ValueError(
+            "controller.auto_discover_labels reads labels from Prometheus before "
+            "the paced_feeder starts; list the labels under experiment_params.metrics"
+        )
     table_metrics = table_metric_types(config["workload_table"])
     for metric in config["metrics"]:
         if metric not in table_metrics:
@@ -103,7 +151,7 @@ def check_paced_feeder_config(
             raise ValueError(
                 f"paced_feeder metric {metric!r} has unknown type {metric_type!r}"
             )
-    if parallelism != 1:
+    if sketchdb_modes and parallelism != 1:
         raise ValueError(
             "paced_feeder sends to one ingest port; set streaming.parallelism=1"
         )
@@ -139,13 +187,15 @@ def paced_feeder_command(
     metric: str,
     metric_type: str,
     start_ms: int,
+    send_at_ms: int,
     stats_out: str,
 ) -> str:
     cmd = (
         f"{PACED_FEEDER_BINARY} --sink remote-write --url {url}"
         f" --workload-table {workload_table} --metric {metric}"
         f" --seed {config['seed']} --duration-secs {config['duration_secs']}"
-        f" --start-ms {start_ms} --stats-out {stats_out}"
+        f" --start-ms {start_ms} --send-at-ms {send_at_ms}"
+        f" --stats-out {stats_out}"
     )
     # The feeder refuses the other kind's rate flag.
     if metric_type == RECORDS_METRIC_TYPE:
@@ -179,8 +229,11 @@ class PacedFeederService(BaseService):
         sinks: Dict[str, str],
         experiment_output_dir: str,
         local_experiment_dir: str,
+        align_secs: int = 1,
         **kwargs,
-    ) -> None:
+    ) -> Tuple[int, int]:
+        """Launch the feeders; returns the data's event-time start and the
+        wall-clock time its first tick is sent, both in epoch ms."""
         output_dir = os.path.join(experiment_output_dir, "paced_feeder_output")
         metric_types = table_metric_types(config["workload_table"])
         jobs = [(sink, metric) for sink in sinks for metric in config["metrics"]]
@@ -203,9 +256,10 @@ class PacedFeederService(BaseService):
                 self.provider, config["workload_table"], output_dir, node_idx
             )
 
-        # One shared event-time origin for every process of this mode, taken
-        # after the SSH prep above so the lead covers only the launches.
-        start_ms = (math.ceil(time.time()) + PACED_FEEDER_START_LEAD_SECS) * 1000
+        # One shared send time for every process of this mode, taken after the
+        # SSH prep above so the lead covers only the launches.
+        send_at_ms = (math.ceil(time.time()) + PACED_FEEDER_START_LEAD_SECS) * 1000
+        start_ms = backdated_start_ms(send_at_ms, align_secs)
         node_cmds: List[Tuple[int, str]] = []
         for node_idx, (sink, metric) in zip(job_nodes, jobs):
             name = f"{sink}_{metric}"
@@ -216,10 +270,14 @@ class PacedFeederService(BaseService):
                 metric,
                 metric_types[metric],
                 start_ms,
+                send_at_ms,
                 os.path.join(output_dir, f"{name}_stats.json"),
             )
             node_cmds.append(
-                (node_idx, f"{cmd} > {os.path.join(output_dir, name)}.out 2>&1 &")
+                (
+                    node_idx,
+                    f"nohup {cmd} > {os.path.join(output_dir, name)}.out 2>&1 &",
+                )
             )
 
         local_config_dir = os.path.join(local_experiment_dir, "paced_feeder_config")
@@ -227,14 +285,23 @@ class PacedFeederService(BaseService):
         with open(os.path.join(local_config_dir, "cmds.sh"), "w") as f:
             f.write("\n".join(cmd for _, cmd in node_cmds) + "\n")
 
-        for node_idx, cmd in node_cmds:
+        # One SSH per node, so the launches fit in the lead.
+        for node_idx in used_nodes:
             self.provider.execute_command(
                 node_idx=node_idx,
-                cmd=cmd,
+                cmd=" ".join(cmd for n, cmd in node_cmds if n == node_idx),
                 cmd_dir=self.cmd_dir,
-                nohup=True,
+                nohup=False,
                 popen=False,
                 ignore_errors=False,
+            )
+        if time.time() * 1000 > send_at_ms:
+            # A feeder launched after its send time starts late, so its data
+            # would trail the other sinks'.
+            self.stop()
+            raise RuntimeError(
+                f"paced_feeder: launching on {len(used_nodes)} nodes took longer "
+                f"than the {PACED_FEEDER_START_LEAD_SECS} s lead"
             )
 
         time.sleep(PACED_FEEDER_STARTUP_CHECK_SECS)
@@ -254,6 +321,7 @@ class PacedFeederService(BaseService):
                     f"paced_feeder: expected {expected} processes running on "
                     f"node {node_idx}; see the .out files in {output_dir}"
                 )
+        return start_ms, send_at_ms
 
     def stop(self, **kwargs) -> None:
         self.provider.execute_command_parallel(

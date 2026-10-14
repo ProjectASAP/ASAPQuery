@@ -18,6 +18,8 @@ metrics the paced feeder generates. The config has:
   Prometheus' forwarding, and records are never scraped).
 - `controller.prebuilt_output_dir`, when given, so ASAPQuery runs those
   planner configs (e.g. from `asap-planner --planner saved`).
+- `streaming.forward_unsupported_queries=false`: Prometheus gets no data in
+  sketchdb mode, so a forwarded query would come back empty.
 
 Usage (from asap-tools/experiments):
   python sketch_bench_e2e/sketch_bench_e2e_configs.py \\
@@ -199,7 +201,8 @@ def build_config(
             },
             "query_groups": query_groups,
             "metrics": metrics,
-        }
+        },
+        "streaming": {"forward_unsupported_queries": False},
     }
     if prebuilt_output_dir is not None:
         prebuilt_output_dir = os.path.abspath(prebuilt_output_dir)

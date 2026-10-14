@@ -6,12 +6,17 @@ import shutil
 import tempfile
 import unittest
 
+import yaml
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 from experiment_utils import config as experiment_config
 from experiment_utils.core import read_exporter_config
-from experiment_utils.services.paced_feeder import check_paced_feeder_config
+from experiment_utils.services.paced_feeder import (
+    aligned_interval_lcm,
+    check_paced_feeder_config,
+    set_data_start,
+)
 from sketch_bench_e2e import sketch_bench_e2e_configs as sbe
 from test_paced_feeder import E2E_METRICS
 
@@ -230,6 +235,9 @@ class BuildConfigTest(unittest.TestCase):
             parallelism=cfg.streaming.parallelism,
             min_feed_secs=cfg.flow.steady_state_wait
             + experiment_config.get_minimum_experiment_running_time(params),
+            # The generated config overrides config.yaml's `true`.
+            forward_unsupported_queries=cfg.streaming.forward_unsupported_queries,
+            auto_discover_labels=cfg.controller.auto_discover_labels,
         )
         modes, _ = experiment_config.generate_controller_client_configs(
             params, self.tmp.name
@@ -239,6 +247,23 @@ class BuildConfigTest(unittest.TestCase):
     def test_generated_config_composes_and_validates(self):
         self.assertEqual(
             self.compose_and_validate(self.build()[0]), ["sketchdb", "baseline"]
+        )
+
+    def test_runner_can_anchor_the_generated_client_config(self):
+        # What experiment_run_e2e.py does to the mode's client config once the
+        # feeder starts: every group must learn where the data starts.
+        self.compose_and_validate(self.build()[0])
+        path = os.path.join(self.tmp.name, "controller_client_configs", "sketchdb.yaml")
+        with open(path) as f:
+            client_config = yaml.safe_load(f)
+        self.assertEqual(aligned_interval_lcm(client_config), 60)
+        set_data_start(client_config, 1791885600000, 1791885743000)
+        self.assertEqual(
+            {
+                (o["data_start_time"], o["data_lag_secs"])
+                for o in (g["client_options"] for g in client_config["query_groups"])
+            },
+            {(1791885600, 143.0)},
         )
 
     def test_generated_config_with_records_validates(self):

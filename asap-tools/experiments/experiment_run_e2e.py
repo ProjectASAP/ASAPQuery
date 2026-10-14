@@ -1,8 +1,10 @@
 import os
+import atexit
 import json
 import time
 
 import hydra
+import yaml
 from omegaconf import DictConfig, OmegaConf
 
 import constants
@@ -27,9 +29,11 @@ from experiment_utils.services import (
     SystemExportersService,
     PACED_FEEDER_EXPORTER,
     PacedFeederService,
+    aligned_interval_lcm,
     check_paced_feeder_config,
     paced_feeder_min_duration_secs,
     paced_feeder_sinks,
+    set_data_start,
 )
 from experiment_utils.services.misc import DiscoveryBackend
 
@@ -201,6 +205,10 @@ def main(cfg: DictConfig):
     paced_feeder_config = exporter_config["exporter_list"].get(PACED_FEEDER_EXPORTER)
     if paced_feeder_config is not None:
         paced_feeder_config = OmegaConf.to_container(paced_feeder_config, resolve=True)
+        # The feeder runs from its own directory.
+        paced_feeder_config["workload_table"] = os.path.abspath(
+            paced_feeder_config["workload_table"]
+        )
         check_paced_feeder_config(
             paced_feeder_config,
             modes=list(modes_by_name.values()),
@@ -209,8 +217,12 @@ def main(cfg: DictConfig):
                 0 if skip_querying else args.steady_state_wait,
                 minimum_experiment_running_time,
             ),
+            forward_unsupported_queries=args.forward_unsupported_queries,
+            auto_discover_labels=args.controller_auto_discover_labels,
         )
         paced_feeder_service = PacedFeederService(provider, args)
+        # Otherwise a failed run leaves feeders pushing into the next run's sinks.
+        atexit.register(paced_feeder_service.stop)
 
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")
@@ -517,11 +529,28 @@ def main(cfg: DictConfig):
             )
             if prometheus_url in sinks.values():
                 prometheus_service.wait_until_ready()
-            paced_feeder_service.start(
+            local_client_config = os.path.join(
+                local_experiment_root_dir,
+                "controller_client_configs",
+                f"{experiment_mode}.yaml",
+            )
+            with open(local_client_config) as f:
+                client_config = yaml.safe_load(f)
+            start_ms, send_at_ms = paced_feeder_service.start(
                 config=paced_feeder_config,
                 sinks=sinks,
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
+                align_secs=aligned_interval_lcm(client_config),
+            )
+            set_data_start(client_config, start_ms, send_at_ms)
+            with open(local_client_config, "w") as f:
+                yaml.safe_dump(client_config, f, sort_keys=False)
+            sync.rsync_controller_client_configs(
+                provider,
+                experiment_root_output_dir,
+                local_experiment_root_dir,
+                node_offset=args.node_offset,
             )
 
         # Start Prometheus throughput monitoring if enabled

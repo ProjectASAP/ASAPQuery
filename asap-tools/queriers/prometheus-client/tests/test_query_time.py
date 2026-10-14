@@ -8,43 +8,51 @@ from classes.query_time import (
     secs_until_send,
 )
 
-# 2026-10-13 12:00:00 UTC, a multiple of 60 s.
-MINUTE = 1791892800
+# 2026-10-13 10:00:00 UTC, a multiple of 300 s.
+START = 1791885600
 
 
 class FirstAlignedEvalTimeTest(unittest.TestCase):
-    def test_floors_to_the_interval_after_the_offset(self) -> None:
-        # Started at 12:00:35 with a 10 s offset: 12:00:25 floors to 12:00:00.
-        self.assertEqual(first_aligned_eval_time(MINUTE + 35.4, 60000, 10), MINUTE)
-        # Started at 12:00:05: the 12:00:00 window has not settled yet.
-        self.assertEqual(first_aligned_eval_time(MINUTE + 5, 60000, 10), MINUTE - 60)
+    def test_first_multiple_after_the_starting_delay(self) -> None:
+        self.assertEqual(first_aligned_eval_time(START, 60000, 120), START + 120)
+        self.assertEqual(first_aligned_eval_time(START, 60000, 121), START + 180)
+        self.assertEqual(first_aligned_eval_time(START, 1000, 120), START + 120)
 
-    def test_one_second_interval(self) -> None:
-        self.assertEqual(first_aligned_eval_time(MINUTE + 7.9, 1000, 2), MINUTE + 5)
+    def test_first_window_is_always_full(self) -> None:
+        # A starting delay shorter than the interval would evaluate a window
+        # that began before the data did.
+        self.assertEqual(first_aligned_eval_time(START, 300000, 120), START + 300)
+        self.assertEqual(first_aligned_eval_time(START, 60000, 0), START + 60)
+
+    def test_start_off_the_interval_rejected(self) -> None:
+        # Eval times off the interval would miss ASAPQuery's aligned windows.
+        with self.assertRaisesRegex(ValueError, "not a multiple"):
+            first_aligned_eval_time(START + 60, 300000, 0)
 
     def test_sub_second_interval_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "whole-second"):
-            first_aligned_eval_time(MINUTE, 1500, 0)
-
-    def test_negative_offset_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "query_time_offset"):
-            first_aligned_eval_time(MINUTE, 60000, -1)
+            first_aligned_eval_time(START, 1500, 0)
 
 
 class ScheduleTest(unittest.TestCase):
     def test_repetitions_step_by_the_interval(self) -> None:
         self.assertEqual(
-            [aligned_eval_time(MINUTE, 60000, k) for k in range(3)],
-            [MINUTE, MINUTE + 60, MINUTE + 120],
+            [aligned_eval_time(START, 60000, k) for k in range(3)],
+            [START, START + 60, START + 120],
         )
 
-    def test_waits_until_offset_after_the_eval_time(self) -> None:
-        self.assertEqual(secs_until_send(MINUTE + 60, 10, MINUTE + 65), 5)
+    def test_waits_for_the_lag_and_offset_after_the_eval_time(self) -> None:
+        # Data stamped 10:01:00 is sent at 10:03:23; queried 10 s later.
+        self.assertEqual(secs_until_send(START + 60, 143, 10, START + 60), 153)
 
     def test_late_repetition_runs_at_once(self) -> None:
         # A slow repetition makes the next one late; it keeps its eval time
         # rather than skipping it.
-        self.assertEqual(secs_until_send(MINUTE + 60, 10, MINUTE + 75), 0)
+        self.assertEqual(secs_until_send(START + 60, 0, 10, START + 75), 0)
+
+    def test_negative_offset_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "query_time_offset"):
+            secs_until_send(START, 0, -1, START)
 
 
 if __name__ == "__main__":

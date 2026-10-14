@@ -37,9 +37,11 @@ from .grafana import GrafanaService
 from .paced_feeder import (
     PACED_FEEDER_EXPORTER,
     PacedFeederService,
+    aligned_interval_lcm,
     check_paced_feeder_config,
     paced_feeder_min_duration_secs,
     paced_feeder_sinks,
+    set_data_start,
 )
 from .clickhouse_service import ClickHouseService, ClickHouseDataLoaderService
 
@@ -164,7 +166,9 @@ __all__ = [
     "ClickHouseDataLoaderService",
     "PACED_FEEDER_EXPORTER",
     "PacedFeederService",
+    "aligned_interval_lcm",
     "check_paced_feeder_config",
     "paced_feeder_min_duration_secs",
     "paced_feeder_sinks",
+    "set_data_start",
 ]
