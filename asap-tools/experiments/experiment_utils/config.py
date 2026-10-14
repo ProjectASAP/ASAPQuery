@@ -132,13 +132,21 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
             f"Valid choices: {valid_dataset_names}"
         )
 
+    feeder = dataset.get("paced_feeder")
     local_data_file = dataset.get("local_data_file")
-    if not local_data_file or local_data_file == "???":
+    if feeder is not None:
+        # Fed live instead of bulk-loaded.
+        if not os.path.exists(feeder.workload_table):
+            raise ValueError(
+                f"dataset.paced_feeder.workload_table={feeder.workload_table!r} "
+                "does not exist."
+            )
+    elif not local_data_file or local_data_file == "???":
         raise ValueError(
             "dataset.local_data_file is required. "
             "Provide the path to the JSON-lines data file on this machine."
         )
-    if not os.path.exists(local_data_file):
+    elif not os.path.exists(local_data_file):
         raise ValueError(
             f"dataset.local_data_file={local_data_file!r} does not exist. "
             "Run benchmark/prepare_data.py first to produce the JSON-lines file."

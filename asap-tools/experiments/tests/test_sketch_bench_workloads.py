@@ -30,6 +30,8 @@ sys.path.insert(
 )
 
 import sketch_bench_workloads as sbw  # noqa: E402
+from experiment_utils.config import validate_experiment_config  # noqa: E402
+from omegaconf import OmegaConf  # noqa: E402
 
 SERIES_LABELS = [{"name": "job"}, {"name": "label_0", "child_of": "job"}]
 HTTP_LABELS = ["region", "service", "endpoint", "status"]
@@ -321,6 +323,8 @@ class ConvertTest(unittest.TestCase):
                     },
                 )
                 self.assertNotIn("local_data_file", cfg["dataset"])
+                # The runner's first check: a fed config has no data file.
+                validate_experiment_config(OmegaConf.create(cfg))
                 _, init = cfgs["baseline"]
                 groups = {g["name"]: g for g in cfg["query_groups"]}
                 self.assertEqual(sorted(groups), ["interval_1s", "interval_60s"])
