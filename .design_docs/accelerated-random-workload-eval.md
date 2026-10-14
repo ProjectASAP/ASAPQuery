@@ -51,20 +51,19 @@ unbounded.
 
 | Lookback `W` | Allowed repeat intervals `T` |
 | ---: | ---: |
-| 100 ms | 1 s |
+| 1 s | 1 s |
 | 1 min | 1 s, 2 s |
 | 5 min | 5 s, 10 s |
 | 10 min | 10 s, 20 s |
 | 20 min | 30 s, 60 s |
 
 The maximum accelerated backfill is therefore only 20 minutes of event-time
-history.  The first 100 ms class is for spatial queries; temporal queries use
-the 1--20 minute classes.  The spatial class targets a 100 ms repetition
-interval.  Current exact-MV support is whole-second only, so this class is
-gated on [#876](https://github.com/ProjectASAP/ASAPQuery/issues/876), which
-adds millisecond interval metadata, `DateTime64` bucket flooring and edge
-handling, a sub-second query schedule, and raw-versus-MV equivalence tests.
-This is a limitation of the current baseline generator, not of ClickHouse.
+history.  The first 1 s class is for spatial queries; temporal queries use the
+1--20 minute classes.  Scraping remains every 100 ms, so each spatial query
+still consumes ten samples per leaf series.  Its whole-second repetition and
+lookback are compatible with the current exact-MV arm; it is not gated on
+[#876](https://github.com/ProjectASAP/ASAPQuery/issues/876).  That issue is
+needed only for a future sub-second query/MV schedule.
 
 ## Query-template catalogue
 
@@ -119,7 +118,7 @@ first pilot workload.
 
 ### Quantile
 
-For the 100 ms spatial class, PromQL has exact grouped semantics:
+For the 1 s spatial class, PromQL has exact grouped semantics:
 
 ```promql
 quantile by (G) (phi, data)

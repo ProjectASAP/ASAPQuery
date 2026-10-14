@@ -86,8 +86,8 @@
         "service"
       ],
       "id": "q03-quantile",
-      "interval_ms": 100,
-      "lookback_ms": 100,
+      "interval_ms": 1000,
+      "lookback_ms": 1000,
       "output_groups": 20,
       "output_series_upper_bound": 20,
       "promql": "quantile by (region, service) (0.75, data)",
@@ -100,8 +100,8 @@
             "service"
           ],
           "id": "q03-quantile/rqe",
-          "interval_ms": 100,
-          "lookback_ms": 100,
+          "interval_ms": 1000,
+          "lookback_ms": 1000,
           "metric": "data",
           "phi": 0.75
         }
@@ -115,8 +115,8 @@
         "service"
       ],
       "id": "q04-quantile",
-      "interval_ms": 100,
-      "lookback_ms": 100,
+      "interval_ms": 1000,
+      "lookback_ms": 1000,
       "output_groups": 20,
       "output_series_upper_bound": 20,
       "promql": "quantile by (region, service) (0.95, data)",
@@ -129,8 +129,8 @@
             "service"
           ],
           "id": "q04-quantile/rqe",
-          "interval_ms": 100,
-          "lookback_ms": 100,
+          "interval_ms": 1000,
+          "lookback_ms": 1000,
           "metric": "data",
           "phi": 0.95
         }
@@ -143,8 +143,8 @@
         "region"
       ],
       "id": "q05-quantile",
-      "interval_ms": 100,
-      "lookback_ms": 100,
+      "interval_ms": 1000,
+      "lookback_ms": 1000,
       "output_groups": 4,
       "output_series_upper_bound": 4,
       "promql": "quantile by (region) (0.95, data)",
@@ -156,8 +156,8 @@
             "region"
           ],
           "id": "q05-quantile/rqe",
-          "interval_ms": 100,
-          "lookback_ms": 100,
+          "interval_ms": 1000,
+          "lookback_ms": 1000,
           "metric": "data",
           "phi": 0.95
         }

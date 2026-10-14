@@ -53,6 +53,13 @@ class GenerateWorkloadsTest(unittest.TestCase):
                 self.assertEqual(query["output_series_upper_bound"], expected)
                 self.assertLessEqual(query["output_series_upper_bound"], 200)
 
+    def test_spatial_quantiles_repeat_at_whole_second_cadence(self):
+        for workload in workloads.generate_workloads(seed=4):
+            for query in workload["queries"]:
+                if query["rqes"][0]["capability"] == "quantile":
+                    self.assertEqual(query["lookback_ms"], workloads.SECOND_MS)
+                    self.assertEqual(query["interval_ms"], workloads.SECOND_MS)
+
     def test_workloads_do_not_repeat_an_atomic_rqe(self):
         for workload in workloads.generate_workloads(seed=1):
             keys = []
