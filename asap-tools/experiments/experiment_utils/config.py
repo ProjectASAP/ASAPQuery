@@ -702,6 +702,7 @@ class Args:
 
         # Query engine options
         self.lock_strategy = cfg.query_engine.lock_strategy
+        self.spill = cfg.query_engine.spill
 
         # Controller configuration
         self.controller_punting = cfg.controller.punting
@@ -968,6 +969,8 @@ def generate_sql_planner_input(
     dataset_cfg: Any,
     sketch_parameters: Any = None,
     windowing: Any = None,
+    *,
+    cleanup_policy: str,
 ) -> str:
     """Generate the YAML input file for asap-planner in SQL mode.
 
@@ -998,6 +1001,7 @@ def generate_sql_planner_input(
         windowing: Optional DictConfig/dict mirroring ``config.yaml``'s
             top-level ``windowing`` section. When ``None``, the planner uses
             its default tumbling-window behavior.
+        cleanup_policy: ``aggregate_cleanup.policy`` from ``config.yaml``.
 
     Returns:
         YAML string ready to write to disk and pass to asap-planner.
@@ -1065,7 +1069,7 @@ def generate_sql_planner_input(
     planner_input = {
         "tables": tables,
         "query_groups": planner_query_groups,
-        "aggregate_cleanup": {"policy": "read_based"},
+        "aggregate_cleanup": {"policy": cleanup_policy},
     }
     if sketch_parameters is not None:
         if isinstance(sketch_parameters, (DictConfig, ListConfig)):

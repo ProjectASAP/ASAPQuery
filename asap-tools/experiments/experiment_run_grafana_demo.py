@@ -360,6 +360,7 @@ def main(cfg: DictConfig):
             lock_strategy=args.lock_strategy,
             backend_config=backend_config,
             http_port=http_port,
+            spill=args.spill,
             remote_write_port=args.remote_write_base_port,
         )
 

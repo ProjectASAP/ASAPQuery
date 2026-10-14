@@ -34,6 +34,8 @@ impl SpillWriter {
     pub fn new(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
+        // Register now so /metrics reports 0 rather than omitting the counter.
+        lazy_static::initialize(&SPILL_WRITE_ERRORS_TOTAL);
         Ok(Self {
             dir,
             files: DashMap::new(),
@@ -239,6 +241,17 @@ mod tests {
                 "{strategy:?}"
             );
         }
+    }
+
+    /// The harness fails a run when the counter is missing, so it must be
+    /// exported before any write fails.
+    #[test]
+    fn error_counter_is_exported_once_spill_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        SpillWriter::new(dir.path()).unwrap();
+        assert!(prometheus::gather()
+            .iter()
+            .any(|family| family.get_name() == "asap_store_spill_write_errors_total"));
     }
 
     #[test]

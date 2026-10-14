@@ -428,6 +428,7 @@ def main(cfg: DictConfig):
                 lock_strategy=args.lock_strategy,
                 backend_config=backend_config,
                 http_port=http_port,
+                spill=args.spill,
                 remote_write_port=args.remote_write_base_port,
             )
             # For precompute mode the query engine IS the Prometheus remote-write
@@ -550,6 +551,9 @@ def main(cfg: DictConfig):
             and not cfg.flow.get("skip_copy_prometheus_data", False)
         ):
             sync.copy_prometheus_data(provider, local_experiment_dir, args.node_offset)
+
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            query_engine_service.record_spill()
 
         # Skip teardown if the no_teardown flag is set
         if not args.no_teardown:

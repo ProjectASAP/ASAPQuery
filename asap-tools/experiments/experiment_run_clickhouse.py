@@ -174,6 +174,7 @@ def _generate_clickhouse_controller_output(
         dataset_cfg,
         cfg.get("sketch_parameters", None),
         cfg.get("windowing", None),
+        cleanup_policy=cfg.aggregate_cleanup.policy,
     )
     local_planner_input = os.path.join(local_controller_dir, "planner_input.yaml")
     with open(local_planner_input, "w") as planner_input_file:
@@ -667,6 +668,7 @@ def main(cfg: DictConfig) -> None:
                     "forward_unsupported_queries": True,
                 },
                 http_port=asap_http_port,
+                spill=cfg.query_engine.spill,
                 ingest_json_config={
                     "path": remote_data_file,
                     "metric_name": str(dataset_cfg.metric_name),
@@ -712,6 +714,7 @@ def main(cfg: DictConfig) -> None:
                 pre_query_wait_seconds=steady_state_wait,
                 monitor_interval_seconds=monitor_interval_seconds,
             )
+            query_engine_service.record_spill()
 
             sync.rsync_experiment_data(
                 provider,
