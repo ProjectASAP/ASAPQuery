@@ -109,7 +109,9 @@ STRUCTURED_AGGS = ("cardinality", "quantile")
 LABELS = r"(\w+(?:, \w+)*)"
 LEVEL = r"([\d.]+)"
 TOPK = re.compile(r"^topk\((\d+), (.+)\)$")
+TOPK_BY = re.compile(rf"^topk by \({LABELS}\) \((\d+), (.+)\)$")
 AGG_BY = re.compile(rf"^(sum|count) by \({LABELS}\) \((.+)\)$")
+AVG_QUANTILE_BY = re.compile(rf"^avg by \({LABELS}\) \(quantile_over_time\(({LEVEL}), {RANGE}\)\)$")
 QUANTILE_BY = re.compile(rf"^quantile by \({LABELS}\) \({LEVEL}, (.+)\)$")
 OVER_TIME = re.compile(rf"^(sum|count)_over_time\({RANGE}\)$")
 QUANTILE_OVER_TIME = re.compile(rf"^quantile_over_time\({LEVEL}, {RANGE}\)$")
@@ -142,6 +144,7 @@ class Query:
     quantile: Optional[str] = None  # level as written, e.g. "0.99"
     ratio_quantile: Optional[str] = None
     topk: Optional[int] = None
+    topk_by: Optional[Tuple[str, ...]] = None
     value: str = VALUE_COLUMN
     left_open: bool = False
 
@@ -206,6 +209,11 @@ def _grouped(inner: Query, agg: str, by: str, quantile: Optional[str]) -> Query:
 def parse_promql(promql: str, interval: int, labels: Dict[str, List[str]]) -> Query:
     """`labels`: each metric's label names in description order."""
     text = " ".join(promql.split())
+    m = TOPK_BY.match(text)
+    if m:
+        by, k, inner = m.groups()
+        query = _parse_series(inner, interval, labels, promql)
+        return replace(query, topk=int(k), topk_by=tuple(by.split(", ")))
     m = TOPK.match(text)
     if m:
         inner = parse_promql(m[2], interval, labels)
@@ -216,6 +224,12 @@ def parse_promql(promql: str, interval: int, labels: Dict[str, List[str]]) -> Qu
     if m:
         agg, by, inner = m.groups()
         return _grouped(_parse_series(inner, interval, labels, promql), agg, by, None)
+    m = AVG_QUANTILE_BY.match(text)
+    if m:
+        by, quantile, _, name, amount, unit = m.groups()
+        if name not in labels:
+            raise ValueError(f"unknown metric {name!r} in {promql!r}")
+        return Query(name, interval, window_seconds(amount, unit), tuple(by.split(", ")), "per_series_quantile", "avg", quantile)
     m = QUANTILE_BY.match(text)
     if m:
         by, q, inner = m.groups()
@@ -297,7 +311,10 @@ def render(
             # The grand total: one row, none for an empty window.
             sql = f"SELECT {value} AS value {window} HAVING count() > 0"
     else:
-        if q.series_fn == "last":
+        if q.series_fn == "per_series_quantile":
+            samples = f"SELECT {cols}, {agg('quantile', q.quantile)} AS value {window} GROUP BY {cols}"
+            sql = f"SELECT {group}, avg(value) AS value FROM ({samples}) GROUP BY {group}"
+        elif q.series_fn == "last":
             sql = (
                 f"SELECT {cols}, {agg('last', None)} AS value {window} GROUP BY {cols}"
             )
@@ -312,7 +329,10 @@ def render(
             combine = raw_agg(q.agg, q.quantile)
             sql = f"SELECT {group}, {combine} AS value FROM ({sql}) GROUP BY {group}"
     if q.topk is not None:
-        sql += f" ORDER BY value DESC, {group} LIMIT {q.topk}"
+        if q.topk_by:
+            sql = f"SELECT * FROM ({sql}) QUALIFY row_number() OVER (PARTITION BY {', '.join(q.topk_by)} ORDER BY value DESC) <= {q.topk}"
+        else:
+            sql += f" ORDER BY value DESC, {group} LIMIT {q.topk}"
     return sql
 
 
