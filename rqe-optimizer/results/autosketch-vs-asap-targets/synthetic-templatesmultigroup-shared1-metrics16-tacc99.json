@@ -1,7 +1,7 @@
 {
   "autosketch": {
-    "benchmark_secs_paper_rate": 10560.0,
-    "distinct_probes": 176,
+    "benchmark_secs_paper_rate": 9600.0,
+    "distinct_probes": 160,
     "probed_configs": [
       {
         "distinct_keys": 1000000.0,
@@ -27,16 +27,6 @@
         "distinct_keys": 0.0,
         "metric": "data_0/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_0/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -48,6 +38,16 @@
         "metric": "data_0/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_0/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -87,7 +87,7 @@
         "distinct_keys": 0.0,
         "metric": "data_0/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -98,16 +98,6 @@
         "metric": "data_0/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_0/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -137,16 +127,6 @@
         "distinct_keys": 0.0,
         "metric": "data_1/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_1/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -158,6 +138,16 @@
         "metric": "data_1/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_1/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -197,7 +187,7 @@
         "distinct_keys": 0.0,
         "metric": "data_1/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -208,16 +198,6 @@
         "metric": "data_1/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_1/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -247,16 +227,6 @@
         "distinct_keys": 0.0,
         "metric": "data_10/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_10/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -268,6 +238,16 @@
         "metric": "data_10/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_10/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -307,7 +287,7 @@
         "distinct_keys": 0.0,
         "metric": "data_10/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -318,16 +298,6 @@
         "metric": "data_10/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_10/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -357,16 +327,6 @@
         "distinct_keys": 0.0,
         "metric": "data_11/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_11/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -378,6 +338,16 @@
         "metric": "data_11/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_11/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -417,7 +387,7 @@
         "distinct_keys": 0.0,
         "metric": "data_11/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -428,16 +398,6 @@
         "metric": "data_11/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_11/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -467,16 +427,6 @@
         "distinct_keys": 0.0,
         "metric": "data_12/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_12/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -488,6 +438,16 @@
         "metric": "data_12/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_12/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -527,7 +487,7 @@
         "distinct_keys": 0.0,
         "metric": "data_12/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -538,16 +498,6 @@
         "metric": "data_12/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_12/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -577,16 +527,6 @@
         "distinct_keys": 0.0,
         "metric": "data_13/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_13/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -598,6 +538,16 @@
         "metric": "data_13/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_13/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -637,7 +587,7 @@
         "distinct_keys": 0.0,
         "metric": "data_13/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -648,16 +598,6 @@
         "metric": "data_13/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_13/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -687,16 +627,6 @@
         "distinct_keys": 0.0,
         "metric": "data_14/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_14/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -708,6 +638,16 @@
         "metric": "data_14/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_14/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -747,7 +687,7 @@
         "distinct_keys": 0.0,
         "metric": "data_14/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -758,16 +698,6 @@
         "metric": "data_14/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_14/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -797,16 +727,6 @@
         "distinct_keys": 0.0,
         "metric": "data_15/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_15/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -818,6 +738,16 @@
         "metric": "data_15/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_15/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -857,7 +787,7 @@
         "distinct_keys": 0.0,
         "metric": "data_15/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -868,16 +798,6 @@
         "metric": "data_15/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_15/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -907,16 +827,6 @@
         "distinct_keys": 0.0,
         "metric": "data_2/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_2/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -928,6 +838,16 @@
         "metric": "data_2/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_2/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -967,7 +887,7 @@
         "distinct_keys": 0.0,
         "metric": "data_2/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -978,16 +898,6 @@
         "metric": "data_2/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_2/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1017,16 +927,6 @@
         "distinct_keys": 0.0,
         "metric": "data_3/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_3/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1038,6 +938,16 @@
         "metric": "data_3/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_3/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1077,7 +987,7 @@
         "distinct_keys": 0.0,
         "metric": "data_3/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1088,16 +998,6 @@
         "metric": "data_3/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_3/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1127,16 +1027,6 @@
         "distinct_keys": 0.0,
         "metric": "data_4/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_4/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1148,6 +1038,16 @@
         "metric": "data_4/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_4/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1187,7 +1087,7 @@
         "distinct_keys": 0.0,
         "metric": "data_4/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1198,16 +1098,6 @@
         "metric": "data_4/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_4/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1237,16 +1127,6 @@
         "distinct_keys": 0.0,
         "metric": "data_5/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_5/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1258,6 +1138,16 @@
         "metric": "data_5/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_5/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1297,7 +1187,7 @@
         "distinct_keys": 0.0,
         "metric": "data_5/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1308,16 +1198,6 @@
         "metric": "data_5/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_5/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1347,16 +1227,6 @@
         "distinct_keys": 0.0,
         "metric": "data_6/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_6/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1368,6 +1238,16 @@
         "metric": "data_6/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_6/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1407,7 +1287,7 @@
         "distinct_keys": 0.0,
         "metric": "data_6/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1418,16 +1298,6 @@
         "metric": "data_6/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_6/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1457,16 +1327,6 @@
         "distinct_keys": 0.0,
         "metric": "data_7/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_7/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1478,6 +1338,16 @@
         "metric": "data_7/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_7/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1517,7 +1387,7 @@
         "distinct_keys": 0.0,
         "metric": "data_7/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1528,16 +1398,6 @@
         "metric": "data_7/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_7/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1567,16 +1427,6 @@
         "distinct_keys": 0.0,
         "metric": "data_8/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_8/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1588,6 +1438,16 @@
         "metric": "data_8/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_8/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1627,7 +1487,7 @@
         "distinct_keys": 0.0,
         "metric": "data_8/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1638,16 +1498,6 @@
         "metric": "data_8/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_8/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1677,16 +1527,6 @@
         "distinct_keys": 0.0,
         "metric": "data_9/http",
         "params": {
-          "alpha": 0.01
-        },
-        "sketch": "dd",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_9/http",
-        "params": {
           "alpha": 0.02
         },
         "sketch": "dd",
@@ -1698,6 +1538,16 @@
         "metric": "data_9/http",
         "params": {
           "alpha": 0.05
+        },
+        "sketch": "dd",
+        "tail_index": 2.0,
+        "zipf_s": null
+      },
+      {
+        "distinct_keys": 0.0,
+        "metric": "data_9/http",
+        "params": {
+          "alpha": 0.1
         },
         "sketch": "dd",
         "tail_index": 2.0,
@@ -1737,7 +1587,7 @@
         "distinct_keys": 0.0,
         "metric": "data_9/http",
         "params": {
-          "k": 200
+          "k": 100
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1748,16 +1598,6 @@
         "metric": "data_9/http",
         "params": {
           "k": 50
-        },
-        "sketch": "kll-percall",
-        "tail_index": 2.0,
-        "zipf_s": null
-      },
-      {
-        "distinct_keys": 0.0,
-        "metric": "data_9/http",
-        "params": {
-          "k": 800
         },
         "sketch": "kll-percall",
         "tail_index": 2.0,
@@ -1765,7 +1605,7 @@
       }
     ],
     "probes": 2656,
-    "search_secs": 0.039573579
+    "search_secs": 0.077166333
   },
   "cost_model": "w_cpu * AUC(CPU) + w_mem * AUC(memory), billed by use; latency = longest chain, reported",
   "dropped_unservable": {
@@ -1809,7 +1649,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.921239739,
+      "milp_solve_secs": 3.828864709,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1835,7 +1675,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.93951362,
+      "milp_solve_secs": 3.804782608,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1861,7 +1701,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.903785689,
+      "milp_solve_secs": 3.844245763,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1887,7 +1727,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.913250996,
+      "milp_solve_secs": 3.83098363,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1913,7 +1753,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.912986217,
+      "milp_solve_secs": 3.860548642,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1939,7 +1779,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.877424049,
+      "milp_solve_secs": 3.745539478,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1965,7 +1805,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 2.485744429,
+      "milp_solve_secs": 5.006601657,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -1991,7 +1831,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 2.515945914,
+      "milp_solve_secs": 5.01357648,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2017,7 +1857,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 2.435388996,
+      "milp_solve_secs": 4.94164155,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2043,7 +1883,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 2.429102764,
+      "milp_solve_secs": 4.981690179,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2069,7 +1909,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 2.4480800240000002,
+      "milp_solve_secs": 5.115786979,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2095,7 +1935,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 2.491475568,
+      "milp_solve_secs": 5.066768175,
       "objective": 11.438836703177557,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2121,7 +1961,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.201484495,
+      "milp_solve_secs": 2.453777284,
       "objective": 10.036708347621994,
       "rolled_up_rqes": 672,
       "rqes": 992,
@@ -2147,7 +1987,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.474328774,
+      "milp_solve_secs": 0.979714428,
       "objective": 19.88299236539979,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2173,7 +2013,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.473777379,
+      "milp_solve_secs": 0.969819519,
       "objective": 19.88299236539979,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2199,7 +2039,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.484989885,
+      "milp_solve_secs": 1.022218493,
       "objective": 19.88299236539979,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2225,7 +2065,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.482761159,
+      "milp_solve_secs": 0.998043313,
       "objective": 19.88299236539979,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2251,7 +2091,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.485841185,
+      "milp_solve_secs": 1.015659108,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2277,7 +2117,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.488823874,
+      "milp_solve_secs": 1.02887602,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2303,7 +2143,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.49280697,
+      "milp_solve_secs": 1.039280472,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2329,7 +2169,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.497957801,
+      "milp_solve_secs": 1.0248612,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2355,7 +2195,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.490800231,
+      "milp_solve_secs": 1.018128286,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2381,7 +2221,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.494223486,
+      "milp_solve_secs": 1.03694052,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2407,7 +2247,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.499186642,
+      "milp_solve_secs": 1.036710032,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2433,7 +2273,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.500339655,
+      "milp_solve_secs": 1.025450224,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2459,7 +2299,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.50470174,
+      "milp_solve_secs": 1.041881553,
       "objective": 15.656041254288631,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2485,7 +2325,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.668822668,
+      "milp_solve_secs": 1.410237282,
       "objective": 29.9136483653996,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2511,7 +2351,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.670299949,
+      "milp_solve_secs": 1.397717096,
       "objective": 29.9136483653996,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2537,7 +2377,7 @@
       "latency_ms": 1675.9113476562497,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.67992045,
+      "milp_solve_secs": 1.37245669,
       "objective": 27.381040365399645,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2563,7 +2403,7 @@
       "latency_ms": 1675.9113476562497,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.677979807,
+      "milp_solve_secs": 1.405042409,
       "objective": 27.381040365399645,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2589,7 +2429,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.667608085,
+      "milp_solve_secs": 1.443748236,
       "objective": 25.02815858762195,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2615,7 +2455,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.690161889,
+      "milp_solve_secs": 1.373565771,
       "objective": 25.02815858762195,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2641,7 +2481,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.691148325,
+      "milp_solve_secs": 1.435863458,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2667,7 +2507,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.677271452,
+      "milp_solve_secs": 1.391129726,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2693,7 +2533,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.668752911,
+      "milp_solve_secs": 1.3967241590000001,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2719,7 +2559,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.671534444,
+      "milp_solve_secs": 1.43137149,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2745,7 +2585,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.674986295,
+      "milp_solve_secs": 1.405140733,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2771,7 +2611,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.693572903,
+      "milp_solve_secs": 1.422843884,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2797,7 +2637,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.667649305,
+      "milp_solve_secs": 1.391063046,
       "objective": 23.82148552095538,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2806,8 +2646,8 @@
     {
       "active_deployments": 128,
       "bound_ms": null,
-      "candidate_build_secs": 5.156509704,
-      "candidates": 2352,
+      "candidate_build_secs": 14.466798366,
+      "candidates": 2448,
       "cpu": 10.036708347621994,
       "cpu_parts": {
         "compaction": 0.0,
@@ -2825,9 +2665,9 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.2359831,
+      "milp_solve_secs": 2.592727224,
       "objective": 10.036708347621994,
-      "planning_secs": 6.392492804,
+      "planning_secs": 17.05952559,
       "rolled_up_rqes": 672,
       "rqes": 992,
       "weights": "cpu"
@@ -2835,7 +2675,7 @@
     {
       "active_deployments": 432,
       "bound_ms": null,
-      "candidates": 2352,
+      "candidates": 2448,
       "cpu": 15.656041254288631,
       "cpu_parts": {
         "compaction": 0.0,
@@ -2854,14 +2694,14 @@
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
       "objective": 15.656041254288631,
-      "planning_secs": 5.729456661,
+      "planning_secs": 15.638080341,
       "rolled_up_rqes": 0,
       "rqes": 992,
       "weights": "cpu"
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "bound_ms": null,
       "cpu": 159.04485511384306,
       "cpu_parts": {
@@ -2881,7 +2721,7 @@
       "median_latency_ms": 15.689819335937496,
       "method": "autosketch",
       "objective": 159.04485511384306,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -2908,7 +2748,7 @@
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
       "objective": 23.82148552095538,
-      "planning_secs": 3.3790031419999997,
+      "planning_secs": 8.438770301,
       "rolled_up_rqes": 0,
       "rqes": 992,
       "weights": "cpu"
@@ -2933,7 +2773,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.9032237570000001,
+      "milp_solve_secs": 3.6933155600000003,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2959,7 +2799,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.851922027,
+      "milp_solve_secs": 3.693969225,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -2985,7 +2825,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.8243956749999999,
+      "milp_solve_secs": 3.786237522,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3011,7 +2851,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.863276409,
+      "milp_solve_secs": 3.728911834,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3037,7 +2877,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.8430950369999999,
+      "milp_solve_secs": 3.757442096,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3063,7 +2903,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.855096438,
+      "milp_solve_secs": 3.747701103,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3089,7 +2929,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.717777711,
+      "milp_solve_secs": 3.499980609,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3115,7 +2955,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.676968866,
+      "milp_solve_secs": 3.461348475,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3141,7 +2981,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.690117739,
+      "milp_solve_secs": 3.458924353,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3167,7 +3007,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.695996286,
+      "milp_solve_secs": 3.472239542,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3193,7 +3033,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.667947597,
+      "milp_solve_secs": 3.464777555,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3219,7 +3059,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 147.68981933593747,
       "method": "asap",
-      "milp_solve_secs": 1.6900660730000001,
+      "milp_solve_secs": 3.460609693,
       "objective": 1.1439603325874845,
       "rolled_up_rqes": 752,
       "rqes": 992,
@@ -3245,7 +3085,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 94.35648600260416,
       "method": "asap",
-      "milp_solve_secs": 9.072883928,
+      "milp_solve_secs": 18.449294922,
       "objective": 1.0368179787827143,
       "rolled_up_rqes": 816,
       "rqes": 992,
@@ -3271,7 +3111,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.686458524,
+      "milp_solve_secs": 1.44124674,
       "objective": 2.0750986472939124,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3297,7 +3137,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.671170112,
+      "milp_solve_secs": 1.429493058,
       "objective": 2.0750986472939124,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3323,7 +3163,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.722274415,
+      "milp_solve_secs": 1.515362469,
       "objective": 2.0750986472939124,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3349,7 +3189,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.735190078,
+      "milp_solve_secs": 1.546341864,
       "objective": 2.0750986472939124,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3375,7 +3215,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.573692211,
+      "milp_solve_secs": 1.206647211,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3401,7 +3241,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.58122067,
+      "milp_solve_secs": 1.194134004,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3427,7 +3267,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.592250227,
+      "milp_solve_secs": 1.204055603,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3453,7 +3293,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.589169225,
+      "milp_solve_secs": 1.214746697,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3479,7 +3319,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.586555522,
+      "milp_solve_secs": 1.206752835,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3505,7 +3345,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.588827595,
+      "milp_solve_secs": 1.227025016,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3531,7 +3371,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.704088975,
+      "milp_solve_secs": 1.434934378,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3557,7 +3397,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.745892984,
+      "milp_solve_secs": 1.447549835,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3583,7 +3423,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.740510885,
+      "milp_solve_secs": 1.527360513,
       "objective": 1.7757945350403683,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3609,7 +3449,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.680043613,
+      "milp_solve_secs": 1.414614287,
       "objective": 2.8006275975270474,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3635,7 +3475,7 @@
       "latency_ms": 1568.9819335937495,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.66832114,
+      "milp_solve_secs": 1.384868067,
       "objective": 2.8006275975270474,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3661,7 +3501,7 @@
       "latency_ms": 1675.9113476562497,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.678437492,
+      "milp_solve_secs": 1.416462413,
       "objective": 2.6989295354681007,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3687,7 +3527,7 @@
       "latency_ms": 1675.9113476562497,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.688004821,
+      "milp_solve_secs": 1.396571794,
       "objective": 2.6989295354681007,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3713,7 +3553,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.6965149,
+      "milp_solve_secs": 1.434314101,
       "objective": 2.6043026359435473,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3739,7 +3579,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.679808708,
+      "milp_solve_secs": 1.437304444,
       "objective": 2.6043026359435473,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3765,7 +3605,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.677078757,
+      "milp_solve_secs": 1.473044694,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3791,7 +3631,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.678033902,
+      "milp_solve_secs": 1.452634293,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3817,7 +3657,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.680635391,
+      "milp_solve_secs": 1.403549892,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3843,7 +3683,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.687532646,
+      "milp_solve_secs": 1.488389451,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3869,7 +3709,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.686366998,
+      "milp_solve_secs": 1.400280661,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3895,7 +3735,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.682692153,
+      "milp_solve_secs": 1.402179189,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3921,7 +3761,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.684107781,
+      "milp_solve_secs": 1.502117546,
       "objective": 2.5570115529678623,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -3930,8 +3770,8 @@
     {
       "active_deployments": 96,
       "bound_ms": null,
-      "candidate_build_secs": 5.156509704,
-      "candidates": 2352,
+      "candidate_build_secs": 14.466798366,
+      "candidates": 2448,
       "cpu": 10.281864614288683,
       "cpu_parts": {
         "compaction": 0.0,
@@ -3949,9 +3789,9 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 94.35648600260416,
       "method": "asap",
-      "milp_solve_secs": 13.225040049,
+      "milp_solve_secs": 27.907842028,
       "objective": 1.0368179787827143,
-      "planning_secs": 18.381549753,
+      "planning_secs": 42.374640394000004,
       "rolled_up_rqes": 816,
       "rqes": 992,
       "weights": "fargate"
@@ -3959,7 +3799,7 @@
     {
       "active_deployments": 432,
       "bound_ms": null,
-      "candidates": 2352,
+      "candidates": 2448,
       "cpu": 15.656041254288631,
       "cpu_parts": {
         "compaction": 0.0,
@@ -3978,14 +3818,14 @@
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
       "objective": 1.7757945350403683,
-      "planning_secs": 5.866488455000001,
+      "planning_secs": 16.21765259,
       "rolled_up_rqes": 0,
       "rqes": 992,
       "weights": "fargate"
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "bound_ms": null,
       "cpu": 159.04485511384306,
       "cpu_parts": {
@@ -4005,7 +3845,7 @@
       "median_latency_ms": 15.689819335937496,
       "method": "autosketch",
       "objective": 8.029332476727905,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4032,7 +3872,7 @@
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
       "objective": 2.5570115529678623,
-      "planning_secs": 3.4069723529999996,
+      "planning_secs": 8.476663857,
       "rolled_up_rqes": 0,
       "rqes": 992,
       "weights": "fargate"
@@ -4075,7 +3915,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4095,7 +3935,7 @@
       "meets_sla": false,
       "method": "autosketch",
       "objective": 159.04485511384306,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4128,7 +3968,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4148,7 +3988,7 @@
       "meets_sla": false,
       "method": "autosketch",
       "objective": 159.04485511384306,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4181,7 +4021,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4201,7 +4041,7 @@
       "meets_sla": false,
       "method": "autosketch",
       "objective": 159.04485511384306,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4228,7 +4068,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.254105137,
+      "milp_solve_secs": 2.5823597879999998,
       "objective": 10.036708347621994,
       "rolled_up_rqes": 672,
       "rqes": 992,
@@ -4255,7 +4095,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.489544116,
+      "milp_solve_secs": 1.026284214,
       "objective": 16.282558587621992,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4282,7 +4122,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.670245568,
+      "milp_solve_secs": 1.4269122379999999,
       "objective": 23.957762854288656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4291,7 +4131,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4311,7 +4151,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 159.04485511384306,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4338,7 +4178,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 84.09261067708331,
       "method": "asap",
-      "milp_solve_secs": 1.335986331,
+      "milp_solve_secs": 3.226285939,
       "objective": 10.036708347621994,
       "rolled_up_rqes": 672,
       "rqes": 992,
@@ -4365,7 +4205,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.535356265,
+      "milp_solve_secs": 1.107795444,
       "objective": 15.656041254288631,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4392,7 +4232,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.671857106,
+      "milp_solve_secs": 1.3852332760000001,
       "objective": 23.82148552095538,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4401,7 +4241,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4421,7 +4261,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 159.04485511384306,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4454,7 +4294,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4474,7 +4314,7 @@
       "meets_sla": false,
       "method": "autosketch",
       "objective": 8.029332476727905,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4507,7 +4347,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4527,7 +4367,7 @@
       "meets_sla": false,
       "method": "autosketch",
       "objective": 8.029332476727905,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4560,7 +4400,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4580,7 +4420,7 @@
       "meets_sla": false,
       "method": "autosketch",
       "objective": 8.029332476727905,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4607,7 +4447,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 94.35648600260416,
       "method": "asap",
-      "milp_solve_secs": 11.131646048,
+      "milp_solve_secs": 22.724060717,
       "objective": 1.0368179787827143,
       "rolled_up_rqes": 816,
       "rqes": 992,
@@ -4634,7 +4474,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.717790145,
+      "milp_solve_secs": 1.456226627,
       "objective": 1.7995747980193544,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4661,7 +4501,7 @@
       "latency_ms": 2102.315266927083,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.706074128,
+      "milp_solve_secs": 1.420503488,
       "objective": 2.5618096578878964,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4670,7 +4510,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4690,7 +4530,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 8.029332476727905,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4717,7 +4557,7 @@
       "latency_ms": 1835.6486002604163,
       "median_latency_ms": 94.35648600260416,
       "method": "asap",
-      "milp_solve_secs": 13.108810136,
+      "milp_solve_secs": 26.281954467,
       "objective": 1.0368179787827143,
       "rolled_up_rqes": 816,
       "rqes": 992,
@@ -4744,7 +4584,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.653799285,
+      "milp_solve_secs": 1.594263735,
       "objective": 1.7757945350403683,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4771,7 +4611,7 @@
       "latency_ms": 3335.11134765625,
       "median_latency_ms": 34.35648600260416,
       "method": "perquery",
-      "milp_solve_secs": 0.679594148,
+      "milp_solve_secs": 1.428802922,
       "objective": 2.5570115529678623,
       "rolled_up_rqes": 0,
       "rqes": 992,
@@ -4780,7 +4620,7 @@
     },
     {
       "active_deployments": 992,
-      "benchmark_secs_paper_rate": 10560.0,
+      "benchmark_secs_paper_rate": 9600.0,
       "cpu": 159.04485511384306,
       "cpu_parts": {
         "compaction": 0.0,
@@ -4800,7 +4640,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 8.029332476727905,
-      "planning_secs": 0.039573579,
+      "planning_secs": 0.077166333,
       "probes": 2656,
       "rolled_up_rqes": 0,
       "rqes": 992,

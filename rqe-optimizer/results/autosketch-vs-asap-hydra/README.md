@@ -18,7 +18,12 @@ everything added since #138:
   (`topk(32, sum by (label_0) (rate(data_total[w])))`) are dropped, as
   ASAPQuery's engine would need per-series counter deltas to serve them
   (2026-10-13 rerun of the classic and all workloads; the multi-grouping
-  results are unchanged).
+  results are unchanged);
+- a **denser config grid** (2026-10-14, #213): KLL `k` ∈ {25, 50, 100, 200,
+  400, 800} (was 50/200/800), DDSketch α adds 0.1, and Hydra grids add
+  W = 65536 (hydra-hll, hydra-kll). Only the new configs were measured and
+  appended to the curves, the cost table and the Hydra study. HLL stays at
+  `lg_k` 12/14/16, the precisions asap_sketchlib builds.
 
 Cost is billed by use (sketch-bench `docs/rqe_optimizer_cost_model.md`):
 `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, at two weight settings (CPU only, in
@@ -43,24 +48,24 @@ Cost of each method's cheapest plan (no latency bound), absolute:
 
 | Workload | RQEs | Weights | ASAP | ASAP (no roll-ups) | PerQuery | AutoSketch | RQEs rolled up | Deployments (with / without roll-ups) |
 |---|---|---|---|---|---|---|---|---|
-| mixed (classic) | 42 | CPU (vCPU) | 2.38 | 2.38 | 7.77 | 2,739 | 0 | 6 / 6 |
-| mixed (classic) | 42 | Fargate ($/h) | 0.170 | 0.170 | 0.623 | 136 | 0 | 6 / 6 |
-| mixed, r = 8 | 76 | CPU | 2.47 | 2.47 | 13.6 | 3,284 | 0 | 6 / 6 |
-| mixed, m = 8 | 336 | CPU | 19.1 | 19.1 | 62.2 | 21,916 | 0 | 48 / 48 |
-| mixed, m = 16 | 672 | CPU | 38.1 | 38.1 | 124 | 43,831 | 0 | 96 / 96 |
-| mixed, m = 16 | 672 | Fargate | 2.73 | 2.73 | 9.97 | 2,175 | 0 | 96 / 96 |
-| multi-grouping | 62 | CPU | 0.221 | 0.551 | 1.07 | 10.2 | 52 | 5 / 26 |
-| multi-grouping | 62 | Fargate | 0.0137 | 0.0339 | 0.0597 | 0.430 | 52 | 5 / 26 |
-| multi-grouping, r = 8 | 124 | CPU | 0.242 | 0.573 | 2.04 | 12.3 | 104 | 5 / 26 |
-| multi-grouping, m = 8 | 496 | CPU | 1.77 | 4.41 | 8.55 | 81.7 | 416 | 40 / 208 |
-| multi-grouping, m = 16 | 992 | CPU | 3.53 | 8.81 | 17.1 | 163 | 832 | 80 / 416 |
-| multi-grouping, m = 16 | 992 | Fargate | 0.218 | 0.542 | 0.955 | 6.87 | 832 | 80 / 416 |
-| mixed + multi-grouping | 104 | CPU | 2.60 | 2.93 | 8.84 | 2,750 | 52 | 11 / 32 |
-| mixed + multi-grouping | 104 | Fargate | 0.184 | 0.204 | 0.683 | 136 | 52 | 11 / 32 |
-| mixed + multi-grouping, r = 8 | 200 | CPU | 2.71 | 3.04 | 15.6 | 3,296 | 104 | 11 / 32 |
-| mixed + multi-grouping, m = 8 | 832 | CPU | 20.8 | 23.5 | 70.7 | 21,997 | 416 | 88 / 256 |
-| mixed + multi-grouping, m = 16 | 1664 | CPU | 41.7 | 47.0 | 141 | 43,995 | 832 | 176 / 512 |
-| mixed + multi-grouping, m = 16 | 1664 | Fargate | 2.95 | 3.27 | 10.9 | 2,182 | 832 | 176 / 512 |
+| mixed (classic) | 42 | CPU (vCPU) | 2.35 | 2.35 | 7.67 | 2,701 | 0 | 6 / 6 |
+| mixed (classic) | 42 | Fargate ($/h) | 0.149 | 0.149 | 0.487 | 127 | 0 | 6 / 6 |
+| mixed, r = 8 | 76 | CPU | 2.43 | 2.43 | 13.5 | 3,239 | 0 | 6 / 6 |
+| mixed, m = 8 | 336 | CPU | 18.8 | 18.8 | 61.3 | 21,610 | 0 | 48 / 48 |
+| mixed, m = 16 | 672 | CPU | 37.6 | 37.6 | 123 | 43,221 | 0 | 96 / 96 |
+| mixed, m = 16 | 672 | Fargate | 2.38 | 2.38 | 7.78 | 2,035 | 0 | 96 / 96 |
+| multi-grouping | 62 | CPU | 0.22 | 0.55 | 1.07 | 9.65 | 52 | 5 / 26 |
+| multi-grouping | 62 | Fargate | 0.0134 | 0.0333 | 0.0589 | 0.406 | 52 | 5 / 26 |
+| multi-grouping, r = 8 | 124 | CPU | 0.241 | 0.572 | 2.04 | 11.6 | 104 | 5 / 26 |
+| multi-grouping, m = 8 | 496 | CPU | 1.76 | 4.4 | 8.54 | 77.2 | 416 | 40 / 208 |
+| multi-grouping, m = 16 | 992 | CPU | 3.52 | 8.8 | 17.1 | 154 | 832 | 80 / 416 |
+| multi-grouping, m = 16 | 992 | Fargate | 0.215 | 0.532 | 0.942 | 6.5 | 832 | 80 / 416 |
+| mixed + multi-grouping | 104 | CPU | 2.57 | 2.9 | 8.74 | 2,711 | 52 | 11 / 32 |
+| mixed + multi-grouping | 104 | Fargate | 0.162 | 0.182 | 0.545 | 128 | 52 | 11 / 32 |
+| mixed + multi-grouping, r = 8 | 200 | CPU | 2.68 | 3.01 | 15.5 | 3,250 | 104 | 11 / 32 |
+| mixed + multi-grouping, m = 8 | 832 | CPU | 20.6 | 23.2 | 69.9 | 21,688 | 416 | 88 / 256 |
+| mixed + multi-grouping, m = 16 | 1664 | CPU | 41.1 | 46.4 | 140 | 43,375 | 832 | 176 / 512 |
+| mixed + multi-grouping, m = 16 | 1664 | Fargate | 2.6 | 2.92 | 8.73 | 2,042 | 832 | 176 / 512 |
 
 Every workload: 0 RQEs dropped, 0 sanity violations (ASAP ≤ ASAP without
 roll-ups ≤ PerQuery, and ASAP ≤ AutoSketch). `summary_synthetic.md` has
@@ -71,18 +76,34 @@ plus its measured benchmark, approxbench accuracy runs at 1e8 items):
 
 | Workload | RQEs | ASAP | PerQuery | AutoSketch |
 |---|---|---|---|---|
-| mixed (classic) | 42 | 0.44 s | 0.49 s | 0.002 s + 212 s |
-| mixed, m = 16 | 672 | 8.1 s | 8.9 s | 0.027 s + 3,394 s |
-| multi-grouping | 62 | 0.41 s | 0.22 s | 0.002 s + 269 s |
-| multi-grouping, m = 16 | 992 | 7.0 s | 4.1 s | 0.037 s + 4,309 s |
-| mixed + multi-grouping | 104 | 0.94 s | 0.64 s | 0.005 s + 481 s |
-| mixed + multi-grouping, m = 16 | 1664 | 15.6 s | 13.0 s | 0.137 s + 7,702 s |
+| mixed | 42 | 0.99 s | 1.6 s | 0.0031 s + 169 s |
+| mixed, m = 16 | 672 | 7.4 s | 12.0 s | 0.024 s + 2,710 s |
+| multi-grouping | 62 | 0.52 s | 0.28 s | 0.0023 s + 227 s |
+| multi-grouping, m = 16 | 992 | 8.5 s | 5 s | 0.037 s + 3,625 s |
+| mixed + multi-grouping | 104 | 2.1 s | 2.2 s | 0.0075 s + 396 s |
+| mixed + multi-grouping, m = 16 | 1664 | 16.1 s | 17.1 s | 0.064 s + 6,335 s |
+
+The denser grid gives ASAP and PerQuery more candidates (6 KLL and 5 DDSketch
+configs instead of 3 and 4), so their MILPs are larger than before (mixed +
+multi-grouping: 0.94 → 2.1 s). The reruns also spread over 4 nodes and ran
+beside each other's shares, so planning times are not comparable across reruns
+to better than about 2×; within one rerun they are. AutoSketch reaches a
+feasible config sooner (15 probes instead of 19 on mixed + multi-grouping), so
+its measured benchmark is shorter (481 → 396 s).
+
+**What the denser grid changed** (95%, cheapest plans): CPU cost falls 0–1.4%
+(mixed 2.38 → 2.35 vCPU, mixed + multi-grouping 2.60 → 2.57), since insert
+CPU per item is flat across configs (KLL ≈ 30 ns, DDSketch ≈ 19 ns at every
+size). Memory-weighted cost falls more, as plans pick a smaller KLL or
+DDSketch closer to the target: Fargate 0.170 → 0.149 $/h on mixed (−13%),
+0.184 → 0.162 on mixed + multi-grouping (−12%), 0.0137 → 0.0134 on
+multi-grouping. No conclusion changes.
 
 ### Roll-ups
 
 On the **multi-grouping** set, ASAP serves 52 of 62 RQEs from a finer
 deployment, cutting its deployments from 26 to 5 and its cost by **60%**
-(0.551 → 0.221 vCPU; 0.0339 → 0.0137 $/h), and by the same share at r = 8,
+(0.550 → 0.220 vCPU; 0.0333 → 0.0134 $/h), and by the same share at r = 8,
 m = 8 and m = 16. The cube (template 16) is the clearest case: one KLL
 deployment at (region, service, endpoint) answers all 14 p99 RQEs. Every
 deployment ingests the whole stream, so cost grows with the number of
@@ -90,11 +111,11 @@ groupings kept. A KLL or DDSketch merge summarizes the pooled data of the
 merged groups, so a roll-up answers a coarse group's p99, not a quantile of
 quantiles (KLL reads its measured merge curve).
 
-On **mixed + multi-grouping**, roll-ups save 11% (2.93 → 2.60 vCPU, 32 → 11
+On **mixed + multi-grouping**, roll-ups save 11% (2.90 → 2.57 vCPU, 32 → 11
 deployments): the classic templates, whose streams have one grouping each,
 are most of the cost. On classic alone, roll-ups never apply and the two ASAP
-lines coincide. ASAP's ~3× advantage over PerQuery on classic (7.77 vs. 2.38
-vCPU; 1.8–3.3× at every SLA) comes from sharing deployments across RQEs at
+lines coincide. ASAP's ~3× advantage over PerQuery on classic (7.67 vs. 2.35
+vCPU; 1.7–3.3× at every SLA) comes from sharing deployments across RQEs at
 the same grouping.
 
 ### Hydra
@@ -112,6 +133,13 @@ only near case is flows under Fargate weights, where a Hydra-only plan costs
 Google 2011; not committed) agreed: Hydra meets 0.05 only for groups holding
 ≥ 1–5% of records, and per-group sketches that grow with n use less memory
 than the grid at the W that needs.
+
+W = 65536 (#213) widens what Hydra is accurate for: on groups holding ≥ 1% of
+the records, the worst error at 1e7 records drops from 0.283 to 0.039
+(hydra-hll, `http`), 0.074 to 0.021 (hydra-hll, `flows`) and 0.054 to 0.017
+(hydra-kll, unmerged; 0.056 to 0.017 over every merge count). But it is the
+most expensive grid on every axis (3.3 GB per hydra-hll grid, 6.2 µs per
+insert on `http`), and it is never chosen either.
 
 hydra-univmon-cardinality reads ≈ 100% error at N ≥ 1e6 at every W
 (8 layers × a small heap saturate at ~1e6 distinct values per cell), so it is
@@ -159,16 +187,19 @@ zcat plans/synthetic-templatesmultigroup-shared1.plans.json.gz | jq '.plans[]
 
 ## Inputs
 
-- `inputs/saturation/optimizer_cost/rqe_atomic_costs.json`: the cost table,
-  56 rows, measured serially on idle clnode138 (`study_saturation.py --phase
+- `inputs/saturation/optimizer_cost/rqe_atomic_costs.json`: the cost table, 63
+  rows (56, plus #213's KLL `k` 25/100/400, DDSketch α 0.1 and Hydra W = 65536
+  rows), measured serially on idle clnode138 (`study_saturation.py --phase
   optimizer-cost --seeds 3 --hydra-variants hydra-hll,hydra-kll`), including
   Hydra rows per dataset (`measured_at.dataset`) and #192's KLL footprint.
 - `inputs/saturation/hydra_saturation.csv`: the Hydra study (`--phase hydra`,
-  #202), 6,779 runs on 4 CloudLab nodes; hydra-kll on `hydra_http_latency`
-  rerun with per-service latency scales (×1–10 log-uniform), so groups differ
-  in distribution as they do in practice.
+  #202), 7,778 runs on 4 CloudLab nodes (#213 added 999 at W = 65536);
+  hydra-kll on `hydra_http_latency` rerun with per-service latency scales
+  (×1–10 log-uniform), so groups differ in distribution as they do in
+  practice.
 - The accuracy curves (`out_grid_1e7_cost/`, `out_1e9/`) are the committed
-  #138 study's, in `../autosketch-vs-asap-inputs/saturation/` (#194).
+  #138 study's, in `../autosketch-vs-asap-inputs/saturation/` (#194), with
+  #213's new KLL and DDSketch configs appended.
 - `inputs/tables/`: the workloads, `export_autosketch_eval_table.py
   --synthetic` (classic, multigroup and all × r ∈ {1, 8} × m ∈ {1, 8, 16}).
 
@@ -190,11 +221,11 @@ python3 scripts/plot_autosketch_vs_asap_synthetic.py $DIR
 python3 scripts/plot_autosketch_vs_asap_sla.py $DIR $DIR/synthetic-*-tp95.json
 ```
 
-Runs: Xeon E5-2683 v3, 56 cores, `--runs 3`, runner from sketch-bench
-`hydra/eval-integration` at 44ac160. Classic: one large table per CloudLab node
-(clnode178, 167; the small ones serially on clnode138), 2026-10-10.
-Multigroup and all (with the cube template): serially on one idle node,
-2026-10-11.
+Runs: Xeon E5-2683 v3, 56 cores, `--runs 3`. First run (superseded by the
+reruns below): runner from sketch-bench `hydra/eval-integration` at 44ac160.
+Classic: one large table per CloudLab node (clnode178, 167; the small ones
+serially on clnode138), 2026-10-10. Multigroup and all (with the cube
+template): serially on one idle node, 2026-10-11.
 
 Rerun without templates 7 and 9 (2026-10-13), runner at sketch-bench
 eval/drop-group-rate-templates: all serially on idle clnode109; classic
@@ -205,6 +236,14 @@ multigroup-shared1 reproduces its costs and plans exactly). AutoSketch's
 benchmark times are reused: the dropped RQEs used exact accumulators or a
 top-k config already probed on the same metric, so every probe was already
 measured and each workload's benchmark time is unchanged.
+
+Denser grid (2026-10-14, #213, runner at sketch-bench eval/dense-grid):
+multi-grouping on the 4 CloudLab nodes clnode109/155/167/178, then classic and
+all on #210's tables on the same 4 nodes, each node running its share
+serially. Plans: `--runs 1`, without `--no-chosen`, extracted with
+`scripts/extract_autosketch_plans.py`.
+
+The JSONs, figures and plans here are from that last rerun.
 
 ## Caveats
 

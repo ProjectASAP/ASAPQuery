@@ -2267,5 +2267,308 @@
       "schema_width": 4,
       "dataset": "hydra_http_latency"
     }
+  },
+  {
+    "sketch": "kll-percall",
+    "sketch_config": {
+      "algorithm": "kll-percall",
+      "params": {
+        "k": 25
+      }
+    },
+    "mem_bytes_per_instance": 4840.0,
+    "insert_cpu_secs": 2.98468e-08,
+    "merge_cpu_secs": 3.48e-06,
+    "query_cpu_secs": 2.671287128712871e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.091847,
+      "mean_rank_err": 0.019547755775577557
+    },
+    "accuracy_metric": "mean_rank_err",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "kll-percall",
+    "sketch_config": {
+      "algorithm": "kll-percall",
+      "params": {
+        "k": 100
+      }
+    },
+    "mem_bytes_per_instance": 7032.0,
+    "insert_cpu_secs": 3.01354e-08,
+    "merge_cpu_secs": 4.6400000000000005e-06,
+    "query_cpu_secs": 3.843564356435643e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.01705,
+      "mean_rank_err": 0.005246435643564355
+    },
+    "accuracy_metric": "mean_rank_err",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "kll-percall",
+    "sketch_config": {
+      "algorithm": "kll-percall",
+      "params": {
+        "k": 400
+      }
+    },
+    "mem_bytes_per_instance": 16432.0,
+    "insert_cpu_secs": 3.09384e-08,
+    "merge_cpu_secs": 1.1346666666666668e-05,
+    "query_cpu_secs": 1.3297029702970296e-05,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.005301,
+      "mean_rank_err": 0.0018005775577557756
+    },
+    "accuracy_metric": "mean_rank_err",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "dd",
+    "sketch_config": {
+      "algorithm": "dd",
+      "params": {
+        "alpha": 0.1
+      }
+    },
+    "mem_bytes_per_instance": 336.0,
+    "insert_cpu_secs": 1.8831000000000002e-08,
+    "merge_cpu_secs": 4.1333333333333333e-07,
+    "query_cpu_secs": 1.188118811881188e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_relative_value_error": 0.09933099747729664,
+      "mean_relative_value_error": 0.04830375834163406,
+      "scored_points": 101.0,
+      "unanswered_points": 0.0
+    },
+    "accuracy_metric": "mean_relative_value_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "hydra-hll",
+    "sketch_config": {
+      "algorithm": "hydra-hll",
+      "params": {
+        "cols": 65536,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 3271557376.0,
+    "insert_cpu_secs": 6.187214666666667e-06,
+    "merge_cpu_secs": 2.732486777777778,
+    "query_cpu_secs": 0.02637,
+    "query_accuracy": {
+      "aae_all": 189.5,
+      "aae_top1": 215.0,
+      "accuracy_runs": 1.0,
+      "are_all": 0.0013632820390592488,
+      "are_top1": 0.0011336911930649738,
+      "err_max": 0.002077291537684513,
+      "err_mean": 0.0013632820390592488,
+      "err_p50": 0.0012377778085109325,
+      "err_p90": 0.002077291537684513,
+      "fanned_mass": 15000000.0,
+      "group_columns": 1.0,
+      "groups_scored": 4.0,
+      "l1_err": 758.0,
+      "l2_err": 393.91877335308607,
+      "probes": 4.0,
+      "probes_all": 4.0,
+      "probes_top1": 1.0,
+      "records": 1000000.0,
+      "relative_error_mean": 0.0013632820390592488,
+      "relative_error_p99": 0.002077291537684513,
+      "schema_width": 4.0,
+      "subpopulations": 4.0
+    },
+    "accuracy_metric": "err_max",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        1000000.0
+      ],
+      "merge_operand_items": 250000,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 0.8,
+        "population_size": 1000000,
+        "seed": 5
+      },
+      "schema_width": 4,
+      "dataset": "hydra_http"
+    }
+  },
+  {
+    "sketch": "hydra-hll",
+    "sketch_config": {
+      "algorithm": "hydra-hll",
+      "params": {
+        "cols": 65536,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 3271557376.0,
+    "insert_cpu_secs": 3.0767939999999998e-06,
+    "merge_cpu_secs": 2.675697111111111,
+    "query_cpu_secs": 0.00034407766666666673,
+    "query_accuracy": {
+      "aae_all": 26.964,
+      "aae_top1": 990.0,
+      "aae_top10": 311.4,
+      "aae_top100": 59.7,
+      "aae_top1000": 26.964,
+      "accuracy_runs": 1.0,
+      "are_all": 0.11428121142635247,
+      "are_top1": 0.006038757845810383,
+      "are_top10": 0.006946360021243415,
+      "are_top100": 0.012033625201499096,
+      "are_top1000": 0.1142812114263525,
+      "err_max": 7.197411003236246,
+      "err_mean": 0.11428121142635232,
+      "err_p50": 0.05084745762711865,
+      "err_p90": 0.208,
+      "fanned_mass": 7000000.0,
+      "group_columns": 1.0,
+      "groups_scored": 1000.0,
+      "l1_err": 26964.0,
+      "l2_err": 3061.421565220968,
+      "probes": 1000.0,
+      "probes_all": 1000.0,
+      "probes_top1": 1.0,
+      "probes_top10": 10.0,
+      "probes_top100": 100.0,
+      "probes_top1000": 1000.0,
+      "records": 1000000.0,
+      "relative_error_mean": 0.11428121142635247,
+      "relative_error_p99": 1.0957446808510638,
+      "schema_width": 3.0,
+      "subpopulations": 1000.0
+    },
+    "accuracy_metric": "err_max",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 3000000,
+      "value_range": [
+        0.0,
+        1000000.0
+      ],
+      "merge_operand_items": 250000,
+      "distribution": {
+        "kind": "uniform",
+        "lower_bound": 0.0,
+        "upper_bound": 1000000.0,
+        "seed": 4
+      },
+      "schema_width": 3,
+      "dataset": "hydra_flows"
+    }
+  },
+  {
+    "sketch": "hydra-kll",
+    "sketch_config": {
+      "algorithm": "hydra-kll",
+      "params": {
+        "cell_k": 200,
+        "cols": 65536,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 2041577728.0,
+    "insert_cpu_secs": 8.506115999999997e-06,
+    "merge_cpu_secs": 0.4366403333333334,
+    "query_cpu_secs": 0.000427200495049505,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "err_max": 0.00343755224360815,
+      "err_mean": 0.002932765855833572,
+      "err_p50": 0.002986267515504352,
+      "err_p90": 0.00343755224360815,
+      "fanned_mass": 15000000.0,
+      "grid_points": 101.0,
+      "group_columns": 1.0,
+      "groups_scored": 4.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.008793567780795014,
+      "mean_rank_err": 0.002932765855833572,
+      "probes": 4.0,
+      "records": 1000000.0,
+      "schema_width": 4.0,
+      "subpopulations": 4.0
+    },
+    "accuracy_metric": "err_max",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": null,
+      "merge_operand_items": 250000,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 5
+      },
+      "schema_width": 4,
+      "dataset": "hydra_http_latency"
+    }
   }
 ]

@@ -29,3 +29,24 @@ Every accuracy run is `study_saturation.py --phase accuracy --seeds 3` plus:
 
 Run times are each file's first-to-last record timestamps; the refills ran
 about 40 minutes after their grids and are counted separately.
+
+## The denser grid (#213, measured 2026-10-13/14 UTC)
+
+Only the new configs, with the same arguments as the rows above plus
+`--sketches`/`--configs`; accuracy runs on clnode130 (the same Xeon
+E5-2683 v3 node type), cost rows serially on idle clnode138, where the
+existing cost rows were measured.
+
+| File | Arguments | Feeds |
+|---|---|---|
+| `dense_grid_q.saturation_accuracy.jsonl.gz` | as `grid_quantile`, `--sketches kll-percall,dd --configs k=25,k=100,k=400,alpha=0.1` | `out_grid_1e7_cost/` |
+| `dense_kll_a2…`, `dense_kll_a3…` | as `kll_a2`, `kll_a3`, `--sketches kll-percall --configs k=25,k=100,k=400` | `out_1e9/` |
+| `dense_dd_a2…`, `dense_dd_a3…` | as `dd_a2`, `dd_a3`, `--sketches dd --configs alpha=0.1` | `out_1e9/` |
+| `dense_optimizer_cost_q.rqe_atomic_costs_raw.jsonl.gz` | `--phase optimizer-cost --seeds 3 --families quantile --sketches kll-percall,dd --configs k=25,k=100,k=400,alpha=0.1` | the cost table's 4 new rows |
+| `dense_optimizer_cost_h.rqe_atomic_costs_raw.jsonl.gz` | `--phase optimizer-cost --seeds 3 --families hydra --sketches hydra-hll,hydra-kll --hydra-variants hydra-hll,hydra-kll --hydra-ws 65536` (4-shard merges) | the cost table's 3 new Hydra rows |
+
+The Hydra W = 65536 accuracy rows (999 runs, `--phase hydra --hydra-sweeps eval
+--hydra-ws 65536 --hydra-variants hydra-hll,hydra-kll --hydra-shard i/4` on
+clnode109/155/167/178) are appended to
+`../../autosketch-vs-asap-hydra/inputs/saturation/hydra_saturation.csv`.
+
