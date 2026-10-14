@@ -40,19 +40,21 @@ impl Workload {
         (format!("g{group}"), format!("i{instance}"))
     }
 
-    /// Samples for sub-second slot `slot` of one-second tick `tick`, one per
-    /// series, with event time starting at `start_ms`. Slots within the second
-    /// are spaced evenly.
-    pub fn slot_rows(&self, tick: u64, slot: u32, start_ms: i64) -> Vec<Row> {
+    /// The samples of one-second tick `tick`, series-major: each series'
+    /// `samples_per_sec` samples in timestamp order, then the next series'.
+    /// Slot `j` of `n` is at `t + (j + 1) · 1 s / n`, where `t` is the tick's
+    /// start, so the tick lies in `(t, t + 1 s]`: the same left-open interval as
+    /// ASAPQuery's one-second windows, so a tick never spans two of them.
+    pub fn tick_rows(&self, tick: u64, start_ms: i64) -> Vec<Row> {
         let per_sec = u64::from(self.samples_per_sec);
-        let slot = u64::from(slot);
-        let timestamp_ms = start_ms + tick as i64 * 1_000 + (slot * 1_000 / per_sec) as i64;
-        let sample_index = tick * per_sec + slot;
+        let tick_ms = start_ms + tick as i64 * 1_000;
         (0..self.num_series())
-            .map(|series| Row {
-                series,
-                timestamp_ms,
-                value: self.value(series, sample_index),
+            .flat_map(|series| {
+                (0..per_sec).map(move |slot| Row {
+                    series,
+                    timestamp_ms: tick_ms + ((slot + 1) * 1_000 / per_sec) as i64,
+                    value: self.value(series, tick * per_sec + slot),
+                })
             })
             .collect()
     }
@@ -63,6 +65,23 @@ impl Workload {
         let u = unit_uniform(self.seed, series as u64, sample_index);
         self.pareto_scale * u.powf(-1.0 / self.pareto_shape)
     }
+}
+
+/// Row ranges of the requests for `rows` series-major rows with
+/// `per_series` rows per series: about `batch_rows` each, cut only between
+/// series (at least one series per request), so every series' samples of a
+/// tick reach the sink in one request, in timestamp order. Concurrent requests
+/// then reorder samples only across series, never within one, which keeps
+/// counters monotonic for consumers that read them in arrival order.
+pub fn series_batches(
+    rows: usize,
+    per_series: usize,
+    batch_rows: usize,
+) -> impl Iterator<Item = std::ops::Range<usize>> {
+    let batch = (batch_rows / per_series).max(1) * per_series;
+    (0..rows)
+        .step_by(batch)
+        .map(move |begin| begin..(begin + batch).min(rows))
 }
 
 /// Counter-based uniform draw in (0, 1]: a stateless hash of the inputs, so
@@ -96,37 +115,59 @@ mod tests {
     }
 
     #[test]
-    fn each_slot_has_every_series_at_its_timestamp() {
+    fn a_tick_is_series_major_in_timestamp_order() {
         let w = workload();
-        for (slot, timestamp_ms) in [(0, 15_000), (1, 15_500)] {
-            let rows = w.slot_rows(5, slot, 10_000);
-            assert_eq!(rows.len(), 6);
-            assert!(rows.iter().all(|r| r.timestamp_ms == timestamp_ms));
-            assert!(rows.iter().map(|r| r.series).eq(0..6));
+        let rows = w.tick_rows(5, 10_000);
+        assert_eq!(rows.len(), 12);
+        for (series, samples) in rows.chunks(2).enumerate() {
+            assert!(samples.iter().all(|r| r.series == series));
+            let timestamps: Vec<i64> = samples.iter().map(|r| r.timestamp_ms).collect();
+            assert_eq!(timestamps, [15_500, 16_000]);
+        }
+    }
+
+    #[test]
+    fn batches_keep_each_series_in_one_request_in_order() {
+        let w = Workload {
+            samples_per_sec: 3,
+            ..workload()
+        };
+        let rows = w.tick_rows(2, 0);
+        // 7 rows round down to 2 series (6 rows); 1 row still takes a series.
+        for (batch_rows, sizes) in [(7, vec![6, 6, 6]), (1, vec![3; 6]), (100, vec![18])] {
+            let batches: Vec<_> = series_batches(rows.len(), 3, batch_rows).collect();
+            assert_eq!(batches.iter().map(|b| b.len()).collect::<Vec<_>>(), sizes);
+            for series in 0..w.num_series() {
+                let holding: Vec<_> = batches
+                    .iter()
+                    .filter(|b| rows[(*b).clone()].iter().any(|r| r.series == series))
+                    .collect();
+                assert_eq!(holding.len(), 1, "series {series}");
+                let timestamps: Vec<i64> = rows[holding[0].clone()]
+                    .iter()
+                    .filter(|r| r.series == series)
+                    .map(|r| r.timestamp_ms)
+                    .collect();
+                assert_eq!(timestamps.len(), 3);
+                assert!(timestamps.windows(2).all(|t| t[0] < t[1]));
+            }
         }
     }
 
     #[test]
     fn values_depend_only_on_seed_series_and_sample_index() {
         let w = workload();
-        // Same slot, different start time: same values.
-        let a: Vec<f64> = w.slot_rows(4, 1, 0).iter().map(|r| r.value).collect();
-        let b: Vec<f64> = w
-            .slot_rows(4, 1, 1_000_000)
-            .iter()
-            .map(|r| r.value)
-            .collect();
-        assert_eq!(a, b);
+        let values = |w: &Workload, start_ms| -> Vec<f64> {
+            w.tick_rows(4, start_ms).iter().map(|r| r.value).collect()
+        };
+        // Same tick, different start time: same values.
+        assert_eq!(values(&w, 0), values(&w, 1_000_000));
         // A different seed changes them.
-        let other = Workload { seed: 8, ..w };
-        assert_ne!(
-            a,
-            other
-                .slot_rows(4, 1, 0)
-                .iter()
-                .map(|r| r.value)
-                .collect::<Vec<_>>()
-        );
+        let other = Workload {
+            seed: 8,
+            ..w.clone()
+        };
+        assert_ne!(values(&w, 0), values(&other, 0));
     }
 
     #[test]
