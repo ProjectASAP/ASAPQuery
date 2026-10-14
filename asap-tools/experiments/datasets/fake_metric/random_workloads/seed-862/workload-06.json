@@ -56,6 +56,7 @@
   ],
   "queries": [
     {
+      "clickhouse_sql": "SELECT region, service, job, SUM(value) AS value FROM data WHERE ts BETWEEN NOW() - INTERVAL 300 SECOND AND NOW() GROUP BY region, service, job",
       "grouping": [
         "region",
         "service",
@@ -86,6 +87,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, SUM(value) AS value FROM data WHERE ts BETWEEN NOW() - INTERVAL 300 SECOND AND NOW() GROUP BY region, service",
       "grouping": [
         "region",
         "service"
@@ -114,6 +116,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, job, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.50)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service, job",
       "grouping": [
         "region",
         "service",
@@ -124,7 +127,7 @@
       "lookback_ms": 1000,
       "output_groups": 200,
       "output_series_upper_bound": 200,
-      "promql": "quantile by (region, service, job) (0.50, data)",
+      "promql": "avg by (region, service, job) (quantile_over_time(0.50, data[1s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -145,6 +148,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.50)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service",
       "grouping": [
         "region",
         "service"
@@ -154,7 +158,7 @@
       "lookback_ms": 1000,
       "output_groups": 20,
       "output_series_upper_bound": 20,
-      "promql": "quantile by (region, service) (0.50, data)",
+      "promql": "avg by (region, service) (quantile_over_time(0.50, data[1s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -174,6 +178,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.90)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
       "grouping": [
         "region"
       ],
@@ -182,7 +187,7 @@
       "lookback_ms": 1000,
       "output_groups": 4,
       "output_series_upper_bound": 4,
-      "promql": "quantile by (region) (0.90, data)",
+      "promql": "avg by (region) (quantile_over_time(0.90, data[1s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -201,6 +206,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, job, label_0, score FROM (SELECT *, row_number() OVER (PARTITION BY region, service ORDER BY score DESC) AS rank FROM (SELECT region, service, job, label_0, SUM(value) AS score FROM data WHERE ts BETWEEN NOW() - INTERVAL 60 SECOND AND NOW() GROUP BY region, service, job, label_0)) WHERE rank <= 4",
       "grouping": [
         "region",
         "service"
@@ -230,6 +236,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, job, label_0, score FROM (SELECT *, row_number() OVER (PARTITION BY region, service ORDER BY score DESC) AS rank FROM (SELECT region, service, job, label_0, SUM(value) AS score FROM data WHERE ts BETWEEN NOW() - INTERVAL 1200 SECOND AND NOW() GROUP BY region, service, job, label_0)) WHERE rank <= 8",
       "grouping": [
         "region",
         "service"
@@ -259,6 +266,7 @@
       "support": "common-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, job, label_0, score FROM (SELECT *, row_number() OVER (PARTITION BY region, service ORDER BY score DESC) AS rank FROM (SELECT region, service, job, label_0, SUM(value) AS score FROM data_total WHERE ts BETWEEN NOW() - INTERVAL 300 SECOND AND NOW() GROUP BY region, service, job, label_0)) WHERE rank <= 8",
       "grouping": [
         "region",
         "service"
@@ -288,6 +296,7 @@
       "support": "counter-gated-promql"
     },
     {
+      "clickhouse_sql": null,
       "grouping": [
         "region",
         "service"
@@ -317,6 +326,7 @@
       "support": "counter-gated-promql"
     },
     {
+      "clickhouse_sql": "SELECT region, service, job, COUNT(DISTINCT user_id) FROM events WHERE ts BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY region, service, job",
       "grouping": [
         "region",
         "service",

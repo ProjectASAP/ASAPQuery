@@ -44,6 +44,14 @@ class GenerateWorkloadsTest(unittest.TestCase):
             else:
                 self.assertIsNone(query["sql"])
                 self.assertIn(" by (", query["promql"])
+                if query["support"] == "common-promql":
+                    self.assertIsNotNone(query["clickhouse_sql"])
+
+    def test_grouped_quantiles_use_average_of_per_series_quantiles(self):
+        for query in workloads.generate_workloads(seed=4)[0]["queries"]:
+            if query["rqes"][0]["capability"] == "quantile":
+                self.assertIn("avg by", query["promql"])
+                self.assertIn("AVG(series_quantile)", query["clickhouse_sql"])
 
     def test_visible_query_outputs_stay_bounded(self):
         for workload in workloads.generate_workloads(seed=4):

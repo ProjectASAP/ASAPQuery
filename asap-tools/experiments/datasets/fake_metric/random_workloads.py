@@ -61,6 +61,35 @@ def grouping_text(grouping):
     return ", ".join(grouping)
 
 
+def clickhouse_time_filter(lookback_ms):
+    return f"ts BETWEEN NOW() - INTERVAL {lookback_ms // SECOND_MS} SECOND AND NOW()"
+
+
+def clickhouse_sum(grouping, lookback_ms):
+    group = grouping_text(grouping)
+    return f"SELECT {group}, SUM(value) AS value FROM data WHERE {clickhouse_time_filter(lookback_ms)} GROUP BY {group}"
+
+
+def clickhouse_quantile(grouping, phi):
+    group = grouping_text(grouping)
+    leaves = grouping_text(tuple(label["name"] for label in METRIC_LABELS))
+    return (
+        f"SELECT {group}, AVG(series_quantile) AS value FROM "
+        f"(SELECT {leaves}, quantileExact({phi:.2f})(value) AS series_quantile FROM data "
+        f"WHERE {clickhouse_time_filter(SPATIAL_LOOKBACK_MS)} GROUP BY {leaves}) GROUP BY {group}"
+    )
+
+
+def clickhouse_topk(grouping, lookback_ms, k, table="data", score="SUM(value)"):
+    group = grouping_text(grouping)
+    leaves = grouping_text(tuple(label["name"] for label in METRIC_LABELS))
+    return (
+        f"SELECT {leaves}, score FROM (SELECT *, row_number() OVER (PARTITION BY {group} "
+        f"ORDER BY score DESC) AS rank FROM (SELECT {leaves}, {score} AS score FROM {table} "
+        f"WHERE {clickhouse_time_filter(lookback_ms)} GROUP BY {leaves})) WHERE rank <= {k}"
+    )
+
+
 def choose_temporal_time(rng):
     lookback_ms, intervals = rng.choice(TEMPORAL_TIMES)
     return lookback_ms, rng.choice(intervals)
@@ -111,6 +140,7 @@ def query(
     interval_ms,
     rendered,
     support,
+    clickhouse_sql=None,
     **params,
 ):
     """Create one manifest query and its single optimizer-facing RQE."""
@@ -134,19 +164,18 @@ def query(
         "interval_ms": interval_ms,
         "promql": rendered if support != "sql-only" else None,
         "sql": rendered if support == "sql-only" else None,
+        "clickhouse_sql": clickhouse_sql or (rendered if support == "sql-only" else None),
         "rqes": [rqe],
     }
 
 
 def sum_query(query_id, grouping, lookback_ms, interval_ms):
     rendered = f"sum by ({grouping_text(grouping)}) (sum_over_time(data[{duration(lookback_ms)}]))"
-    return query(
-        query_id, "sum", grouping, lookback_ms, interval_ms, rendered, "common-promql"
-    )
+    return query(query_id, "sum", grouping, lookback_ms, interval_ms, rendered, "common-promql", clickhouse_sql=clickhouse_sum(grouping, lookback_ms))
 
 
 def quantile_query(query_id, grouping, phi):
-    rendered = f"quantile by ({grouping_text(grouping)}) ({phi:.2f}, data)"
+    rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[1s]))"
     return query(
         query_id,
         "quantile",
@@ -155,6 +184,7 @@ def quantile_query(query_id, grouping, phi):
         SPATIAL_INTERVAL_MS,
         rendered,
         "common-promql",
+        clickhouse_sql=clickhouse_quantile(grouping, phi),
         phi=phi,
     )
 
@@ -170,6 +200,7 @@ def topk_sum_query(query_id, grouping, lookback_ms, interval_ms, k):
         rendered,
         "common-promql",
         k=k,
+        clickhouse_sql=clickhouse_topk(grouping, lookback_ms, k),
     )
 
 
@@ -184,6 +215,7 @@ def topk_count_query(query_id, grouping, lookback_ms, interval_ms, k):
         rendered,
         "counter-gated-promql",
         k=k,
+        clickhouse_sql=clickhouse_topk(grouping, lookback_ms, k, "data_total"),
     )
 
 
