@@ -33,6 +33,7 @@ SKETCHDB = {"mode": "sketchdb", "server": "sketchdb"}
 BASELINE = {"mode": "baseline", "server": "prometheus"}
 BOTH_MODES = [SKETCHDB, BASELINE]
 PROM_URL = "http://10.10.1.1:9090/api/v1/write"
+CH_URL = "http://localhost:8123/?database=default"
 
 # workloads[0].e2e.metrics of synthetic-templatesclassic-shared1.json, plus a
 # records metric from the multi-grouping tables.
@@ -377,14 +378,6 @@ class RecordingProvider:
         return subprocess.CompletedProcess(cmd, returncode)
 
 
-class Args:
-    def get_node_range(self, include_coordinator=True):
-        return [0, 1, 2] if include_coordinator else [1, 2]
-
-    def get_coordinator_node(self):
-        return 0
-
-
 class PacedFeederServiceStartTest(unittest.TestCase):
     def start(
         self,
@@ -396,7 +389,7 @@ class PacedFeederServiceStartTest(unittest.TestCase):
     ):
         provider = RecordingProvider(running_count, launch_secs)
         self.provider = provider
-        service = PacedFeederService(provider, Args())
+        service = PacedFeederService(provider, [1, 2])
 
         def rsync(*args):
             provider.clock += PREP_SECS
@@ -480,6 +473,21 @@ class PacedFeederServiceStartTest(unittest.TestCase):
         self.assertEqual(
             rate_flags,
             {"data": ["--samples-per-sec"], "flows": ["--records-per-sec"]},
+        )
+
+    def test_clickhouse_sink_sends_rowbinary_inserts(self):
+        commands = self.start(
+            running_count=1,
+            sinks={"clickhouse": CH_URL},
+            metrics=["data", "flows"],
+        )
+        self.assertEqual(
+            [
+                (c.split(" --sink ")[1].split()[0], c.split(" --url ")[1].split()[0])
+                for _, c in commands
+                if "--sink" in c
+            ],
+            [("clickhouse", CH_URL), ("clickhouse", CH_URL)],
         )
 
     def test_one_process_per_sink_and_metric_spread_over_workers(self):

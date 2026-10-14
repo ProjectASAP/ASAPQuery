@@ -1,9 +1,10 @@
 """
 Paced feeder service: pushes a sketch-bench workload table's metrics in real
-time over Prometheus remote write, one feeder process per (sink, metric).
+time, one feeder process per (sink, metric).
 
 Unlike the fake exporters, nothing is scraped: the feeder writes straight to
-ASAPQuery's ingest and/or Prometheus' remote-write receiver. Every process gets
+ASAPQuery's ingest and/or Prometheus' remote-write receiver over remote write,
+or to ClickHouse's HTTP interface, one table per metric. Every process gets
 the same seed and table, so each system receives identical data.
 """
 
@@ -16,7 +17,6 @@ from typing import Any, Dict, List, Tuple
 
 import constants
 from .base import BaseService
-from .fake_exporters import get_exporter_target_nodes
 from experiment_utils import sync
 from experiment_utils.providers.base import InfrastructureProvider
 
@@ -48,6 +48,8 @@ QUERY_ENGINE_ALLOWED_LATENESS_SECS = 5
 
 SINK_QUERY_ENGINE = "query_engine"
 SINK_PROMETHEUS = "prometheus"
+# Takes every metric type, each into the table named after it.
+SINK_CLICKHOUSE = "clickhouse"
 
 
 def paced_feeder_metric_names(experiment_params) -> List[str]:
@@ -159,6 +161,25 @@ def check_paced_feeder_config(
             "controller.auto_discover_labels reads labels from Prometheus before "
             "the paced_feeder starts; list the labels under experiment_params.metrics"
         )
+    table_metrics = check_paced_feeder_feed(config, min_feed_secs)
+    for metric in config["metrics"]:
+        if table_metrics[metric] == RECORDS_METRIC_TYPE and prometheus_modes:
+            raise ValueError(
+                f"paced_feeder metric {metric!r} is a records metric, which "
+                f"only ASAPQuery takes, but modes {prometheus_modes} feed "
+                "Prometheus (baseline or query_prometheus_too)"
+            )
+    if sketchdb_modes and parallelism != 1:
+        raise ValueError(
+            "paced_feeder sends to one ingest port; set streaming.parallelism=1"
+        )
+
+
+def check_paced_feeder_feed(
+    config: Dict[str, Any], min_feed_secs: float
+) -> Dict[str, str]:
+    """Fail on a metric the table lacks or one of unknown type, or a feed
+    that stops before the queries end; returns the table's metric types."""
     table_metrics = table_metric_types(config["workload_table"])
     for metric in config["metrics"]:
         if metric not in table_metrics:
@@ -167,21 +188,10 @@ def check_paced_feeder_config(
                 f"{config['workload_table']} (has {sorted(table_metrics)})"
             )
         metric_type = table_metrics[metric]
-        if metric_type == RECORDS_METRIC_TYPE:
-            if prometheus_modes:
-                raise ValueError(
-                    f"paced_feeder metric {metric!r} is a records metric, which "
-                    f"only ASAPQuery takes, but modes {prometheus_modes} feed "
-                    "Prometheus (baseline or query_prometheus_too)"
-                )
-        elif metric_type not in PROMETHEUS_METRIC_TYPES:
+        if metric_type not in PROMETHEUS_METRIC_TYPES + (RECORDS_METRIC_TYPE,):
             raise ValueError(
                 f"paced_feeder metric {metric!r} has unknown type {metric_type!r}"
             )
-    if sketchdb_modes and parallelism != 1:
-        raise ValueError(
-            "paced_feeder sends to one ingest port; set streaming.parallelism=1"
-        )
     if config["duration_secs"] < min_feed_secs:
         raise ValueError(
             f"paced_feeder.duration_secs={config['duration_secs']} ends before the "
@@ -189,6 +199,7 @@ def check_paced_feeder_config(
             "(feeder startup + flow.steady_state_wait + the query groups' "
             "running time)"
         )
+    return table_metrics
 
 
 def paced_feeder_sinks(
@@ -215,9 +226,10 @@ def paced_feeder_command(
     metric_type: str,
     start_ms: int,
     stats_out: str,
+    sink_kind: str = "remote-write",
 ) -> str:
     cmd = (
-        f"{PACED_FEEDER_BINARY} --sink remote-write --url {url}"
+        f"{PACED_FEEDER_BINARY} --sink {sink_kind} --url {url}"
         f" --workload-table {workload_table} --metric {metric}"
         f" --seed {config['seed']} --duration-secs {config['duration_secs']}"
         f" --start-ms {start_ms} --stats-out {stats_out}"
@@ -234,12 +246,11 @@ def paced_feeder_command(
 
 
 class PacedFeederService(BaseService):
-    """Runs paced_feeder processes bare-metal, spread over the worker nodes
-    (the coordinator in local mode)."""
+    """Runs paced_feeder processes bare-metal, spread over `target_nodes`."""
 
-    def __init__(self, provider: InfrastructureProvider, args):
+    def __init__(self, provider: InfrastructureProvider, target_nodes: List[int]):
         super().__init__(provider)
-        self.target_nodes = get_exporter_target_nodes(args)
+        self.target_nodes = target_nodes
         self.cmd_dir = os.path.join(
             provider.get_home_dir(),
             "code",
@@ -301,6 +312,7 @@ class PacedFeederService(BaseService):
                 metric_types[metric],
                 start_ms,
                 os.path.join(output_dir, f"{name}_stats.json"),
+                "clickhouse" if sink == SINK_CLICKHOUSE else "remote-write",
             )
             node_cmds.append(
                 (
