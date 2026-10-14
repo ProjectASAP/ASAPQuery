@@ -18,8 +18,9 @@ For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
   sketch-bench's exporter writes it) with NOW() replaced by the floored eval
   time;
 - <stem>_clickhouse.yaml, <stem>_clickhouse_mv.yaml: one
-  experiment_run_clickhouse.py config per arm, each loading data through its
-  own init SQL, with one query group per T, repeating every T seconds.
+  experiment_run_clickhouse.py config per arm, each creating the tables
+  through its own init SQL and feeding every metric with the paced feeder,
+  with one query group per T, repeating every T seconds.
 
 baseline_mv keeps exact mergeable states, no sketches: one view per (metric,
 value, statistic, T) holds per T-second bucket and group the state of sums,
@@ -56,7 +57,7 @@ later; every run and arm answers the same windows.
 
 Run from asap-tools/experiments:
     python3 datasets/fake_metric/sketch_bench_workloads.py \
-        --table <sketch-bench table.json> --data-file <path> \
+        --table <sketch-bench table.json> --seed <n> \
         --starting-delay-secs <s> --duration-secs <s>
 """
 import argparse
@@ -92,6 +93,9 @@ CLICKHOUSE_URL = "http://localhost:8123"
 # Seconds after an eval time the client sends it, so data up to the eval
 # time has arrived.
 QUERY_TIME_OFFSET_SECS = 10
+# Feed time beyond the query phase, for the feeder's startup check; the
+# runner checks the total.
+FEEDER_SLACK_SECS = 60
 VALUE_COLUMN = "value"
 # Every view lives here, so dropping it removes views any earlier workload
 # attached to the metric tables; they would keep firing on inserts.
@@ -589,7 +593,12 @@ def statements_text(statements: List[str]) -> str:
 
 
 def convert(
-    table_path: str, data_file: str, starting_delay_secs: int, duration_secs: int
+    table_path: str,
+    seed: int,
+    starting_delay_secs: int,
+    duration_secs: int,
+    samples_per_sec: Optional[int] = None,
+    records_per_sec: Optional[int] = None,
 ) -> List[str]:
     """Writes the SQL files and one config per arm; returns the config paths.
     Everything is rendered before anything is written, so a table that fails
@@ -679,6 +688,17 @@ def convert(
             }
         )
 
+    feeder = {
+        "workload_table": os.path.abspath(table_path),
+        "metrics": list(metrics),
+        "seed": seed,
+        "duration_secs": starting_delay_secs + duration_secs + FEEDER_SLACK_SECS,
+    }
+    if samples_per_sec is not None:
+        feeder["samples_per_sec"] = samples_per_sec
+    if records_per_sec is not None:
+        feeder["records_per_sec"] = records_per_sec
+
     out_paths = []
     for mode in modes:
         suffix = "_mv" if mode == BASELINE_MV else ""
@@ -687,12 +707,8 @@ def convert(
             "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],
             "dataset": {
                 "name": "custom",
-                "local_data_file": data_file,
-                # The runner's loader fills only this table; nothing fills the
-                # other metrics' tables yet.
-                "table": next(iter(labels)),
                 "init_sql_file": init_paths[mode],
-                "max_rows": 0,
+                "paced_feeder": feeder,
             },
             # Both arms' SQL, so the saved config labels queries by baseline's text.
             "query_groups": query_groups,
@@ -721,16 +737,21 @@ def convert(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--table", required=True, help="sketch-bench table .json")
-    parser.add_argument(
-        "--data-file", required=True, help="dataset path as seen from experiments/"
-    )
+    parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--starting-delay-secs", type=int, required=True)
     parser.add_argument(
         "--duration-secs", type=int, required=True, help="query phase length"
     )
+    parser.add_argument("--samples-per-sec", type=int, help="gauges and counters")
+    parser.add_argument("--records-per-sec", type=int, help="records metrics")
     args = parser.parse_args()
     for path in convert(
-        args.table, args.data_file, args.starting_delay_secs, args.duration_secs
+        args.table,
+        args.seed,
+        args.starting_delay_secs,
+        args.duration_secs,
+        args.samples_per_sec,
+        args.records_per_sec,
     ):
         print(path)
 
