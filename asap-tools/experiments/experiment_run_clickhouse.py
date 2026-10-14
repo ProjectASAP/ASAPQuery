@@ -330,8 +330,9 @@ def _check_clickhouse_paced_feeder(
     returns the seconds the feeders' start must align to."""
     if constants.SKETCHDB_EXPERIMENT_NAME in experiment_modes:
         raise ValueError(
-            "dataset.paced_feeder feeds ClickHouse only; sketchdb mode ingests "
-            "dataset.local_data_file (run ASAPQuery with experiment_run_e2e.py)"
+            "dataset.paced_feeder feeds ClickHouse only, and sketchdb mode's "
+            "engine ingests dataset.local_data_file; sketchdb on a paced feed "
+            "is not supported yet"
         )
     check_paced_feeder_feed(
         feeder_config,
