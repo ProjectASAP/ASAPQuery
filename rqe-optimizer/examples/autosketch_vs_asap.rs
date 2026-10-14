@@ -98,9 +98,19 @@ const TRACES_TABLE: &str = "rqe-optimizer/data/autosketch-eval/table.json";
 /// Objective weights of #777 §4: CPU only, then AWS Fargate (us-east-1,
 /// Linux/x86) $/vCPU-hour and $/GB-hour, so the objective reads in $/hour.
 const WEIGHTS: [(&str, f64, f64); 2] = [("cpu", 1.0, 0.0), ("fargate", 0.0405, 0.00445)];
-/// Every stream is scraped once a second: windows and slides are whole
-/// seconds, and the stream's samples/s become its series count.
+/// A stream's scrape interval when its table gives no per-series rate: windows
+/// and slides are whole seconds, and the stream's samples/s become its series
+/// count.
 const SCRAPE_MS: Millis = 1_000;
+/// `ms` in seconds: an integer when whole, so second-grained plans read as
+/// before, else fractional (an instant RQE's one-scrape window).
+fn json_secs(ms: Millis) -> Value {
+    if ms.is_multiple_of(1000) {
+        json!(ms / 1000)
+    } else {
+        json!(ms as f64 / 1000.0)
+    }
+}
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 const SEED: u64 = 7;
 /// AutoSketch's benchmark time per evaluated configuration, at the paper's
@@ -387,6 +397,18 @@ fn from_table(
         };
         let capability = capability_of(r);
         let rate = r["label_set"]["arrival_rate_per_sec"].as_f64().unwrap();
+        // A metric with a per-series rate (the synthetic gauge and counter) is
+        // scraped at it, so an instant RQE's one-scrape lookback holds one
+        // sample per series. Record metrics (http, flows) keep SCRAPE_MS.
+        let scrape_ms = workload["e2e"]["metrics"][metric]["samples_per_sec_per_series"]
+            .as_u64()
+            .map_or(SCRAPE_MS, |per_sec| {
+                assert!(
+                    per_sec > 0 && 1_000 % per_sec == 0,
+                    "{metric}: samples_per_sec_per_series {per_sec} must divide 1000"
+                );
+                1_000 / per_sec
+            });
         let groups = groups_of(r, capability);
         // A schema metric's RQE names its grouping (its `groups` are that
         // grouping's); otherwise the stream has one label `g`, the grouping.
@@ -406,11 +428,10 @@ fn from_table(
             max_covered_share.insert(id.clone(), r["max_covered_share"].as_f64().unwrap());
         }
         // One metric per stream, labels {g, x} (or the schema's and x), and
-        // with one scrape a second the full label set has one series per
-        // sample/s. A stream's RQEs differ only in range and grouping, so
+        // the full label set has one series per sample per scrape interval. A stream's RQEs differ only in range and grouping, so
         // take the largest per-RQE rate (conservative). Rates below `groups`
         // samples/s are rounded up so every group has a series.
-        let series = (rate * SCRAPE_MS as f64 / 1000.0).round() as u64;
+        let series = (rate * scrape_ms as f64 / 1000.0).round() as u64;
         let most = stream_series.entry(stream.clone()).or_default();
         *most = (*most).max(series);
         let most = *most;
@@ -436,7 +457,7 @@ fn from_table(
             MetricFacts {
                 cardinality: [(labels.clone(), 0), (LabelSet::new(), 1)].into(),
                 labels,
-                scrape_interval_ms: SCRAPE_MS,
+                scrape_interval_ms: scrape_ms,
                 value_range: None,
                 data_shape: BTreeMap::new(),
                 // A stream is one value of its metric, so one capability.
@@ -492,11 +513,20 @@ fn from_table(
                     .or_insert(shape);
             }
         }
+        let lookback_ms = (r["lookback_secs"].as_f64().unwrap() * 1000.0).round() as Millis;
+        let interval_ms = (r["interval_secs"].as_f64().unwrap() * 1000.0).round() as Millis;
+        // Otherwise no candidate window fits, and the RQE would be dropped as
+        // unservable rather than reported as a table error.
+        assert!(
+            lookback_ms.is_multiple_of(scrape_ms) && interval_ms.is_multiple_of(scrape_ms),
+            "{id}: lookback {lookback_ms} ms and interval {interval_ms} ms must be \
+             multiples of {stream}'s {scrape_ms} ms scrape"
+        );
         raqes.push(Raqe {
             id: id.clone(),
             capability,
-            lookback_ms: (r["lookback_secs"].as_f64().unwrap() * 1000.0) as Millis,
-            interval_ms: (r["interval_secs"].as_f64().unwrap() * 1000.0) as Millis,
+            lookback_ms,
+            interval_ms,
             metric: stream,
             spatial_filter: String::new(),
             grouping_labels: grouping,
@@ -741,8 +771,8 @@ fn summarize(
                 "rqe": r.id,
                 "sketch": d.config.sketch,
                 "params": d.config.sketch_config["params"],
-                "window_secs": d.window_ms / 1000,
-                "slide_secs": d.slide_ms / 1000,
+                "window_secs": json_secs(d.window_ms),
+                "slide_secs": json_secs(d.slide_ms),
                 "merged_shards": r.lookback_ms / d.window_ms,
                 "ingest_workers": rqe_optimizer::analytical_cost_model::ingest_workers(d, &w.facts),
                 "latency_ms": latency,
