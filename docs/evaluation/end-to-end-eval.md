@@ -335,18 +335,18 @@ between rounds.
 
 | Piece | Where | Status |
 |---|---|---|
-| Workload tables with e2e blocks; templates 7/9 dropped; §6.3 rerun | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209), [#210](https://github.com/ProjectASAP/sketch-bench/issues/210) | open |
-| Paced feeder: facts-driven classic data, records, per-series order | [#840](https://github.com/ProjectASAP/ASAPQuery/issues/840) → [#842](https://github.com/ProjectASAP/ASAPQuery/issues/842) → [#843](https://github.com/ProjectASAP/ASAPQuery/issues/843) | open |
-| ClickHouse SQL and exact MV arms from the tables | [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844) → [#845](https://github.com/ProjectASAP/ASAPQuery/issues/845) | open (base was [#837](https://github.com/ProjectASAP/ASAPQuery/issues/837), merged: retarget to `main`) |
-| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/issues/841) | open (base was [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), merged: retarget to `main`); add bulk-history mode with a bounded, frozen sender configuration, explicit logical evaluation times, and phase-boundary metadata |
-| `--planner saved`; prebuilt configs in both runners | [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828), [#860](https://github.com/ProjectASAP/ASAPQuery/issues/860) | merged |
-| Tables and plans at 10 samples/s | sketch-bench [#212](https://github.com/ProjectASAP/sketch-bench/issues/212) | open |
+| Workload tables with e2e blocks; templates 7/9 dropped; §6.3 rerun | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/pull/209), [#210](https://github.com/ProjectASAP/sketch-bench/pull/210), [#212](https://github.com/ProjectASAP/sketch-bench/pull/212) | merged |
+| Paced feeder: facts-driven classic data, records, per-series order | [#840](https://github.com/ProjectASAP/ASAPQuery/pull/840) → [#842](https://github.com/ProjectASAP/ASAPQuery/pull/842) → [#843](https://github.com/ProjectASAP/ASAPQuery/pull/843) | merged |
+| ClickHouse SQL and exact MV arms from the tables | [#844](https://github.com/ProjectASAP/ASAPQuery/pull/844) → [#845](https://github.com/ProjectASAP/ASAPQuery/pull/845) | merged |
+| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/pull/841) | open: add bulk-history mode with a bounded, frozen sender configuration, explicit logical evaluation times, and phase-boundary metadata |
+| `--planner saved`; prebuilt configs in both runners | [#828](https://github.com/ProjectASAP/ASAPQuery/pull/828), [#860](https://github.com/ProjectASAP/ASAPQuery/pull/860) | merged |
+| Tables and plans at 10 samples/s | sketch-bench [#212](https://github.com/ProjectASAP/sketch-bench/pull/212) | merged |
 | Feeder → VictoriaMetrics (remote write into vmsingle) | `experiment_run_e2e.py` | to do |
 | Feeder → ClickHouse live ingest, tables/views before data, server CPU/memory monitoring | `experiment_run_clickhouse.py` | to do |
-| No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | [#861](https://github.com/ProjectASAP/ASAPQuery/issues/861) | open |
+| No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | [#861](https://github.com/ProjectASAP/ASAPQuery/pull/861) | merged |
 | Analysis: per-system CPU/memory/latency/accuracy, planner cost, scatter, table | `asap-tools/experiments/post_experiment/` | to do |
-| ASAPQuery multi-grouping (all): `--planner saved` for SQL | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209) (each structured entry carries its ASAPQuery `sql`, cd51be9); [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856) | SQL strings in the tables: done (Milind). Planner reads them: Milind, no PR yet. [#844](https://github.com/ProjectASAP/ASAPQuery/issues/844) switches to the table's `sql` (only `NOW()` substituted). |
-| Sending SQL to ASAPQuery from a runner | — | run the multi-grouping part through `experiment_run_clickhouse.py`'s sketchdb mode (one language per engine process) |
+| ASAPQuery multi-grouping (all): `--planner saved` for SQL | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/pull/209), [#856](https://github.com/ProjectASAP/ASAPQuery/pull/856), [#844](https://github.com/ProjectASAP/ASAPQuery/pull/844) | merged: structured table entries carry the ASAPQuery SQL; the planner reads it; the ClickHouse arm substitutes only `NOW()`. |
+| Sending SQL to ASAPQuery from a runner | `experiment_run_clickhouse.py` | ready: run the multi-grouping part through sketchdb mode (one language per engine process) |
 
 ## 12. Open questions (proposed answers)
 
@@ -384,8 +384,8 @@ between rounds.
 
 | Item | Owner | Blocks |
 |---|---|---|
-| [#800](https://github.com/ProjectASAP/ASAPQuery/issues/800): MILP output uses `NoCleanup` (`milp_output.rs:230`), so planner YAML carries no retention and every window is kept | Milind. Agreed design (§7, "ASAPQuery's retention"): CircularBuffer with `num_aggregates_to_retain = retained_instance_count`, then evicted windows spilled to disk instead of dropped | CircularBuffer: needed before the long runs, since ASAPQuery's memory otherwise grows for 25 h and stops matching the plan. Disk tier: separate PR, ideally before the runs too. |
-| [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856): `--planner saved` for SQL, reading the tables' `sql` strings (sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/issues/209), done) | Milind | ASAPQuery on all's multi-grouping queries |
+| [#800](https://github.com/ProjectASAP/ASAPQuery/issues/800): planner retention bound | merged: MILP output now bounds retention with CircularBuffer and spills evicted windows to disk | resolved |
+| [#856](https://github.com/ProjectASAP/ASAPQuery/issues/856): `--planner saved` for SQL, reading the tables' `sql` strings | merged | resolved |
 | Engine roll-ups for keyed aggregations ([#846](https://github.com/ProjectASAP/ASAPQuery/issues/846)) | Milind | the all plan's 52 rolled-up multi-grouping queries, if [#851](https://github.com/ProjectASAP/ASAPQuery/issues/851)/[#852](https://github.com/ProjectASAP/ASAPQuery/issues/852) don't cover them |
 
 Not blocking, reported on [#828](https://github.com/ProjectASAP/ASAPQuery/issues/828): `IncreaseAccumulator` treats an out-of-order
