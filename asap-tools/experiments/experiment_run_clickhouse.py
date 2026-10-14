@@ -88,8 +88,13 @@ Baseline + sketchdb:
   Sketchdb mode runs when experiment_params.experiment contains an entry
   with mode: sketchdb (mirrors the Prometheus experiment config structure).
   Remove that entry to run baseline only.
+
+A sketch-bench workload table (sketch_bench_workloads.py configs) is fed in
+real time instead, one paced feeder per metric table, when
+experiment_params.dataset.paced_feeder is set.
 """
 
+import atexit
 import json
 import os
 import time
@@ -109,6 +114,14 @@ from experiment_utils.services import (
     PrometheusClientService,
 )
 from experiment_utils.services.misc import ControllerService, DiscoveryBackend
+from experiment_utils.services.paced_feeder import (
+    SINK_CLICKHOUSE,
+    PacedFeederService,
+    aligned_interval_lcm,
+    check_paced_feeder_feed,
+    paced_feeder_min_duration_secs,
+    set_data_start,
+)
 from experiment_utils.services.query_engine import QueryEngineRustService
 from experiment_utils.services.remote_monitor_service import RemoteMonitorService
 
@@ -307,6 +320,73 @@ def _ingest_mode(experiment_modes: List[str]) -> str:
     return experiment_modes[0]
 
 
+def _check_clickhouse_paced_feeder(
+    feeder_config: dict,
+    experiment_modes: List[str],
+    client_config: dict,
+    minimum_experiment_running_time: int,
+) -> int:
+    """Fail before ClickHouse starts on a feeder config the run can't serve;
+    returns the seconds the feeders' start must align to."""
+    if constants.SKETCHDB_EXPERIMENT_NAME in experiment_modes:
+        raise ValueError(
+            "dataset.paced_feeder feeds ClickHouse only; sketchdb mode ingests "
+            "dataset.local_data_file (run ASAPQuery with experiment_run_e2e.py)"
+        )
+    check_paced_feeder_feed(
+        feeder_config,
+        paced_feeder_min_duration_secs(0, minimum_experiment_running_time),
+    )
+    return aligned_interval_lcm(client_config)
+
+
+def _start_clickhouse_feed(
+    provider,
+    node_offset: int,
+    data_loader: ClickHouseDataLoaderService,
+    feeder_service: PacedFeederService,
+    feeder_config: dict,
+    feeder_align_secs: int,
+    init_sql_file: str,
+    clickhouse_http_port: int,
+    experiment_mode: str,
+    experiment_output_dir: str,
+    local_experiment_dir: str,
+    experiment_root_output_dir: str,
+    local_experiment_root_dir: str,
+) -> None:
+    """Recreate the metric tables, start one feeder per metric, and point the
+    mode's aligned query groups at the feed's start."""
+    # Before any data arrives: views only see rows inserted after they exist.
+    data_loader.run_init_sql("custom", init_sql_file)
+    start_ms = feeder_service.start(
+        config=feeder_config,
+        sinks={
+            SINK_CLICKHOUSE: f"http://localhost:{clickhouse_http_port}/"
+            f"?database={CLICKHOUSE_DATABASE}"
+        },
+        experiment_output_dir=experiment_output_dir,
+        local_experiment_dir=local_experiment_dir,
+        align_secs=feeder_align_secs,
+    )
+    local_client_config = os.path.join(
+        local_experiment_root_dir,
+        "controller_client_configs",
+        f"{experiment_mode}.yaml",
+    )
+    with open(local_client_config) as f:
+        client_config = yaml.safe_load(f)
+    set_data_start(client_config, start_ms)
+    with open(local_client_config, "w") as f:
+        yaml.safe_dump(client_config, f, sort_keys=False)
+    sync.rsync_controller_client_configs(
+        provider,
+        experiment_root_output_dir,
+        local_experiment_root_dir,
+        node_offset=node_offset,
+    )
+
+
 def _run_clickhouse_ingest_with_monitor(
     provider,
     node_offset: int,
@@ -484,10 +564,10 @@ def main(cfg: DictConfig) -> None:
     ep = cfg.experiment_params
     dataset_cfg = ep.dataset
     dataset_name = str(dataset_cfg.name)
-    local_data_file = str(dataset_cfg.local_data_file)
-    table = dataset_cfg.table
+    # Either a feed of every metric table in real time or a bulk load of
+    # local_data_file into `table` before the modes run.
+    paced_feeder_config = dataset_cfg.get("paced_feeder")
     init_sql_file = dataset_cfg.init_sql_file
-    max_rows = int(dataset_cfg.max_rows)
 
     # --- experiment modes and server URLs from config (mirrors Prometheus structure) ---
     experiment_cfg = OmegaConf.to_container(ep.experiment, resolve=True)
@@ -513,11 +593,39 @@ def main(cfg: DictConfig) -> None:
         node_offset=node_offset,
     )
 
-    # --- rsync dataset file to node ---
-    remote_data_dir = os.path.join(experiment_root_output_dir, "data")
-    remote_data_file = sync.rsync_dataset_file(
-        provider, local_data_file, remote_data_dir, node_offset
-    )
+    paced_feeder_service = None
+    if paced_feeder_config is not None:
+        paced_feeder_config = OmegaConf.to_container(paced_feeder_config, resolve=True)
+        # The feeder runs from its own directory.
+        paced_feeder_config["workload_table"] = os.path.abspath(
+            paced_feeder_config["workload_table"]
+        )
+        # Every mode's client config has the same query timing.
+        with open(
+            os.path.join(
+                local_experiment_root_dir,
+                "controller_client_configs",
+                f"{experiment_modes[0]}.yaml",
+            )
+        ) as f:
+            paced_feeder_align_secs = _check_clickhouse_paced_feeder(
+                paced_feeder_config,
+                experiment_modes,
+                yaml.safe_load(f),
+                minimum_experiment_running_time,
+            )
+        # Next to ClickHouse, so the feed crosses no network.
+        paced_feeder_service = PacedFeederService(provider, [node_offset])
+        if not no_teardown:
+            # Otherwise a failed run leaves feeders inserting into the next
+            # run's tables.
+            atexit.register(paced_feeder_service.stop)
+    else:
+        # --- rsync dataset file to node ---
+        remote_data_dir = os.path.join(experiment_root_output_dir, "data")
+        remote_data_file = sync.rsync_dataset_file(
+            provider, str(dataset_cfg.local_data_file), remote_data_dir, node_offset
+        )
 
     # --- start ClickHouse (persists across all modes) ---
     clickhouse_service = ClickHouseService(
@@ -533,38 +641,40 @@ def main(cfg: DictConfig) -> None:
         image_tag=dataset_cfg.get("clickhouse_image_tag", "latest"),
     )
 
-    # --- load data once before the mode loop (DROP + reload), with ingest monitor ---
+    # --- bulk load once before the mode loop (DROP + reload), with ingest
+    # monitor; a paced feed instead starts in each mode ---
     data_loader = ClickHouseDataLoaderService(
         provider,
         num_nodes=num_nodes,
         node_offset=node_offset,
         clickhouse_http_port=clickhouse_http_port,
     )
-    ingest_mode = _ingest_mode(experiment_modes)
-    ingest_client_config = os.path.join(
-        experiment_root_output_dir,
-        "controller_client_configs",
-        f"{ingest_mode}.yaml",
-    )
-    ingest_output_dir = os.path.join(experiment_root_output_dir, ingest_mode)
-    local_ingest_dir = os.path.join(local_experiment_root_dir, ingest_mode)
     remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
-    _run_clickhouse_ingest_with_monitor(
-        provider=provider,
-        node_offset=node_offset,
-        remote_monitor_service=remote_monitor_service,
-        ingest_output_dir=ingest_output_dir,
-        local_ingest_dir=local_ingest_dir,
-        controller_client_config=ingest_client_config,
-        data_loader=data_loader,
-        dataset_name=dataset_name,
-        remote_data_file=remote_data_file,
-        table=table,
-        init_sql_file=init_sql_file,
-        max_rows=max_rows,
-        manual_remote_monitor=manual_remote_monitor,
-        monitor_interval_seconds=monitor_interval_seconds,
-    )
+    if paced_feeder_service is None:
+        ingest_mode = _ingest_mode(experiment_modes)
+        ingest_client_config = os.path.join(
+            experiment_root_output_dir,
+            "controller_client_configs",
+            f"{ingest_mode}.yaml",
+        )
+        ingest_output_dir = os.path.join(experiment_root_output_dir, ingest_mode)
+        local_ingest_dir = os.path.join(local_experiment_root_dir, ingest_mode)
+        _run_clickhouse_ingest_with_monitor(
+            provider=provider,
+            node_offset=node_offset,
+            remote_monitor_service=remote_monitor_service,
+            ingest_output_dir=ingest_output_dir,
+            local_ingest_dir=local_ingest_dir,
+            controller_client_config=ingest_client_config,
+            data_loader=data_loader,
+            dataset_name=dataset_name,
+            remote_data_file=remote_data_file,
+            table=dataset_cfg.table,
+            init_sql_file=init_sql_file,
+            max_rows=int(dataset_cfg.max_rows),
+            manual_remote_monitor=manual_remote_monitor,
+            monitor_interval_seconds=monitor_interval_seconds,
+        )
 
     # --- mode loop ---
     prometheus_client_service = PrometheusClientService(
@@ -741,6 +851,22 @@ def main(cfg: DictConfig) -> None:
 
         else:
             # --- baseline mode ---
+            if paced_feeder_service is not None:
+                _start_clickhouse_feed(
+                    provider,
+                    node_offset,
+                    data_loader,
+                    paced_feeder_service,
+                    paced_feeder_config,
+                    paced_feeder_align_secs,
+                    init_sql_file,
+                    clickhouse_http_port,
+                    experiment_mode,
+                    experiment_output_dir,
+                    local_experiment_dir,
+                    experiment_root_output_dir,
+                    local_experiment_root_dir,
+                )
             controller_client_config = os.path.join(
                 experiment_root_output_dir,
                 "controller_client_configs",
@@ -761,6 +887,9 @@ def main(cfg: DictConfig) -> None:
                 profile_prometheus_time=profile_prometheus_time,
                 monitor_interval_seconds=monitor_interval_seconds,
             )
+            # Before the next mode's init SQL drops the tables it inserts into.
+            if paced_feeder_service is not None and not no_teardown:
+                paced_feeder_service.stop()
 
             sync.rsync_experiment_data(
                 provider,

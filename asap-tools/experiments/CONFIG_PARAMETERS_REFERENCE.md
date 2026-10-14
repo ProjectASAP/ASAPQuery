@@ -499,6 +499,10 @@ table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
 - **Description**: Appended to every feeder command line
 - **Example**: `"--concurrency 32"`
 
+#### `experiment_params.dataset.paced_feeder` (dict, optional; `experiment_run_clickhouse.py`)
+- **Description**: The same keys as `exporters.exporter_list.paced_feeder`, for the ClickHouse runner. In place of the bulk load of `dataset.local_data_file`, each mode runs `dataset.init_sql_file`, then feeds every listed metric (records metrics too) from the ClickHouse node into the table named after it while its queries run. `sketchdb` mode is refused; feed ASAPQuery with `experiment_run_e2e.py`. `duration_secs` must cover the startup check plus the query groups' running time
+- **Example**: `{workload_table: /path/to/table.json, metrics: [data, data_total], seed: 42, duration_secs: 4000}`
+
 ### Query Group Configuration
 
 #### `experiment_params.query_groups` (list, required)
