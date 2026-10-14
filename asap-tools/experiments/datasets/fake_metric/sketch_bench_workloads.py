@@ -433,6 +433,8 @@ PER_SERIES_STATS = ("last", "counter")
 def view_stat(q: Query) -> str:
     if q.series_fn is None:
         return q.agg
+    if q.series_fn == "per_series_quantile":
+        return "quantile"
     return "last" if q.series_fn == "last" else "counter"
 
 
@@ -462,7 +464,11 @@ def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
         unknown = {p for p in parent.values() if p} - set(parent)
         if unknown:
             raise ValueError(f"{table!r}: child_of names unknown labels {unknown}")
-        keep = set(parent) if stat in PER_SERIES_STATS else set()
+        keep = (
+            set(parent)
+            if stat in PER_SERIES_STATS or any(q.series_fn == "per_series_quantile" for q in qs)
+            else set()
+        )
         for name in (n for q in qs for n in q.grouping):
             while name and name not in keep:
                 keep.add(name)
