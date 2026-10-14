@@ -135,11 +135,23 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
     feeder = dataset.get("paced_feeder")
     local_data_file = dataset.get("local_data_file")
     if feeder is not None:
-        # Fed live instead of bulk-loaded.
-        if not os.path.exists(feeder.workload_table):
+        # Fed live instead of bulk-loaded: the feeder generates sketch-bench
+        # tables, which only the init SQL creates.
+        if dataset_name != "custom":
             raise ValueError(
-                f"dataset.paced_feeder.workload_table={feeder.workload_table!r} "
+                f"dataset.paced_feeder needs dataset.name='custom', got {dataset_name!r}"
+            )
+        workload_table = feeder.get("workload_table")
+        if not workload_table or not os.path.exists(workload_table):
+            raise ValueError(
+                f"dataset.paced_feeder.workload_table={workload_table!r} "
                 "does not exist."
+            )
+        init_sql_file = dataset.get("init_sql_file")
+        if not init_sql_file or not os.path.exists(init_sql_file):
+            raise ValueError(
+                f"dataset.init_sql_file={init_sql_file!r} does not exist; with "
+                "dataset.paced_feeder it creates the metric tables."
             )
     elif not local_data_file or local_data_file == "???":
         raise ValueError(

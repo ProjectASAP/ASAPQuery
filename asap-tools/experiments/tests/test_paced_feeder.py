@@ -540,6 +540,47 @@ class StartCommandProvider:
         return subprocess.CompletedProcess(cmd, 1)
 
 
+class PgrepProvider:
+    """pgrep finds feeders on a node for its first `polls[node]` checks."""
+
+    def __init__(self, polls):
+        self.polls = dict(polls)
+        self.clock = 0.0
+
+    def get_home_dir(self):
+        return "/home/u"
+
+    def execute_command(self, node_idx, cmd, **kwargs):
+        assert cmd.startswith("pgrep -f "), cmd
+        running = self.polls.get(node_idx, 0) > 0
+        self.polls[node_idx] = self.polls.get(node_idx, 0) - 1
+        return subprocess.CompletedProcess(cmd, 0 if running else 1)
+
+
+class WaitForExitTest(unittest.TestCase):
+    def wait(self, polls, timeout_secs):
+        provider = PgrepProvider(polls)
+        service = PacedFeederService(provider, [1, 2])
+
+        def sleep(secs):
+            provider.clock += secs
+
+        with mock.patch(
+            "experiment_utils.services.paced_feeder.time.sleep", side_effect=sleep
+        ), mock.patch(
+            "experiment_utils.services.paced_feeder.time.time",
+            lambda: provider.clock,
+        ):
+            return service.wait_for_exit(timeout_secs)
+
+    def test_returns_once_no_node_runs_a_feeder(self):
+        # Node 2's feeder exits after two polls.
+        self.assertTrue(self.wait({2: 2}, timeout_secs=60))
+
+    def test_times_out_while_a_feeder_runs(self):
+        self.assertFalse(self.wait({1: 100}, timeout_secs=10))
+
+
 class PrometheusRemoteWriteReceiverTest(unittest.TestCase):
     def bare_metal_command(self, receiver):
         provider = StartCommandProvider()

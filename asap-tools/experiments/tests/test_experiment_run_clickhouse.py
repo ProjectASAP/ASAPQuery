@@ -10,13 +10,18 @@ import yaml
 from omegaconf import OmegaConf
 
 from experiment_run_clickhouse import (
+    PACED_FEEDER_STOP_TIMEOUT_SECS,
+    QUERY_CLIENT_STARTUP_SECS,
     _check_clickhouse_paced_feeder,
     _deploy_prebuilt_clickhouse_controller_output,
     _ingest_mode,
     _prepare_clickhouse_controller_output,
     _start_clickhouse_controller,
+    _finish_clickhouse_feed,
     _start_clickhouse_feed,
 )
+from experiment_utils.config import validate_experiment_config
+from experiment_utils.services.paced_feeder import PACED_FEEDER_STARTUP_CHECK_SECS
 from test_paced_feeder import feeder_config, write_table
 
 
@@ -142,53 +147,153 @@ class ClickHousePacedFeederCheckTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ends before the queries"):
             self.check(["baseline"], duration_secs=300)
 
+    def test_feed_must_outlast_the_query_client_startup(self):
+        # The client starts after remote_monitor and its container, not right
+        # after the feeders' startup check.
+        startup_check_only = 300 + PACED_FEEDER_STARTUP_CHECK_SECS
+        with self.assertRaisesRegex(ValueError, "ends before the queries"):
+            self.check(["baseline"], duration_secs=startup_check_only)
+        self.check(
+            ["baseline"],
+            duration_secs=startup_check_only + QUERY_CLIENT_STARTUP_SECS,
+        )
+
 
 class StartClickHouseFeedTest(unittest.TestCase):
-    def test_tables_are_created_before_the_feed_and_queries_follow_it(self):
-        calls = Mock()
+    def start(self, calls, exited=True):
         calls.feeder.start.return_value = 1700000060000
+        calls.feeder.wait_for_exit.return_value = exited
         with tempfile.TemporaryDirectory() as root, patch(
             "experiment_run_clickhouse.sync.rsync_controller_client_configs"
-        ) as rsync:
+        ) as self.rsync:
             config_dir = os.path.join(root, "controller_client_configs")
             os.makedirs(config_dir)
             config_path = os.path.join(config_dir, "baseline.yaml")
             with open(config_path, "w") as f:
                 yaml.safe_dump(aligned_client_config(60), f)
 
-            _start_clickhouse_feed(
+            start_ms = _start_clickhouse_feed(
                 provider=Mock(),
                 node_offset=0,
                 data_loader=calls.loader,
                 feeder_service=calls.feeder,
                 feeder_config={"metrics": ["data"]},
                 feeder_align_secs=60,
+                dataset_name="custom",
                 init_sql_file="init.sql",
                 clickhouse_http_port=8123,
                 experiment_mode="baseline",
-                experiment_output_dir="/exp/baseline",
-                local_experiment_dir=os.path.join(root, "baseline"),
                 experiment_root_output_dir="/exp",
                 local_experiment_root_dir=root,
             )
             with open(config_path) as f:
-                client_config = yaml.safe_load(f)
+                self.client_config = yaml.safe_load(f)
+        return start_ms
 
-        # A view sees only rows inserted after it exists.
+    def test_tables_are_created_before_the_feed_and_queries_follow_it(self):
+        calls = Mock()
+        self.assertEqual(self.start(calls), 1700000060000)
+        # Old feeders gone before the tables are recreated; a view sees only
+        # rows inserted after it exists.
         self.assertEqual(
-            [c[0] for c in calls.mock_calls], ["loader.run_init_sql", "feeder.start"]
+            [c[0] for c in calls.mock_calls],
+            [
+                "feeder.stop",
+                "feeder.wait_for_exit",
+                "loader.run_init_sql",
+                "feeder.start",
+            ],
         )
         # The feed starts on a boundary of the aligned intervals' LCM.
-        self.assertEqual(calls.feeder.start.call_args.kwargs["align_secs"], 60)
+        start_kwargs = calls.feeder.start.call_args.kwargs
+        self.assertEqual(start_kwargs["align_secs"], 60)
         self.assertEqual(
-            calls.feeder.start.call_args.kwargs["sinks"],
+            start_kwargs["sinks"],
             {"clickhouse": "http://localhost:8123/?database=default"},
         )
+        self.assertEqual(start_kwargs["experiment_output_dir"], "/exp/baseline")
         self.assertEqual(
-            client_config["query_groups"][0]["client_options"]["data_start_time"],
+            self.client_config["query_groups"][0]["client_options"]["data_start_time"],
             1700000060,
         )
-        rsync.assert_called_once()
+        self.rsync.assert_called_once()
+
+    def test_feeders_that_outlive_pkill_stop_the_run(self):
+        # With no_teardown, or an INSERT in flight, they would write into the
+        # next mode's recreated tables.
+        calls = Mock()
+        with self.assertRaisesRegex(RuntimeError, "still running"):
+            self.start(calls, exited=False)
+        calls.loader.run_init_sql.assert_not_called()
+        calls.feeder.start.assert_not_called()
+
+
+class FinishClickHouseFeedTest(unittest.TestCase):
+    def finish(self, exited):
+        feeder = Mock()
+        feeder.wait_for_exit.return_value = exited
+        with patch("experiment_run_clickhouse.time.time", return_value=1700000600):
+            _finish_clickhouse_feed(feeder, 1700000000000, duration_secs=720)
+        return feeder
+
+    def test_waits_out_the_feed_so_feeders_write_their_stats(self):
+        # A killed feeder writes no stats; 120 s of feed remain.
+        feeder = self.finish(exited=True)
+        feeder.wait_for_exit.assert_called_once_with(
+            120 + PACED_FEEDER_STOP_TIMEOUT_SECS
+        )
+        feeder.stop.assert_not_called()
+
+    def test_stops_feeders_that_overstay(self):
+        self.finish(exited=False).stop.assert_called_once()
+
+
+class FedClickHouseConfigValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.table = write_table(self.tmp.name)
+        self.init_sql = os.path.join(self.tmp.name, "init.sql")
+        self.sql = os.path.join(self.tmp.name, "q.sql")
+        for path in (self.init_sql, self.sql):
+            with open(path, "w") as f:
+                f.write("SELECT 1;\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def validate(self, feeder=None, **dataset):
+        validate_experiment_config(
+            OmegaConf.create(
+                {
+                    "experiment": [{"mode": "baseline", "server": "clickhouse"}],
+                    "servers": [{"name": "clickhouse", "url": "http://localhost:8123"}],
+                    "dataset": {
+                        "name": "custom",
+                        "init_sql_file": self.init_sql,
+                        "paced_feeder": feeder_config(self.table, **(feeder or {})),
+                        **dataset,
+                    },
+                    "query_groups": [{"sql_file": {"baseline": self.sql}}],
+                }
+            )
+        )
+
+    def test_fed_config_needs_no_data_file(self):
+        self.validate()
+
+    def test_missing_init_sql_refused(self):
+        # It is the only thing that creates the metric tables.
+        with self.assertRaisesRegex(ValueError, "init_sql_file"):
+            self.validate(init_sql_file=None)
+
+    def test_missing_workload_table_refused(self):
+        with self.assertRaisesRegex(ValueError, "workload_table"):
+            self.validate(feeder={"workload_table": None})
+
+    def test_builtin_dataset_refused(self):
+        # The feeder generates sketch-bench tables, not clickbench's or h2o's.
+        with self.assertRaisesRegex(ValueError, "custom"):
+            self.validate(name="clickbench")
 
 
 if __name__ == "__main__":

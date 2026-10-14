@@ -39,6 +39,7 @@ PACED_FEEDER_LAUNCH_SECS_PER_NODE = 10
 # A feeder stops after its first tick if every request fails (e.g. a wrong
 # URL), so check the processes one tick after the shared start.
 PACED_FEEDER_STARTUP_CHECK_SECS = 2
+PACED_FEEDER_EXIT_POLL_SECS = 5
 # Feeders wait for the next multiple of the aligned intervals' LCM before
 # sending; refuse intervals that would make that wait longer than this.
 PACED_FEEDER_MAX_ALIGN_SECS = 600
@@ -362,6 +363,29 @@ class PacedFeederService(BaseService):
                     f"node {node_idx}; see the .out files in {output_dir}"
                 )
         return start_ms
+
+    def wait_for_exit(self, timeout_secs: float) -> bool:
+        """Wait until no feeder runs on the target nodes; False on timeout."""
+        deadline = time.time() + timeout_secs
+        while True:
+            running = [
+                node_idx
+                for node_idx in self.target_nodes
+                if self.provider.execute_command(
+                    node_idx=node_idx,
+                    cmd=f"pgrep -f '{PACED_FEEDER_PROCESS_PATTERN}'",
+                    cmd_dir=None,
+                    nohup=False,
+                    popen=False,
+                    ignore_errors=True,
+                ).returncode
+                == 0
+            ]
+            if not running:
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(PACED_FEEDER_EXIT_POLL_SECS)
 
     def stop(self, **kwargs) -> None:
         self.provider.execute_command_parallel(
