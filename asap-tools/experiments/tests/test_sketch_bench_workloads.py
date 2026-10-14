@@ -30,6 +30,8 @@ sys.path.insert(
 )
 
 import sketch_bench_workloads as sbw  # noqa: E402
+from experiment_utils.config import validate_experiment_config  # noqa: E402
+from omegaconf import OmegaConf  # noqa: E402
 
 SERIES_LABELS = [{"name": "job"}, {"name": "label_0", "child_of": "job"}]
 HTTP_LABELS = ["region", "service", "endpoint", "status"]
@@ -300,7 +302,7 @@ class ConvertTest(unittest.TestCase):
             try:
                 # 30 s < offset + the 15m windows: early windows predate data.
                 with self.assertWarns(UserWarning):
-                    out_paths = sbw.convert(table, "data.json", 30, 600)
+                    out_paths = sbw.convert(table, 42, 30, 600)
                 cfgs = {}
                 for path in out_paths:
                     with open(path) as f:
@@ -310,6 +312,19 @@ class ConvertTest(unittest.TestCase):
                         cfgs[arm["mode"]] = (cfg, f.read())
                 self.assertEqual(sorted(cfgs), ["baseline", "baseline_mv"])
                 cfg, init_mv = cfgs["baseline_mv"]
+                # Every metric table gets a feed, not just the first.
+                self.assertEqual(
+                    cfg["dataset"]["paced_feeder"],
+                    {
+                        "workload_table": os.path.abspath(table),
+                        "metrics": list(METRICS),
+                        "seed": 42,
+                        "duration_secs": 30 + 600 + sbw.FEEDER_SLACK_SECS,
+                    },
+                )
+                self.assertNotIn("local_data_file", cfg["dataset"])
+                # The runner's first check: a fed config has no data file.
+                validate_experiment_config(OmegaConf.create(cfg))
                 _, init = cfgs["baseline"]
                 groups = {g["name"]: g for g in cfg["query_groups"]}
                 self.assertEqual(sorted(groups), ["interval_1s", "interval_60s"])
@@ -392,12 +407,12 @@ class ConvertTest(unittest.TestCase):
                     }
                     json.dump({"workloads": [{"e2e": e2e}]}, f)
                 with self.assertWarns(UserWarning):
-                    sbw.convert(table, "data.json", 30, 600)
+                    sbw.convert(table, 42, 30, 600)
                 with open(table, "w") as f:
                     e2e = {"metrics": METRICS, "queries": [instant, servable]}
                     json.dump({"workloads": [{"e2e": e2e}]}, f)
                 with contextlib.redirect_stderr(io.StringIO()) as err:
-                    (path,) = sbw.convert(table, "data.json", 30, 600)
+                    (path,) = sbw.convert(table, 42, 30, 600)
                 self.assertIn("no baseline_mv arm", err.getvalue())
                 self.assertIn("sum by (job) (data)", err.getvalue())
                 with open(path) as f:
@@ -438,7 +453,7 @@ class ConvertTest(unittest.TestCase):
                     with open(table, "w") as f:
                         e2e = {"metrics": METRICS, "queries": queries}
                         json.dump({"workloads": [{"e2e": e2e}]}, f)
-                    return sbw.convert(table, "data.json", 310, 600)
+                    return sbw.convert(table, 42, 310, 600)
 
                 self.assertEqual(len(convert([good])), 2)
                 before = snapshot(sbw.OUT_CONFIG_DIR)
@@ -459,16 +474,16 @@ class ConvertTest(unittest.TestCase):
                 with open(table, "w") as f:
                     json.dump({"workloads": [{"e2e": e2e}, {"e2e": e2e}]}, f)
                 with self.assertRaises(ValueError):
-                    sbw.convert(table, "data.json", 310, 600)
+                    sbw.convert(table, 42, 310, 600)
                 with open(table, "w") as f:
                     json.dump({"workloads": [{"e2e": e2e}]}, f)
                 # Interval 60 s, so 30 s would yield 0 repetitions.
                 with self.assertRaises(ValueError):
-                    sbw.convert(table, "data.json", 310, 30)
+                    sbw.convert(table, 42, 310, 30)
                 # Delay covers offset + window: no warning.
                 with warnings.catch_warnings():
                     warnings.simplefilter("error")
-                    sbw.convert(table, "data.json", 310, 600)
+                    sbw.convert(table, 42, 310, 600)
             finally:
                 os.chdir(cwd)
 

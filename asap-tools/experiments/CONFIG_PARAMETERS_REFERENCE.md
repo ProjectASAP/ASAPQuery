@@ -460,7 +460,7 @@ These parameters come from the `experiment_type` config group and are prefixed w
 #### Paced Feeder Parameters
 
 `paced_feeder` runs `asap-tools/data-sources/paced-feeder` (built by
-`installation/common/setup_dependencies.sh`) bare-metal on the worker nodes,
+its `installation/install.sh`) bare-metal on the worker nodes,
 one process per (sink, metric). It pushes over remote write instead of being
 scraped: in `sketchdb` mode to the query engine's ingest
 (`streaming.remote_write`, which must have `parallelism: 1`), plus Prometheus
@@ -498,6 +498,10 @@ table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
 #### `experiment_params.exporters.exporter_list.paced_feeder.extra_flags` (string, optional)
 - **Description**: Appended to every feeder command line
 - **Example**: `"--concurrency 32"`
+
+#### `experiment_params.dataset.paced_feeder` (dict, optional; `experiment_run_clickhouse.py`)
+- **Description**: The same keys as `exporters.exporter_list.paced_feeder`, for the ClickHouse runner. In place of the bulk load of `dataset.local_data_file`, each mode runs `dataset.init_sql_file`, then feeds every listed metric (records metrics too) from the ClickHouse node into the table named after it while its queries run. `sketchdb` mode is refused: its engine ingests `dataset.local_data_file`, and feeding it live is not supported yet (#874). `duration_secs` must cover the startup check, the query client's startup (30 s) and the query groups' running time; after the queries each mode waits for the feeders to finish, so they write their `--stats-out`. Requires `dataset.name: custom` and `dataset.init_sql_file`
+- **Example**: `{workload_table: /path/to/table.json, metrics: [data, data_total], seed: 42, duration_secs: 4000}`
 
 ### Query Group Configuration
 

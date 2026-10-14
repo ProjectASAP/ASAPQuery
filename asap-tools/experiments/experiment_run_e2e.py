@@ -35,6 +35,7 @@ from experiment_utils.services import (
     paced_feeder_sinks,
     set_data_start,
 )
+from experiment_utils.services.fake_exporters import get_exporter_target_nodes
 from experiment_utils.services.misc import DiscoveryBackend
 
 CONTROLLER_LOCAL_OUTPUT_DIR = None
@@ -224,7 +225,9 @@ def main(cfg: DictConfig):
         paced_feeder_align_secs = aligned_interval_lcm(
             OmegaConf.to_container(cfg.experiment_params, resolve=True)
         )
-        paced_feeder_service = PacedFeederService(provider, args)
+        paced_feeder_service = PacedFeederService(
+            provider, get_exporter_target_nodes(args)
+        )
         if not args.no_teardown:
             # Otherwise a failed run leaves feeders pushing into the next
             # run's sinks.

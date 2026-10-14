@@ -316,12 +316,7 @@ class ClickHouseDataLoaderService(BaseService):
             # resetting dependent materialized-view tables.
             self._exec_sql(f"TRUNCATE TABLE IF EXISTS {table}", url)
             print(f"Running init SQL from {init_sql_file!r}...")
-            remote_ddl = f"/tmp/{dataset_name}_init_{os.getpid()}.sql"
-            self._rsync_to_remote(init_sql_file, remote_ddl)
-            try:
-                self._exec_sql_file(remote_ddl, url)
-            finally:
-                self._remote_rm(remote_ddl)
+            self._exec_local_sql_file(dataset_name, init_sql_file, url)
         elif dataset_name in self.BUILTIN_DDL_FILES:
             print(f"Dropping table {table!r}...")
             self._exec_sql(f"DROP TABLE IF EXISTS {table}", url)
@@ -329,12 +324,7 @@ class ClickHouseDataLoaderService(BaseService):
                 self._ASSETS_DIR, self.BUILTIN_DDL_FILES[dataset_name]
             )
             print(f"Initializing schema for {dataset_name!r} from {local_ddl!r}...")
-            remote_ddl = f"/tmp/{dataset_name}_init_{os.getpid()}.sql"
-            self._rsync_to_remote(local_ddl, remote_ddl)
-            try:
-                self._exec_sql_file(remote_ddl, url)
-            finally:
-                self._remote_rm(remote_ddl)
+            self._exec_local_sql_file(dataset_name, local_ddl, url)
         elif dataset_name == "custom":
             print(f"Dropping table {table!r}...")
             self._exec_sql(f"DROP TABLE IF EXISTS {table}", url)
@@ -358,8 +348,24 @@ class ClickHouseDataLoaderService(BaseService):
         count = self._check_row_count(table, url)
         print(f"Loaded {count:,} rows into ClickHouse ({table!r})")
 
+    def run_init_sql(self, dataset_name: str, init_sql_file: str) -> None:
+        """Run a local DDL SQL file on the node, loading no data."""
+        url = f"http://localhost:{self.clickhouse_http_port}/"
+        self._ensure_clickhouse_http_ready()
+        print(f"Running init SQL from {init_sql_file!r}...")
+        self._exec_local_sql_file(dataset_name, init_sql_file, url)
+
     def stop(self, **kwargs) -> None:
         pass
+
+    def _exec_local_sql_file(self, dataset_name: str, local_file: str, url: str):
+        """Copy a local SQL file to the node and execute it there."""
+        remote_ddl = f"/tmp/{dataset_name}_init_{os.getpid()}.sql"
+        self._rsync_to_remote(local_file, remote_ddl)
+        try:
+            self._exec_sql_file(remote_ddl, url)
+        finally:
+            self._remote_rm(remote_ddl)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
