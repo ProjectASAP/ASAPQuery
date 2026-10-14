@@ -20,6 +20,7 @@ use query_engine_rust::precompute_engine::json_ingest::{
     JsonFileIngestConfig, JsonFileIngestSource, TimestampUnit,
 };
 use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
+use query_engine_rust::stores::simple_map_store::spill::SpillWriter;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
 use query_engine_rust::{
@@ -106,11 +107,16 @@ async fn main() -> Result<()> {
 
     let cleanup_policy = inference_config.cleanup_policy;
     info!("Using cleanup policy: {:?}", cleanup_policy);
-    let store = Arc::new(SimpleMapStore::new_with_strategy(
+    let mut store = SimpleMapStore::new_with_strategy(
         streaming_config.clone(),
         cleanup_policy,
         config.store.lock_strategy,
-    ));
+    );
+    if let Some(dir) = &config.store.spill_dir {
+        info!("Spilling evicted windows to {}", dir);
+        store = store.with_spill(Arc::new(SpillWriter::new(dir)?));
+    }
+    let store = Arc::new(store);
 
     let engine = Arc::new(SimpleEngine::new(
         store.clone(),

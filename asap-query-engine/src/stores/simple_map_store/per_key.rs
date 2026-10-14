@@ -2,9 +2,10 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
-    MetricID, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
+    resolve_exact_windows, sort_buckets_chronologically, EpochID, EvictedEntry, InternTable,
+    MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
 };
+use crate::stores::simple_map_store::spill::SpillWriter;
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
 use std::collections::{BTreeMap, HashMap};
@@ -68,10 +69,11 @@ impl StoreKeyData {
     ///
     /// Matches legacy per-window eviction semantics: only the exact number of windows
     /// needed to reach the retention limit are removed, which may be fewer than a full epoch.
-    fn maybe_rotate_epoch(&mut self) {
+    /// Returns the evicted entries.
+    fn maybe_rotate_epoch(&mut self) -> Vec<EvictedEntry> {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
-            _ => return, // unlimited
+            _ => return Vec::new(), // unlimited
         };
         let retention_limit = capacity * self.max_epochs;
 
@@ -93,9 +95,10 @@ impl StoreKeyData {
                 .sum::<usize>();
 
         if total <= retention_limit {
-            return;
+            return Vec::new();
         }
         let mut over = total - retention_limit;
+        let mut evicted = Vec::new();
 
         while over > 0 {
             let oldest_id = match self.sealed_epochs.keys().next().copied() {
@@ -114,18 +117,27 @@ impl StoreKeyData {
                 }
             }
             if n_evict == oldest_windows.len() {
-                self.sealed_epochs.remove(&oldest_id);
+                evicted.extend(self.sealed_epochs.remove(&oldest_id).unwrap().entries);
             } else {
-                self.sealed_epochs
-                    .get_mut(&oldest_id)
-                    .unwrap()
-                    .remove_windows(&to_remove);
+                evicted.extend(
+                    self.sealed_epochs
+                        .get_mut(&oldest_id)
+                        .unwrap()
+                        .remove_windows(&to_remove),
+                );
             }
         }
+        evicted
     }
 
-    /// Apply ReadBased cleanup across current and sealed epochs.
-    fn cleanup_read_based(&mut self, metric: &str, aggregation_id: u64, threshold: u64) {
+    /// Apply ReadBased cleanup across current and sealed epochs, returning the evicted
+    /// entries.
+    fn cleanup_read_based(
+        &mut self,
+        metric: &str,
+        aggregation_id: u64,
+        threshold: u64,
+    ) -> Vec<EvictedEntry> {
         let read_counts = self.read_counts.get_mut().unwrap();
 
         let windows_to_remove: Vec<TimestampRange> = read_counts
@@ -135,7 +147,7 @@ impl StoreKeyData {
             .collect();
 
         if windows_to_remove.is_empty() {
-            return;
+            return Vec::new();
         }
 
         for window in &windows_to_remove {
@@ -147,13 +159,14 @@ impl StoreKeyData {
         }
 
         // Remove from current epoch.
-        self.current_epoch.remove_windows(&windows_to_remove);
+        let mut evicted = self.current_epoch.remove_windows(&windows_to_remove);
 
         // Remove from sealed epochs; drop any that become empty.
         self.sealed_epochs.retain(|_, epoch| {
-            epoch.remove_windows(&windows_to_remove);
+            evicted.extend(epoch.remove_windows(&windows_to_remove));
             !epoch.is_empty()
         });
+        evicted
     }
 }
 
@@ -176,6 +189,9 @@ pub struct SimpleMapStorePerKey {
 
     // Policy for cleaning up old aggregates
     cleanup_policy: CleanupPolicy,
+
+    // Where evicted windows are archived; None drops them.
+    pub(super) spill: Option<Arc<SpillWriter>>,
 }
 
 impl SimpleMapStorePerKey {
@@ -187,6 +203,13 @@ impl SimpleMapStorePerKey {
             items_inserted: DashMap::new(),
             streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
+            spill: None,
+        }
+    }
+
+    fn spill(&self, aggregation_id: u64, intern: &InternTable, evicted: &[EvictedEntry]) {
+        if let Some(spill) = &self.spill {
+            spill.spill(aggregation_id, intern, evicted);
         }
     }
 
@@ -251,21 +274,22 @@ impl SimpleMapStorePerKey {
         aggregation_id: u64,
         num_aggregates_to_retain: Option<u64>,
         read_count_threshold: Option<u64>,
-    ) {
+    ) -> Vec<EvictedEntry> {
         match self.cleanup_policy {
             CleanupPolicy::CircularBuffer => {
                 // configure_epochs was already called before insert;
                 // rotation is handled by maybe_rotate_epoch after each insert batch.
                 // Nothing additional needed here.
                 let _ = (num_aggregates_to_retain, metric, aggregation_id);
+                Vec::new()
             }
-            CleanupPolicy::ReadBased => {
-                if let Some(threshold) = read_count_threshold {
-                    data.cleanup_read_based(metric, aggregation_id, threshold);
-                }
-            }
+            CleanupPolicy::ReadBased => match read_count_threshold {
+                Some(threshold) => data.cleanup_read_based(metric, aggregation_id, threshold),
+                None => Vec::new(),
+            },
             CleanupPolicy::NoCleanup => {
                 // Do nothing - no cleanup
+                Vec::new()
             }
         }
     }
@@ -370,6 +394,7 @@ impl SimpleMapStorePerKey {
             data.configure_epochs(aggregation_config.num_aggregates_to_retain);
         }
 
+        let mut evicted = Vec::new();
         for (output, precompute) in items {
             // Intern the label key (Optimization 1)
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
@@ -383,20 +408,21 @@ impl SimpleMapStorePerKey {
             if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator
                 && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer)
             {
-                data.maybe_rotate_epoch();
+                evicted.extend(data.maybe_rotate_epoch());
             }
         }
 
         // Apply retention policy if configured (but exclude DeltaSetAggregator)
         if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
-            self.cleanup_old_aggregates(
+            evicted.extend(self.cleanup_old_aggregates(
                 &mut data,
                 metric,
                 aggregation_id,
                 aggregation_config.num_aggregates_to_retain,
                 aggregation_config.read_count_threshold,
-            );
+            ));
         }
+        self.spill(aggregation_id, &data.intern, &evicted);
 
         #[cfg(feature = "lock_profiling")]
         {

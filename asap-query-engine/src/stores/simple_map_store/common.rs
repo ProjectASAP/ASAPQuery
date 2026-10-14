@@ -12,6 +12,8 @@ pub type EpochID = u64;
 /// exactly `num_aggregates_to_retain` windows, the count the planner sizes.
 pub const MAX_EPOCHS: usize = 1;
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
+/// An entry removed from an epoch by cleanup.
+pub type EvictedEntry = (TimestampRange, MetricID, Arc<dyn AggregateCore>);
 
 /// Sorts one key's buckets into chronological (ascending start) order.
 ///
@@ -290,17 +292,20 @@ impl MutableEpoch {
         )
     }
 
-    /// Remove specific windows (ReadBased cleanup).
+    /// Remove specific windows (ReadBased cleanup), returning the removed entries.
     /// Drains all three columns in lockstep — moves Arcs without cloning.
-    pub fn remove_windows(&mut self, windows: &[TimestampRange]) {
+    pub fn remove_windows(&mut self, windows: &[TimestampRange]) -> Vec<EvictedEntry> {
         let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
 
         let old_windows = std::mem::take(&mut self.windows_col);
         let old_metrics = std::mem::take(&mut self.metric_ids_col);
         let old_aggs = std::mem::take(&mut self.aggregates_col);
 
+        let mut removed = Vec::new();
         for ((tr, mid), agg) in old_windows.into_iter().zip(old_metrics).zip(old_aggs) {
-            if !window_set.contains(&tr) {
+            if window_set.contains(&tr) {
+                removed.push((tr, mid, agg));
+            } else {
                 self.windows_col.push(tr);
                 self.metric_ids_col.push(mid);
                 self.aggregates_col.push(agg);
@@ -318,6 +323,7 @@ impl MutableEpoch {
         // Recompute bounds (cleanup is rare; linear scan is fine).
         self.min_start = self.windows_col.iter().map(|tr| tr.0).min();
         self.max_end = self.windows_col.iter().map(|tr| tr.1).max();
+        removed
     }
 }
 
@@ -397,11 +403,14 @@ impl SealedEpoch {
         }
     }
 
-    /// Remove specific windows (ReadBased / CircularBuffer cleanup).  Rebuilds Vec in one pass.
-    /// Also updates `distinct_window_count`.
-    pub fn remove_windows(&mut self, windows: &[TimestampRange]) {
+    /// Remove specific windows (ReadBased / CircularBuffer cleanup), returning the removed
+    /// entries. Rebuilds Vec in one pass. Also updates `distinct_window_count`.
+    pub fn remove_windows(&mut self, windows: &[TimestampRange]) -> Vec<EvictedEntry> {
         let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
-        self.entries.retain(|(tr, _, _)| !window_set.contains(tr));
+        let (removed, kept) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|(tr, _, _)| window_set.contains(tr));
+        self.entries = kept;
         self.min_start = self.entries.iter().map(|(tr, _, _)| tr.0).min();
         self.max_end = self.entries.iter().map(|(tr, _, _)| tr.1).max();
         // Recount distinct windows (entries remain sorted; dedup in one pass).
@@ -414,6 +423,7 @@ impl SealedEpoch {
             }
         }
         self.distinct_window_count = count;
+        removed
     }
 
     /// Deduplicated windows (entries sorted, so consecutive dupes are adjacent).

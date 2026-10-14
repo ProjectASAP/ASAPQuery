@@ -2,9 +2,10 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
-    MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
+    resolve_exact_windows, sort_buckets_chronologically, EpochID, EvictedEntry, InternTable,
+    MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
 };
+use crate::stores::simple_map_store::spill::SpillWriter;
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -58,8 +59,8 @@ impl PerKeyState {
 
     /// Seal the current epoch when full, then evict the minimum number of oldest windows
     /// to keep total distinct windows ≤ `epoch_capacity * max_epochs`.
-    /// Returns the evicted windows so the caller can clean up `read_counts`.
-    fn maybe_rotate_epoch(&mut self) -> Vec<TimestampRange> {
+    /// Returns the evicted entries, oldest window first.
+    fn maybe_rotate_epoch(&mut self) -> Vec<EvictedEntry> {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
             _ => return Vec::new(), // unlimited
@@ -97,15 +98,16 @@ impl PerKeyState {
             let n_evict = over.min(oldest_windows.len());
             let to_remove = oldest_windows[..n_evict].to_vec();
             over -= n_evict;
-            evicted.extend_from_slice(&to_remove);
 
             if n_evict == oldest_windows.len() {
-                self.sealed_epochs.remove(&oldest_id);
+                evicted.extend(self.sealed_epochs.remove(&oldest_id).unwrap().entries);
             } else {
-                self.sealed_epochs
-                    .get_mut(&oldest_id)
-                    .unwrap()
-                    .remove_windows(&to_remove);
+                evicted.extend(
+                    self.sealed_epochs
+                        .get_mut(&oldest_id)
+                        .unwrap()
+                        .remove_windows(&to_remove),
+                );
             }
         }
         evicted
@@ -142,6 +144,9 @@ pub struct SimpleMapStoreGlobal {
 
     // Policy for cleaning up old aggregates
     cleanup_policy: CleanupPolicy,
+
+    // Where evicted windows are archived; None drops them.
+    pub(super) spill: Option<Arc<SpillWriter>>,
 }
 
 impl SimpleMapStoreGlobal {
@@ -156,6 +161,13 @@ impl SimpleMapStoreGlobal {
             }),
             streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
+            spill: None,
+        }
+    }
+
+    fn spill(&self, aggregation_id: u64, intern: &InternTable, evicted: &[EvictedEntry]) {
+        if let Some(spill) = &self.spill {
+            spill.spill(aggregation_id, intern, evicted);
         }
     }
 
@@ -332,6 +344,7 @@ impl Store for SimpleMapStoreGlobal {
                 }
             } // per_key borrow ends here
 
+            let mut evicted = Vec::new();
             for (output, precompute) in items {
                 // Get per_key fresh each iteration so the borrow of data.stores ends before
                 // the cleanup branches borrow data.read_counts (different field — NLL splits
@@ -353,11 +366,15 @@ impl Store for SimpleMapStoreGlobal {
                 if !cfg.is_delta {
                     match self.cleanup_policy {
                         CleanupPolicy::CircularBuffer => {
-                            let dropped_windows = data
+                            let dropped = data
                                 .stores
                                 .get_mut(&store_key)
                                 .unwrap()
                                 .maybe_rotate_epoch();
+                            let mut dropped_windows: Vec<TimestampRange> =
+                                dropped.iter().map(|(window, _, _)| *window).collect();
+                            dropped_windows.dedup();
+                            evicted.extend(dropped);
                             if !dropped_windows.is_empty() {
                                 if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
                                     for window in &dropped_windows {
@@ -391,9 +408,11 @@ impl Store for SimpleMapStoreGlobal {
                                     }
 
                                     let per_key = data.stores.get_mut(&store_key).unwrap();
-                                    per_key.current_epoch.remove_windows(&windows_to_remove);
+                                    evicted.extend(
+                                        per_key.current_epoch.remove_windows(&windows_to_remove),
+                                    );
                                     per_key.sealed_epochs.retain(|_, epoch| {
-                                        epoch.remove_windows(&windows_to_remove);
+                                        evicted.extend(epoch.remove_windows(&windows_to_remove));
                                         !epoch.is_empty()
                                     });
                                 }
@@ -403,6 +422,7 @@ impl Store for SimpleMapStoreGlobal {
                     }
                 }
             }
+            self.spill(store_key, &data.stores[&store_key].intern, &evicted);
 
             // Opt 4: one count update per group (was one per item)
             let current_count = data.items_inserted.entry(cfg.metric.clone()).or_insert(0);

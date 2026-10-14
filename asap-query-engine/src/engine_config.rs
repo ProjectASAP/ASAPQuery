@@ -228,12 +228,15 @@ fn default_elastic_url() -> String {
 #[serde(default)]
 pub struct StoreSettings {
     pub lock_strategy: LockStrategy,
+    /// Directory evicted windows are appended to; unset drops them.
+    pub spill_dir: Option<String>,
 }
 
 impl Default for StoreSettings {
     fn default() -> Self {
         Self {
             lock_strategy: LockStrategy::PerKey,
+            spill_dir: None,
         }
     }
 }
@@ -467,6 +470,22 @@ output_dir: "./output"
             config.store.lock_strategy,
             query_engine_rust::data_model::enums::LockStrategy::Global
         );
+    }
+
+    #[test]
+    fn spill_dir_is_off_unless_overridden() {
+        let config: EngineConfig = Figment::new()
+            .merge(Yaml::string(MINIMAL_YAML))
+            .extract()
+            .expect("config should deserialize");
+        assert_eq!(config.store.spill_dir, None);
+
+        let config: EngineConfig = Figment::new()
+            .merge(Yaml::string(MINIMAL_YAML))
+            .merge(("store.spill_dir", "/data/spill"))
+            .extract()
+            .expect("config should deserialize");
+        assert_eq!(config.store.spill_dir.as_deref(), Some("/data/spill"));
     }
 
     #[test]
