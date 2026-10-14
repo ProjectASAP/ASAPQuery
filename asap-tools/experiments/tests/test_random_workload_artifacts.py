@@ -60,6 +60,14 @@ class RenderArtifactsTest(unittest.TestCase):
         self.assertTrue(profile["promql_query_groups"])
         self.assertTrue(profile["clickhouse_query_groups"])
 
+    def test_pilot_e2e_table_is_consumable_by_existing_config_renderer(self):
+        table = artifacts.pilot_e2e_table(workloads.generate_workloads(seed=862)[0])
+        e2e = table["workloads"][0]["e2e"]
+
+        self.assertEqual(len(e2e["queries"]), 7)
+        self.assertEqual(set(e2e["metrics"]), {"data", "data_total", "events"})
+        self.assertTrue(all(query["interval_secs"] >= 1 for query in e2e["queries"]))
+
 
 if __name__ == "__main__":
     unittest.main()

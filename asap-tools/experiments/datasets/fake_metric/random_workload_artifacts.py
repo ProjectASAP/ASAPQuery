@@ -128,6 +128,21 @@ def pilot_profile(workload):
     }
 
 
+def pilot_e2e_table(workload):
+    """Render the common pilot as the existing sketch-bench E2E table shape."""
+    table = paced_feeder_table(workload)
+    common = [query for query in workload["queries"] if query["support"] == "common-promql"]
+    table["workloads"][0]["e2e"]["queries"] = [
+        {
+            "promql": query["promql"],
+            "interval_secs": query["interval_ms"] // 1000,
+            "rqes": [rqe["id"] for rqe in query["rqes"]],
+        }
+        for query in common
+    ]
+    return table
+
+
 def render(workload):
     """Return planner inputs and query schedule derived from one manifest."""
     labels = [label["name"] for label in workload["labels"]]
@@ -138,6 +153,7 @@ def render(workload):
         "queries": queries,
         "paced_feeder_table": paced_feeder_table(workload),
         "pilot_profile": pilot_profile(workload),
+        "pilot_e2e_table": pilot_e2e_table(workload),
         "promql_planner": {
             "metrics": [{"metric": metric, "labels": labels} for metric in PROMQL_METRICS],
             "query_groups": query_groups(queries, "promql"),
@@ -183,6 +199,9 @@ def main():
     profile = args.out / "pilot_profile.yaml"
     profile.write_text(yaml.safe_dump(rendered["pilot_profile"], sort_keys=False))
     print(profile)
+    e2e_table = args.out / "pilot_e2e_table.json"
+    e2e_table.write_text(json.dumps(rendered["pilot_e2e_table"], indent=2, sort_keys=True) + "\n")
+    print(e2e_table)
 
 
 if __name__ == "__main__":
