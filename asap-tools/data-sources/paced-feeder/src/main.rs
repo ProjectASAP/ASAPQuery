@@ -262,6 +262,15 @@ impl Sink {
     }
 }
 
+/// A tick's samples lie in one 1s window only if ticks start on whole seconds;
+/// a tick straddling a boundary can close a window before its other series arrive.
+fn validate_start_ms(start_ms: i64) -> Result<()> {
+    if start_ms % 1_000 != 0 {
+        bail!("--start-ms must be a whole second (multiple of 1000), got {start_ms}");
+    }
+    Ok(())
+}
+
 fn next_whole_second_ms() -> i64 {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -436,6 +445,9 @@ async fn main() -> Result<()> {
     if batch_rows == 0 || args.concurrency == 0 {
         bail!("--batch-rows and --concurrency must be positive");
     }
+    if let Some(start_ms) = args.start_ms {
+        validate_start_ms(start_ms)?;
+    }
 
     let sink = Arc::new(Sink::new(&args, sink_kind, url, &workload, batch_rows)?);
     let permits = Arc::new(Semaphore::new(args.concurrency));
@@ -591,6 +603,12 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_ms_must_be_whole_second() {
+        assert!(validate_start_ms(1_700_000_000_000).is_ok());
+        assert!(validate_start_ms(1_700_000_000_500).is_err());
+    }
 
     #[test]
     fn send_at_may_backdate_but_not_postdate_the_data() {

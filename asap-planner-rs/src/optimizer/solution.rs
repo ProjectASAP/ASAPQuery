@@ -27,4 +27,8 @@ pub struct OptimizerItem {
     /// Maximum query latency (ms) for every RQE contributing to this item;
     /// `None` means no limit.
     pub latency_sla_ms: Option<f64>,
+
+    /// The largest literal `k` of the item's top-k queries; `None` when one
+    /// has no literal `k`, or for anything but top-k.
+    pub topk_k: Option<u64>,
 }

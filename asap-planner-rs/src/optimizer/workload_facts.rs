@@ -161,6 +161,7 @@ pub fn parse_workload_facts(
             cardinality,
             value_range: Some((lo, hi)),
             data_shape,
+            hydra_dataset: None,
         };
         if facts.insert(entry.metric.clone(), metric_facts).is_some() {
             return Err(WorkloadFactsError::DuplicateMetric(entry.metric));

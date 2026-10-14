@@ -316,8 +316,19 @@ def handle_query_group(
         for server_name in servers
     }
 
+    simulated_start_time = getattr(query_group, "simulated_start_time", None)
+
     for repetition_idx in range(query_group.repetitions):
-        current_time = datetime.datetime.now()
+        if simulated_start_time is None:
+            current_time = datetime.datetime.now()
+        else:
+            # Pre-loaded data has fixed timestamps, so query time follows a
+            # clock anchored at the data start instead of the wall clock.
+            current_time = datetime.datetime.fromtimestamp(
+                simulated_start_time
+                + query_group.starting_delay
+                + repetition_idx * query_group.repetition_delay_ms / 1000
+            )
         logger.debug("Current unix time: {}", int(current_time.timestamp()))
 
         if hasattr(query_group, "query_time_offset"):
