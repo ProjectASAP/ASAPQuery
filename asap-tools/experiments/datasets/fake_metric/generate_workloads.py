@@ -71,14 +71,23 @@ def extrapolated_rate(cols: str, table: str, window: int, is_rate: bool) -> str:
         f"FROM {table} WHERE ts > {END} - {window} AND ts <= {END} "
         f"GROUP BY {cols} HAVING n >= 2"
     )
+    return rate_from_samples(cols, samples, END, window, is_rate)
+
+
+def rate_from_samples(
+    cols: str, samples: str, end: str, window: int, is_rate: bool
+) -> str:
+    """extrapolatedRate over `samples`, a query yielding per series `cols`,
+    first_v, last_v, first_t, last_t (unix seconds) and n >= 2 samples in the
+    window of `window` seconds ending at `end`."""
     durations = (
         f"SELECT {cols}, last_v - first_v AS delta, first_v, "
         f"last_t - first_t AS sampled, sampled / (n - 1) AS avg_step, "
-        f"if(first_t - ({END} - {window}) >= 1.1 * avg_step, avg_step / 2, "
-        f"first_t - ({END} - {window})) AS to_start_clamped, "
+        f"if(first_t - ({end} - {window}) >= 1.1 * avg_step, avg_step / 2, "
+        f"first_t - ({end} - {window})) AS to_start_clamped, "
         f"if(delta > 0 AND first_v >= 0, "
         f"least(to_start_clamped, sampled * first_v / delta), to_start_clamped) AS to_start, "
-        f"if({END} - last_t >= 1.1 * avg_step, avg_step / 2, {END} - last_t) AS to_end "
+        f"if({end} - last_t >= 1.1 * avg_step, avg_step / 2, {end} - last_t) AS to_end "
         f"FROM ({samples})"
     )
     per_second = f" / {window}" if is_rate else ""
