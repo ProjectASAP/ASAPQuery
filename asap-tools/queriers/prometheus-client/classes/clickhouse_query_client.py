@@ -1,5 +1,5 @@
 import requests
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from requests.adapters import HTTPAdapter
 
 from .query_client import QueryClient, QueryResponse
@@ -15,7 +15,9 @@ class ClickHouseQueryClient(QueryClient):
         database: str = "default",
         user: str = "default",
         password: str = "",
-        timeout: int = 30,
+        # (connect, read): long-window baseline queries can take minutes, but a
+        # dead server must still fail instead of hanging the querier.
+        timeout: Tuple[float, float] = (10, 24 * 60 * 60),
         **kwargs: Any,
     ):
         super().__init__(server_url, server_name)
@@ -96,7 +98,7 @@ class ClickHouseQueryClient(QueryClient):
             return QueryResponse(
                 success=False,
                 data=None,
-                error_message=f"Request timed out after {self.timeout}s",
+                error_message=f"Request timed out (connect, read timeout: {self.timeout}s)",
             )
         except Exception as e:
             return QueryResponse(
