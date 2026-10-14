@@ -40,6 +40,7 @@ class GenerateWorkloadsTest(unittest.TestCase):
             if query["support"] == "sql-only":
                 self.assertIsNone(query["promql"])
                 self.assertIn("COUNT(DISTINCT user_id)", query["sql"])
+                self.assertIn("DATEADD(s, -", query["sql"])
             else:
                 self.assertIsNone(query["sql"])
                 self.assertIn(" by (", query["promql"])

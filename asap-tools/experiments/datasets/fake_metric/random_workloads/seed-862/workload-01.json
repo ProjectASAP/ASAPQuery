@@ -309,7 +309,7 @@
           "value": "user_id"
         }
       ],
-      "sql": "SELECT region, service, COUNT(DISTINCT user_id) FROM events WHERE ts > :eval_time - INTERVAL 10m AND ts <= :eval_time GROUP BY region, service",
+      "sql": "SELECT region, service, COUNT(DISTINCT user_id) FROM events WHERE ts BETWEEN DATEADD(s, -600, NOW()) AND NOW() GROUP BY region, service",
       "support": "sql-only"
     }
   ],

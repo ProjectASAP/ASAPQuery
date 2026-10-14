@@ -161,9 +161,10 @@ def rate_query(query_id, grouping, lookback_ms, interval_ms, k):
 
 def cardinality_query(query_id, grouping, lookback_ms, interval_ms):
     group = grouping_text(grouping)
+    lookback_secs = lookback_ms // SECOND_MS
     rendered = (
         f"SELECT {group}, COUNT(DISTINCT user_id) FROM events "
-        f"WHERE ts > :eval_time - INTERVAL {duration(lookback_ms)} AND ts <= :eval_time "
+        f"WHERE ts BETWEEN DATEADD(s, -{lookback_secs}, NOW()) AND NOW() "
         f"GROUP BY {group}"
     )
     return query(

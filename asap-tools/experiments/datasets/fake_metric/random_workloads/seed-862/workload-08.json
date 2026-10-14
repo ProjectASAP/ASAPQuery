@@ -297,7 +297,7 @@
           "value": "user_id"
         }
       ],
-      "sql": "SELECT region, COUNT(DISTINCT user_id) FROM events WHERE ts > :eval_time - INTERVAL 5m AND ts <= :eval_time GROUP BY region",
+      "sql": "SELECT region, COUNT(DISTINCT user_id) FROM events WHERE ts BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY region",
       "support": "sql-only"
     }
   ],
