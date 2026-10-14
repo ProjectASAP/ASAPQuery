@@ -6,7 +6,9 @@ the Prometheus semantics. It needs a `clickhouse` binary on PATH (or
 CLICKHOUSE_BINARY) and is skipped otherwise.
 """
 
+import contextlib
 import datetime
+import io
 import itertools
 import json
 import math
@@ -170,9 +172,17 @@ class ParseTest(unittest.TestCase):
         entry["sql"] += "; \n"
         self.assertEqual(sbw.asapquery_sql(entry), plain)
 
+    def test_unknown_child_of_raises(self):
+        metrics = {
+            "data": {"type": "gauge", "labels": [{"name": "job", "child_of": "dc"}]}
+        }
+        q = sbw.parse_promql("sum_over_time(data[1m])", 60, {"data": ["job"]})
+        with self.assertRaises(ValueError):
+            sbw.plan_views([q], metrics)
+
     def test_metric_without_labels_raises(self):
         with self.assertRaises(ValueError):
-            sbw.init_sql({"data": {"type": "gauge", "labels": []}})
+            sbw.init_sql({"data": {"type": "gauge", "labels": []}}, [], False)
 
     def test_describe_is_one_line(self):
         entry = {"promql": "sum by (job) (\n  data\n)", "interval_secs": 1}
@@ -201,6 +211,50 @@ def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
         + (f" GROUP BY {group}" if group else "")
     )
     return entry
+
+
+def snapshot(root: str) -> Dict[str, str]:
+    """Every file under `root`, by path, with its content."""
+    out = {}
+    for d, _, names in os.walk(root):
+        for name in names:
+            with open(os.path.join(d, name)) as f:
+                out[os.path.join(d, name)] = f.read()
+    return out
+
+
+class PlanViewsTest(unittest.TestCase):
+    def views(self, cases):
+        queries = [sbw.parse_promql(p, t, LABELS) for t, p in cases]
+        return sorted(sbw.plan_views(queries, METRICS).values(), key=lambda v: v.name)
+
+    def test_classic_templates(self):
+        series = ("job", "label_0")
+        db = "sketch_bench_views."
+        self.assertEqual(
+            [(v.name, v.keys, v.levels) for v in self.views(CLASSIC)],
+            [
+                (db + "data_total_value_counter_60s", series, ()),
+                (db + "data_value_last_1s", series, ()),
+                (db + "data_value_quantile_60s", series, ("0.5", "0.9", "0.99")),
+                (db + "data_value_sum_60s", series, ()),
+            ],
+        )
+
+    def test_keys_are_union_of_groupings_with_parents(self):
+        by_label_0 = (60, "sum by (label_0) (sum_over_time(data[1m]))")
+        by_job = (60, "sum by (job) (sum_over_time(data[1m]))")
+        self.assertEqual(self.views([by_job])[0].keys, ("job",))
+        self.assertEqual(self.views([by_label_0])[0].keys, ("job", "label_0"))
+
+    def test_window_not_multiple_of_interval_raises(self):
+        for case in [
+            (60, "sum_over_time(data[90s])"),
+            # An instant vector reads [E - 1s, E]: bucket-aligned only when T = 1 s.
+            (60, "sum by (job) (data)"),
+        ]:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.views([case])
 
 
 class FlooredEndDatetimeTest(unittest.TestCase):
@@ -246,9 +300,17 @@ class ConvertTest(unittest.TestCase):
             try:
                 # 30 s < offset + the 15m windows: early windows predate data.
                 with self.assertWarns(UserWarning):
-                    out_path = sbw.convert(table, "data.json", 30, 600)
-                with open(out_path) as f:
-                    cfg = yaml.safe_load(f)
+                    out_paths = sbw.convert(table, "data.json", 30, 600)
+                cfgs = {}
+                for path in out_paths:
+                    with open(path) as f:
+                        cfg = yaml.safe_load(f)
+                    (arm,) = cfg["experiment"]
+                    with open(cfg["dataset"]["init_sql_file"]) as f:
+                        cfgs[arm["mode"]] = (cfg, f.read())
+                self.assertEqual(sorted(cfgs), ["baseline", "baseline_mv"])
+                cfg, init_mv = cfgs["baseline_mv"]
+                _, init = cfgs["baseline"]
                 groups = {g["name"]: g for g in cfg["query_groups"]}
                 self.assertEqual(sorted(groups), ["interval_1s", "interval_60s"])
                 g60 = groups["interval_60s"]
@@ -265,16 +327,27 @@ class ConvertTest(unittest.TestCase):
                 self.assertEqual(
                     groups["interval_1s"]["client_options"]["repetitions"], 600
                 )
-                with open(g60["sql_file"]["baseline"]) as f:
-                    statements = [s for s in f.read().split(";") if s.strip()]
-                self.assertEqual(len(statements), 9)
-                with open(cfg["dataset"]["init_sql_file"]) as f:
-                    init = f.read()
-                self.assertIn("CREATE TABLE data_total (ts DateTime64(3)", init)
+                self.assertEqual(sorted(g60["sql_file"]), ["baseline", "baseline_mv"])
+                for path in g60["sql_file"].values():
+                    with open(path) as f:
+                        statements = [s for s in f.read().split(";") if s.strip()]
+                    self.assertEqual(len(statements), 9)
                 self.assertIn(
                     "endpoint String, status String, latency Float64, "
                     "user_id Float64)",
                     init,
+                )
+                # Baseline ingest feeds no views, and drops any an earlier
+                # baseline_mv run left attached to the tables.
+                self.assertNotIn("CREATE MATERIALIZED VIEW", init)
+                self.assertIn("DROP DATABASE IF EXISTS sketch_bench_views", init)
+                # Views only see rows inserted after them: tables, then views.
+                self.assertLess(
+                    init_mv.index("CREATE TABLE data_total (ts DateTime64(3)"),
+                    init_mv.index(
+                        "CREATE MATERIALIZED VIEW "
+                        "sketch_bench_views.data_total_value_counter_60s"
+                    ),
                 )
                 sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
                 # The table's sql as written, with only NOW() substituted.
@@ -286,6 +359,93 @@ class ConvertTest(unittest.TestCase):
                         + e2e["queries"][-1]["sql"].replace("NOW()", end)
                         + ";\n",
                     )
+            finally:
+                os.chdir(cwd)
+
+    def test_unservable_query_skips_mv_arm(self):
+        # An instant vector at E with T = 60 s reads [E - 1s, E], not whole
+        # buckets.
+        servable = {
+            "promql": "sum_over_time(data[1m])",
+            "interval_secs": 60,
+            "rqes": [],
+        }
+        instant = {"promql": "sum by (job) (data)", "interval_secs": 60, "rqes": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "instant.json")
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                # An earlier run of the same table that had a baseline_mv arm
+                # and a 1 s group; none of its files may survive.
+                with open(table, "w") as f:
+                    e2e = {
+                        "metrics": METRICS,
+                        "queries": [
+                            servable,
+                            {
+                                **servable,
+                                "interval_secs": 1,
+                                "promql": "sum_over_time(data[1s])",
+                            },
+                        ],
+                    }
+                    json.dump({"workloads": [{"e2e": e2e}]}, f)
+                with self.assertWarns(UserWarning):
+                    sbw.convert(table, "data.json", 30, 600)
+                with open(table, "w") as f:
+                    e2e = {"metrics": METRICS, "queries": [instant, servable]}
+                    json.dump({"workloads": [{"e2e": e2e}]}, f)
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    (path,) = sbw.convert(table, "data.json", 30, 600)
+                self.assertIn("no baseline_mv arm", err.getvalue())
+                self.assertIn("sum by (job) (data)", err.getvalue())
+                with open(path) as f:
+                    cfg = yaml.safe_load(f)
+                self.assertEqual(
+                    cfg["experiment"], [{"mode": "baseline", "server": "clickhouse"}]
+                )
+                (group,) = cfg["query_groups"]
+                self.assertEqual(list(group["sql_file"]), ["baseline"])
+                with open(group["sql_file"]["baseline"]) as f:
+                    self.assertEqual(f.read().count(";"), 2)
+                with open(cfg["dataset"]["init_sql_file"]) as f:
+                    self.assertNotIn("MATERIALIZED VIEW", f.read())
+                sql_dir = os.path.dirname(cfg["dataset"]["init_sql_file"])
+                self.assertEqual(
+                    sorted(os.listdir(sql_dir)),
+                    ["init.sql", "interval_60s_baseline.sql"],
+                )
+                self.assertEqual(
+                    sorted(os.listdir(sbw.OUT_CONFIG_DIR)),
+                    ["instant", "instant_clickhouse.yaml"],
+                )
+            finally:
+                os.chdir(cwd)
+
+    def test_failed_reconvert_keeps_earlier_files(self):
+        # Cleared before validating, a failing re-run left the earlier config
+        # pointing at deleted SQL files.
+        good = mg_entry("quantile", ["service"], 300)
+        bad = {**good, "sql": good["sql"].replace("NOW()", "now()")}
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "t.json")
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+
+                def convert(queries):
+                    with open(table, "w") as f:
+                        e2e = {"metrics": METRICS, "queries": queries}
+                        json.dump({"workloads": [{"e2e": e2e}]}, f)
+                    return sbw.convert(table, "data.json", 310, 600)
+
+                self.assertEqual(len(convert([good])), 2)
+                before = snapshot(sbw.OUT_CONFIG_DIR)
+                # Fails while rendering, after validation and the init SQL.
+                with self.assertRaises(ValueError):
+                    convert([good, bad])
+                self.assertEqual(snapshot(sbw.OUT_CONFIG_DIR), before)
             finally:
                 os.chdir(cwd)
 
@@ -584,10 +744,10 @@ def run_clickhouse(script: str, tmp: str) -> List[dict]:
     return [json.loads(line) for line in out.splitlines()]
 
 
-def load_script(tmp: str, rows: Dict[str, List[tuple]]) -> str:
+def load_script(tmp: str, rows: Dict[str, List[tuple]], views) -> str:
     """Init SQL, then each table's (ts ms, labels, values) rows inserted
     through it (and any views on it)."""
-    parts = [sbw.init_sql(METRICS)]
+    parts = [sbw.init_sql(METRICS, views, create_views=True)]
     for table, table_rows in rows.items():
         names = LABELS[table]
         values = sbw.value_columns(METRICS[table])
@@ -652,7 +812,8 @@ def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]
 class KeyPruningTest(unittest.TestCase):
     """ClickHouse 26.10 prunes `ts > <integer>` on a DateTime64 key as
     `ts >= <integer> + 1`, so a left-open window lost the samples in its first
-    second. Small granules let the index prune them here too."""
+    second. Small granules let the index prune them here too. The view's
+    DateTime `bucket` bounds are checked the same way."""
 
     def test_samples_just_after_window_start_are_kept(self):
         end_s = DATA_START_MS // 1000 + 3600
@@ -673,61 +834,118 @@ class KeyPruningTest(unittest.TestCase):
                 sbw.parse_promql("count_over_time(data[1m])", 60, LABELS),
                 sum(start_ms <= t <= end_s * 1000 for t in times),
             ),
+            # The only query of its view and grouped by nothing, so the view
+            # has no label keys.
+            (
+                sbw.query_from_entry(mg_entry("quantile", [], 60), METRICS, LABELS),
+                1.0,
+            ),
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            script = load_script(tmp, {"http": records, "data": series}).replace(
-                "ts);", "ts) SETTINGS index_granularity = 8;"
+            views = sbw.plan_views([q for q, _ in cases], METRICS)
+            rows = {"http": records, "data": series}
+            script = (
+                load_script(tmp, rows, list(views.values()))
+                .replace("ts);", "ts) SETTINGS index_granularity = 8;")
+                .replace(") AS SELECT ", ") SETTINGS index_granularity = 1 AS SELECT ")
             )
-            self.assertIn("index_granularity = 8", script)
+            self.assertEqual(script.count("index_granularity = 8"), len(METRICS))
+            self.assertEqual(script.count("index_granularity = 1 "), len(views))
             statements = [
-                (str(i), sbw.raw_sql(q, LABELS).replace(sbw.END, str(end_s)))
+                (f"{mode}/{i}", sql.replace(sbw.END, str(end_s)))
                 for i, (q, _) in enumerate(cases)
+                for mode, sql in [
+                    ("raw", sbw.raw_sql(q, LABELS)),
+                    ("mv", sbw.mv_sql(q, views, LABELS)),
+                ]
             ]
-            rows = run_clickhouse(script + query_script(statements), tmp)
-        got = {row["qid"]: row["value"] for row in rows}
-        self.assertEqual(got, {str(i): want for i, (_, want) in enumerate(cases)})
+            out = run_clickhouse(script + query_script(statements), tmp)
+        got = {row["qid"]: row["value"] for row in out}
+        want = {
+            f"{mode}/{i}": n for i, (_, n) in enumerate(cases) for mode in ("raw", "mv")
+        }
+        self.assertEqual(got, want)
+
+
+@unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
+class StaleViewsTest(unittest.TestCase):
+    def test_init_drops_other_workloads_views(self):
+        """A view stays attached to a dropped and recreated table, so one
+        left by another workload's baseline_mv run would keep firing."""
+        q = sbw.parse_promql("sum_over_time(data[1m])", 60, LABELS)
+        other = list(sbw.plan_views([q], METRICS).values())
+        with tempfile.TemporaryDirectory() as tmp:
+            script = (
+                sbw.init_sql(METRICS, other, True)
+                # This workload has no views of its own.
+                + load_script(tmp, {"data": [(DATA_START_MS, ("j", "l"), (1.0,))]}, [])
+                + "SELECT count() AS n FROM system.tables "
+                f"WHERE database = '{sbw.VIEW_DATABASE}' FORMAT JSONEachRow;\n"
+            )
+            self.assertEqual(run_clickhouse(script, tmp), [{"n": 0}])
 
 
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
 class ClickHouseSemanticsTest(unittest.TestCase):
-    def test_raw_sql_matches_prometheus_reference(self):
+    """Every CASES and MULTIGROUP query at every eval offset, over the raw
+    table (baseline) and over its view (baseline_mv), in one clickhouse-local
+    run."""
+
+    @classmethod
+    def setUpClass(cls):
         gauge, counter = make_dataset()
         records = make_records()
-        cases = all_cases(gauge, counter, records)
+        cls.cases = all_cases(gauge, counter, records)
+        views = sbw.plan_views([q for _, q, _ in cls.cases], METRICS)
         statements, groupings = [], {}
-        for i, (_, q, _) in enumerate(cases):
+        for i, (_, q, _) in enumerate(cls.cases):
             for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
-                end = DATA_START_MS // 1000 + offset
-                qid = f"{i}@{offset}"
-                sql = sbw.raw_sql(q, LABELS).replace(sbw.END, str(end))
-                statements.append((qid, sql))
-                groupings[qid] = q.grouping
+                end = str(DATA_START_MS // 1000 + offset)
+                for mode, sql in [
+                    ("raw", sbw.raw_sql(q, LABELS)),
+                    ("mv", sbw.mv_sql(q, views, LABELS)),
+                ]:
+                    qid = f"{mode}/{i}@{offset}"
+                    statements.append((qid, sql.replace(sbw.END, end)))
+                    groupings[qid] = q.grouping
         rows = {
             "data": series_rows(gauge),
             "data_total": series_rows(counter),
             "http": records,
         }
         with tempfile.TemporaryDirectory() as tmp:
-            script = load_script(tmp, rows)
-            got = rows_by_id(
+            script = load_script(tmp, rows, list(views.values()))
+            cls.got = rows_by_id(
                 run_clickhouse(script + query_script(statements), tmp), groupings
             )
 
+    def test_raw_sql_matches_prometheus_reference(self):
         BRANCHES_HIT.clear()
-        nonempty = 0
-        for i, (name, q, ref) in enumerate(cases):
+        nonempty = total = 0
+        for i, (name, q, ref) in enumerate(self.cases):
             for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
                 with self.subTest(query=name, offset=offset):
                     want = ref(DATA_START_MS + offset * 1000)
-                    nonempty += bool(want)
-                    assert_vectors_close(self, got[f"{i}@{offset}"], want, 1e-9)
+                    nonempty, total = nonempty + bool(want), total + 1
+                    got = self.got[f"raw/{i}@{offset}"]
+                    assert_vectors_close(self, got, want, 1e-9)
         self.assertEqual(
             BRANCHES_HIT,
             {"start_avg", "start_boundary", "zero_clamp", "end_avg", "end_boundary"},
         )
         # Both empty and non-empty windows are compared.
-        self.assertGreater(nonempty, len(statements) // 2)
-        self.assertLess(nonempty, len(statements))
+        self.assertGreater(nonempty, total // 2)
+        self.assertLess(nonempty, total)
+
+    def test_mv_sql_matches_raw_sql(self):
+        for i, (name, q, _) in enumerate(self.cases):
+            # Only sums are re-associated (per bucket, then across buckets and
+            # groups); every other statistic merges to the identical value.
+            rel = 1e-9 if q.agg == "sum" else 0.0
+            for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
+                with self.subTest(query=name, offset=offset):
+                    raw = self.got[f"raw/{i}@{offset}"]
+                    assert_vectors_close(self, self.got[f"mv/{i}@{offset}"], raw, rel)
 
 
 if __name__ == "__main__":

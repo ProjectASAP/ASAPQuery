@@ -9,27 +9,44 @@ String, then `value Float64`, or for a `records` metric one Float64 column per
 value field in description order.
 
 For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
-- <stem>/init.sql: the metric tables;
-- <stem>/interval_<T>s.sql: one statement per query that repeats every T s;
+- <stem>/init.sql: the metric tables (baseline);
+- <stem>/init_mv.sql: the metric tables and their materialized views
+  (baseline_mv);
+- <stem>/interval_<T>s_<mode>.sql: one statement per query that repeats every
+  T s, for the baseline (raw table) and baseline_mv (views) arms;
 - <stem>/asapquery.sql: each structured entry's `sql` (ASAPQuery's SQL, as
   sketch-bench's exporter writes it) with NOW() replaced by the floored eval
   time;
-- <stem>_clickhouse.yaml: a baseline-only experiment_run_clickhouse.py config
-  with one query group per T, repeating every T seconds.
+- <stem>_clickhouse.yaml, <stem>_clickhouse_mv.yaml: one
+  experiment_run_clickhouse.py config per arm, each loading data through its
+  own init SQL, with one query group per T, repeating every T seconds.
+
+baseline_mv keeps exact mergeable states, no sketches: one view per (metric,
+value, statistic, T) holds per T-second bucket and group the state of sums,
+counts, exact distinct counts, exact quantiles, each series' latest sample (instant vectors) or each
+series' first/last sample, sample times and count (rate, increase). A query
+at eval time E merges the W/T buckets of its window, plus for PromQL the
+samples at exactly E - W (kept apart in each bucket's `edge` rows), so W must
+be a multiple of T; instant vectors read [E - 1s, E], which is bucket-aligned
+only when T = 1 s. The views live in VIEW_DATABASE.
+A table with any query the views cannot serve gets no baseline_mv arm (no
+init_mv.sql, MV SQL or _mv config) and a note on stderr naming the queries:
+dropping just those queries would shift the arm's query indices against the
+baseline SQL that labels both arms' results.
 
 Semantics are those of Prometheus 2.53 (the version installation/prometheus
 installs for bare-metal runs), whose windows are closed on both ends: range
-vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
-each series in [T - 1s, T] (a lookback of one scrape interval, not
+vectors [d] at E read [E - d, E]; instant vectors read the latest sample of
+each series in [E - 1s, E] (a lookback of one scrape interval, not
 Prometheus's 5m default: the feeder writes every series every scrape, so the
 two agree unless a sample is missing, where Prometheus would return the
 series' last value and this SQL drops the series); quantiles use
 quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
 never reset). Structured queries involve no Prometheus: they read ASAPQuery's
-left-open window (T - W, T], the window its SQL frontend and precompute
+left-open window (E - W, E], the window its SQL frontend and precompute
 windows use, and pool all samples of a group: cardinality is uniqExact of
-the value field, quantile is quantileExactInclusive. T is the client's
-{{ end_time }} floored to a multiple of the query's interval. Unsupported
+the value field, quantile is quantileExactInclusive. E is the client's
+{{ end_time }} floored to a multiple of the query's interval T. Unsupported
 query shapes raise.
 
 Evaluation times: each query group sets `align_to_interval` and a
@@ -46,6 +63,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import sys
 import warnings
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
@@ -60,12 +79,23 @@ from generate_workloads import (
     window_seconds,
 )
 
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+import constants  # noqa: E402
+
+BASELINE = constants.BASELINE_EXPERIMENT_NAME
+BASELINE_MV = constants.BASELINE_MV_EXPERIMENT_NAME
+
 OUT_CONFIG_DIR = "config/experiment_type/sketch_bench_clickhouse"
 CLICKHOUSE_URL = "http://localhost:8123"
 # Seconds after an eval time the client sends it, so data up to the eval
 # time has arrived.
 QUERY_TIME_OFFSET_SECS = 10
 VALUE_COLUMN = "value"
+# Every view lives here, so dropping it removes views any earlier workload
+# attached to the metric tables; they would keep firing on inserts.
+VIEW_DATABASE = "sketch_bench_views"
 # Instant vectors read the latest sample of each series in the last scrape.
 INSTANT_WINDOW_SECONDS = SCRAPE_INTERVAL_SECONDS
 
@@ -359,8 +389,177 @@ def value_columns(desc: dict) -> List[str]:
     return list(desc["values"]) if desc["type"] == "records" else [VALUE_COLUMN]
 
 
-def init_sql(metrics: dict) -> str:
-    statements = []
+@dataclass(frozen=True)
+class View:
+    """A materialized view of `table` holding the mergeable state of one
+    statistic per bucket of `interval_secs` and `keys` group."""
+
+    name: str
+    table: str
+    stat: str  # sum | count | cardinality | quantile | last | counter
+    interval_secs: int
+    keys: Tuple[str, ...]
+    levels: Tuple[str, ...]  # quantile levels the view's state answers
+    value: str = VALUE_COLUMN
+
+
+PER_SERIES_STATS = ("last", "counter")
+
+
+def view_stat(q: Query) -> str:
+    if q.series_fn is None:
+        return q.agg
+    return "last" if q.series_fn == "last" else "counter"
+
+
+def mv_servable(q: Query) -> bool:
+    """Whether the views' T-second buckets tile q's window."""
+    return q.window_secs % q.interval_secs == 0
+
+
+def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
+    """One view per (table, value, statistic, interval), keyed by
+    view_key(). Pooled statistics keep the union of their queries' groupings
+    plus every label's child_of parents, so coarser groupings roll up;
+    per-series statistics keep every label."""
+    grouped: Dict[tuple, List[Query]] = {}
+    for q in queries:
+        if not mv_servable(q):
+            raise ValueError(
+                f"window {q.window_secs}s is not a multiple of the "
+                f"{q.interval_secs}s buckets: {q}"
+            )
+        grouped.setdefault(view_key(q), []).append(q)
+    views = {}
+    for key, qs in grouped.items():
+        table, value, stat, interval = key
+        labels = metrics[table]["labels"]
+        parent = {label["name"]: label.get("child_of") for label in labels}
+        unknown = {p for p in parent.values() if p} - set(parent)
+        if unknown:
+            raise ValueError(f"{table!r}: child_of names unknown labels {unknown}")
+        keep = set(parent) if stat in PER_SERIES_STATS else set()
+        for name in (n for q in qs for n in q.grouping):
+            while name and name not in keep:
+                keep.add(name)
+                name = parent[name]
+        levels = {lv for q in qs for lv in (q.quantile, q.ratio_quantile) if lv}
+        views[key] = View(
+            name=f"{VIEW_DATABASE}.{table}_{value}_{stat}_{interval}s",
+            table=table,
+            stat=stat,
+            interval_secs=interval,
+            keys=tuple(label["name"] for label in labels if label["name"] in keep),
+            levels=tuple(sorted(levels, key=float)) if stat == "quantile" else (),
+            value=value,
+        )
+    return views
+
+
+def view_key(q: Query) -> tuple:
+    return (q.table, q.value, view_stat(q), q.interval_secs)
+
+
+def view_states(view: View) -> List[Tuple[str, str]]:
+    """(column, -State expression) pairs the view stores."""
+    v = view.value
+    if view.stat == "sum":
+        return [("sum_state", f"sumState({v})")]
+    if view.stat == "count":
+        return [("count_state", "countState()")]
+    if view.stat == "cardinality":
+        return [("cardinality_state", f"uniqExactState({v})")]
+    if view.stat == "quantile":
+        levels = ", ".join(view.levels)
+        return [("quantile_state", f"quantilesExactInclusiveState({levels})({v})")]
+    if view.stat == "last":
+        return [("last_state", f"argMaxState({v}, ts)")]
+    if view.stat == "counter":
+        return [
+            ("first_state", f"argMinState({v}, ts)"),
+            ("last_state", f"argMaxState({v}, ts)"),
+            ("first_ts_state", "minState(ts)"),
+            ("last_ts_state", "maxState(ts)"),
+            ("n_state", "countState()"),
+        ]
+    raise ValueError(f"unknown statistic {view.stat!r}")
+
+
+def view_ddl(view: View) -> str:
+    # Bucket b holds the samples in (b - T, b]; `edge` marks the one instant
+    # b. A closed window [E - W, E] is the buckets in (E - W, E] plus the edge
+    # of bucket E - W.
+    t = view.interval_secs
+    bucket = (
+        f"toStartOfInterval(ts - INTERVAL 1 MILLISECOND, INTERVAL {t} SECOND) "
+        f"+ INTERVAL {t} SECOND"
+    )
+    edge = f"toUnixTimestamp64Milli(ts) % {t * 1000} = 0"
+    keys = ", ".join(("bucket", "edge") + view.keys)
+    select = ", ".join(
+        (f"{bucket} AS bucket", f"{edge} AS edge")
+        + view.keys
+        + tuple(f"{expr} AS {col}" for col, expr in view_states(view))
+    )
+    return (
+        f"CREATE MATERIALIZED VIEW {view.name} ENGINE = AggregatingMergeTree "
+        f"ORDER BY ({keys}) AS SELECT {select} FROM {view.table} GROUP BY {keys}"
+    )
+
+
+def mv_agg(view: View, stat: str, quantile: Optional[str]) -> str:
+    """-Merge of the view's state; a quantile picks its level from the
+    view's levels array."""
+    if stat == "sum":
+        return "sumMerge(sum_state)"
+    if stat == "count":
+        return "countMerge(count_state)"
+    if stat == "cardinality":
+        return "uniqExactMerge(cardinality_state)"
+    if stat == "quantile":
+        index = view.levels.index(quantile) + 1
+        levels = ", ".join(view.levels)
+        return f"quantilesExactInclusiveMerge({levels})(quantile_state)[{index}]"
+    if stat == "last":
+        return "argMaxMerge(last_state)"
+    if stat == "counter":
+        return (
+            "argMinMerge(first_state) AS first_v, argMaxMerge(last_state) AS last_v, "
+            "toFloat64(minMerge(first_ts_state)) AS first_t, "
+            "toFloat64(maxMerge(last_ts_state)) AS last_t, countMerge(n_state) AS n"
+        )
+    raise ValueError(f"unknown statistic {stat!r}")
+
+
+def mv_sql(q: Query, views: Dict[tuple, View], labels: Dict[str, List[str]]) -> str:
+    """`q` over its view's buckets, merging their states."""
+    view = views[view_key(q)]
+    return render(
+        q,
+        tuple(labels[q.table]),
+        view.name,
+        # Buckets b in (end - w, end] hold (end - w, end]; for a closed
+        # window, the edge row of bucket end - w holds its left boundary.
+        # `bucket` is a DateTime, so its bounds are too (see raw_sql).
+        lambda end, w: (
+            f"bucket > toDateTime({end} - {w}) AND bucket <= toDateTime({end})"
+            if q.left_open
+            else f"bucket >= toDateTime({end} - {w}) AND bucket <= toDateTime({end}) "
+            f"AND (edge OR bucket > toDateTime({end} - {w}))"
+        ),
+        lambda stat, quantile: mv_agg(view, stat, quantile),
+    )
+
+
+def init_sql(metrics: dict, views: List[View], create_views: bool) -> str:
+    """The metric tables, and with `create_views` their views. A view only
+    aggregates rows inserted after it exists, so this must run before any
+    data arrives. VIEW_DATABASE is dropped either way, so no view left by an
+    earlier baseline_mv run, of this or any other workload, feeds on the
+    recreated tables."""
+    statements = [f"DROP DATABASE IF EXISTS {VIEW_DATABASE}"]
+    if create_views:
+        statements.append(f"CREATE DATABASE {VIEW_DATABASE}")
     for table, desc in metrics.items():
         names = [label["name"] for label in desc["labels"]]
         if not names:
@@ -373,6 +572,8 @@ def init_sql(metrics: dict) -> str:
             f"CREATE TABLE {table} (ts DateTime64(3), {', '.join(columns)}) "
             f"ENGINE = MergeTree ORDER BY ({', '.join(names)}, ts)",
         ]
+    if create_views:
+        statements += [view_ddl(view) for view in views]
     return ";\n\n".join(statements) + ";\n"
 
 
@@ -383,14 +584,16 @@ def metric_labels(metrics: dict) -> Dict[str, List[str]]:
     }
 
 
-def write_statements(path: str, statements: List[str]) -> None:
-    with open(path, "w") as f:
-        f.write(";\n\n".join(statements) + ";\n")
+def statements_text(statements: List[str]) -> str:
+    return ";\n\n".join(statements) + ";\n"
 
 
 def convert(
     table_path: str, data_file: str, starting_delay_secs: int, duration_secs: int
-) -> str:
+) -> List[str]:
+    """Writes the SQL files and one config per arm; returns the config paths.
+    Everything is rendered before anything is written, so a table that fails
+    leaves an earlier run's files intact."""
     with open(table_path) as f:
         workloads = json.load(f)["workloads"]
     if len(workloads) != 1:
@@ -400,31 +603,51 @@ def convert(
     labels = metric_labels(metrics)
     stem = os.path.splitext(os.path.basename(table_path))[0]
     sql_dir = os.path.join(OUT_CONFIG_DIR, stem)
-    os.makedirs(sql_dir, exist_ok=True)
+    outputs: Dict[str, str] = {}  # path -> content
 
-    init_path = os.path.join(sql_dir, "init.sql")
-    with open(init_path, "w") as f:
-        f.write(init_sql(metrics))
-
-    by_interval: Dict[int, List[str]] = {}
-    asapquery: List[str] = []
-    max_window = 0
-    for entry in e2e["queries"]:
-        q = query_from_entry(entry, metrics, labels)
+    entries = [(e, query_from_entry(e, metrics, labels)) for e in e2e["queries"]]
+    for entry, q in entries:
         if q.interval_secs > duration_secs:
             raise ValueError(
                 f"interval {q.interval_secs}s exceeds --duration-secs "
                 f"{duration_secs}: {describe(entry)}"
             )
-        max_window = max(max_window, q.window_secs)
-        by_interval.setdefault(q.interval_secs, []).append(
-            f"-- {describe(entry)}\n{raw_sql(q, labels)}"
+    unservable = [describe(e) for e, q in entries if not mv_servable(q)]
+    if unservable:
+        print(
+            f"{table_path}: no {BASELINE_MV} arm; its views need windows that "
+            f"are multiples of the interval: {'; '.join(unservable)}",
+            file=sys.stderr,
         )
+        modes, views = [BASELINE], {}
+    else:
+        modes = [BASELINE, BASELINE_MV]
+        views = plan_views([q for _, q in entries], metrics)
+    # Each arm loads data through its own init SQL, so baseline ingest never
+    # feeds the views.
+    init_paths = {
+        BASELINE: os.path.join(sql_dir, "init.sql"),
+        BASELINE_MV: os.path.join(sql_dir, "init_mv.sql"),
+    }
+    for mode in modes:
+        outputs[init_paths[mode]] = init_sql(
+            metrics, list(views.values()), mode == BASELINE_MV
+        )
+
+    by_interval: Dict[int, Dict[str, List[str]]] = {}
+    asapquery: List[str] = []
+    for entry, q in entries:
+        files = by_interval.setdefault(q.interval_secs, {m: [] for m in modes})
+        files[BASELINE].append(f"-- {describe(entry)}\n{raw_sql(q, labels)}")
+        if BASELINE_MV in files:
+            sql = mv_sql(q, views, labels)
+            files[BASELINE_MV].append(f"-- {describe(entry)}\n{sql}")
         if "promql" not in entry:
             asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(entry)}")
     if asapquery:
         # For the ASAPQuery arm; the runner does not read it.
-        write_statements(os.path.join(sql_dir, "asapquery.sql"), asapquery)
+        outputs[os.path.join(sql_dir, "asapquery.sql")] = statements_text(asapquery)
+    max_window = max((q.window_secs for _, q in entries), default=0)
     if starting_delay_secs < QUERY_TIME_OFFSET_SECS + max_window:
         # Same data for every arm, so arms stay comparable; absolutes are biased.
         warnings.warn(
@@ -434,14 +657,16 @@ def convert(
         )
 
     query_groups = []
-    for interval, statements in sorted(by_interval.items()):
+    for interval, files in sorted(by_interval.items()):
         name = f"interval_{interval}s"
-        sql_path = os.path.join(sql_dir, f"{name}.sql")
-        write_statements(sql_path, statements)
+        sql_files = {}
+        for mode, statements in files.items():
+            sql_files[mode] = os.path.join(sql_dir, f"{name}_{mode}.sql")
+            outputs[sql_files[mode]] = statements_text(statements)
         query_groups.append(
             {
                 "name": name,
-                "sql_file": {"baseline": sql_path},
+                "sql_file": sql_files,
                 "repetition_delay_ms": interval * 1000,
                 # Queries use only {{ end_time }}; the client still requires a value.
                 "time_window_seconds": 0,
@@ -454,26 +679,43 @@ def convert(
             }
         )
 
-    out = {
-        "experiment": [{"mode": "baseline", "server": "clickhouse"}],
-        "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],
-        "dataset": {
-            "name": "custom",
-            "local_data_file": data_file,
-            # The runner's loader fills only this table; nothing fills the
-            # other metrics' tables yet.
-            "table": next(iter(labels)),
-            "init_sql_file": init_path,
-            "max_rows": 0,
-        },
-        "query_groups": query_groups,
-        "data_ingestion_interval_ms": SCRAPE_INTERVAL_SECONDS * 1000,
-    }
-    out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse.yaml")
-    with open(out_path, "w") as f:
-        f.write(f"# @package experiment_params\n# Generated from {table_path}\n")
-        yaml.safe_dump(out, f, sort_keys=False)
-    return out_path
+    out_paths = []
+    for mode in modes:
+        suffix = "_mv" if mode == BASELINE_MV else ""
+        out = {
+            "experiment": [{"mode": mode, "server": "clickhouse"}],
+            "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],
+            "dataset": {
+                "name": "custom",
+                "local_data_file": data_file,
+                # The runner's loader fills only this table; nothing fills the
+                # other metrics' tables yet.
+                "table": next(iter(labels)),
+                "init_sql_file": init_paths[mode],
+                "max_rows": 0,
+            },
+            # Both arms' SQL, so the saved config labels queries by baseline's text.
+            "query_groups": query_groups,
+            "data_ingestion_interval_ms": SCRAPE_INTERVAL_SECONDS * 1000,
+        }
+        out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse{suffix}.yaml")
+        outputs[out_path] = (
+            f"# @package experiment_params\n# Generated from {table_path}\n"
+            + yaml.safe_dump(out, sort_keys=False)
+        )
+        out_paths.append(out_path)
+
+    # Clear files an earlier run wrote, e.g. a baseline_mv arm or an interval
+    # this table no longer has.
+    shutil.rmtree(sql_dir, ignore_errors=True)
+    mv_config = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse_mv.yaml")
+    if os.path.exists(mv_config):
+        os.remove(mv_config)
+    os.makedirs(sql_dir)
+    for path, content in outputs.items():
+        with open(path, "w") as f:
+            f.write(content)
+    return out_paths
 
 
 def main() -> None:
@@ -487,11 +729,10 @@ def main() -> None:
         "--duration-secs", type=int, required=True, help="query phase length"
     )
     args = parser.parse_args()
-    print(
-        convert(
-            args.table, args.data_file, args.starting_delay_secs, args.duration_secs
-        )
-    )
+    for path in convert(
+        args.table, args.data_file, args.starting_delay_secs, args.duration_secs
+    ):
+        print(path)
 
 
 if __name__ == "__main__":

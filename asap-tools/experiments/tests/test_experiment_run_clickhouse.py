@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 from experiment_run_clickhouse import (
     _deploy_prebuilt_clickhouse_controller_output,
+    _ingest_mode,
     _prepare_clickhouse_controller_output,
     _start_clickhouse_controller,
 )
@@ -79,6 +80,14 @@ class ClickHouseControllerConfigTest(unittest.TestCase):
 
         generate_controller_output.assert_called_once_with()
         deploy_prebuilt_output.assert_not_called()
+
+
+class IngestModeTest(unittest.TestCase):
+    def test_baseline_when_present_else_first_mode(self):
+        self.assertEqual(_ingest_mode(["baseline", "sketchdb"]), "baseline")
+        self.assertEqual(_ingest_mode(["sketchdb", "baseline"]), "baseline")
+        # A baseline_mv-only run monitors ingest under its own mode.
+        self.assertEqual(_ingest_mode(["baseline_mv"]), "baseline_mv")
 
 
 if __name__ == "__main__":
