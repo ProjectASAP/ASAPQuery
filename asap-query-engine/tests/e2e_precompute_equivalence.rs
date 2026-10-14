@@ -2024,6 +2024,98 @@ async fn e2e_grouped_quantile_preserves_output_label_shape() {
     );
 }
 
+/// The average of per-series quantiles: per-series KLL windows merged over
+/// the range, then averaged by group at query time. q=1 makes each series'
+/// quantile its exact max, so a leaked or missing window changes the mean.
+#[tokio::test]
+async fn e2e_avg_of_per_series_quantile_over_time() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+
+    let metric = "series_latency";
+    let anchor = "quantile_over_time(1.0, series_latency[2s])";
+    let query = "avg by (job) (quantile_over_time(1.0, series_latency[2s]))";
+    let mut config = make_agg_config(
+        19,
+        metric,
+        AggregationType::DatasketchesKLL,
+        "",
+        1_000,
+        0,
+        vec!["instance", "job"],
+    );
+    config.parameters.insert("K".to_string(), json!(200_u64));
+    // (instance, job, [(ts_ms, value)]): the 1_000 sample is outside (1s, 3s].
+    let series = [
+        ("a", "api", vec![(1_000, 100.0), (1_500, 1.0), (2_500, 9.0)]),
+        ("b", "api", vec![(1_500, 6.0), (2_500, 2.0)]),
+        ("c", "worker", vec![(1_500, 30.0), (2_500, 10.0)]),
+    ];
+    let samples = series
+        .iter()
+        .flat_map(|(instance, job, points)| {
+            points
+                .iter()
+                .chain([(4_500, 0.0)].iter())
+                .map(|&(ts, value)| {
+                    make_timeseries(
+                        metric,
+                        vec![("instance", instance), ("job", job)],
+                        ts,
+                        value,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let (engine, query) = NativeDagScenario {
+        port: 19429,
+        metric,
+        query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples,
+        evaluation_time_seconds: 3.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine_with_plan(
+        anchor,
+        vec![QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Avg,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::By,
+                labels: vec!["job".to_string()],
+            },
+            parameter: None,
+        }],
+    )
+    .await;
+
+    let (output_labels, result) = engine
+        .handle_query_promql(query, 3.0)
+        .expect("avg of per-series quantiles should execute")
+        .expect("avg of per-series quantiles should match configured inference");
+    assert_eq!(output_labels.labels, vec!["job"]);
+    let QueryResult::Vector(vector) = result else {
+        panic!("expected instant vector result");
+    };
+    let mut values: Vec<_> = vector
+        .values
+        .into_iter()
+        .map(|element| (element.labels.labels, element.value))
+        .collect();
+    values.sort_by(|a, b| a.0.cmp(&b.0));
+    // api: mean of max(1, 9) and max(6, 2); worker: max(30, 10).
+    assert_eq!(
+        values,
+        vec![
+            (vec!["api".to_string()], 7.5),
+            (vec!["worker".to_string()], 30.0)
+        ]
+    );
+}
+
 /// A grouped quantile served by a DDSketch aggregation: samples from two
 /// instances per job flow through remote write and precompute into one
 /// DDSketch per group, and each returned quantile stays within the sketch's
