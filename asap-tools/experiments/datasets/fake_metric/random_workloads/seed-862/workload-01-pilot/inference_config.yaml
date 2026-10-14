@@ -1,0 +1,82 @@
+cleanup_policy:
+  name: read_based
+metrics:
+  data:
+  - job
+  - label_0
+  - region
+  - service
+  data_total:
+  - job
+  - label_0
+  - region
+  - service
+queries:
+- aggregations:
+  - aggregation_id: 1
+    read_count_threshold: 1
+  query: avg by (region, service, job) (quantile_over_time(0.99, data[1s]))
+  planned_subquery: quantile_over_time(0.99, data[1s])
+  query_time_aggregations:
+  - operator: avg
+    grouping:
+      mode: by
+      labels:
+      - region
+      - service
+      - job
+    parameter: null
+- aggregations:
+  - aggregation_id: 1
+    read_count_threshold: 1
+  query: avg by (region) (quantile_over_time(0.95, data[1s]))
+  planned_subquery: quantile_over_time(0.95, data[1s])
+  query_time_aggregations:
+  - operator: avg
+    grouping:
+      mode: by
+      labels:
+      - region
+    parameter: null
+- aggregations:
+  - aggregation_id: 1
+    read_count_threshold: 1
+  query: avg by (region, service, job) (quantile_over_time(0.75, data[1s]))
+  planned_subquery: quantile_over_time(0.75, data[1s])
+  query_time_aggregations:
+  - operator: avg
+    grouping:
+      mode: by
+      labels:
+      - region
+      - service
+      - job
+    parameter: null
+- aggregations:
+  - aggregation_id: 2
+    read_count_threshold: 60
+  query: topk by (region, service) (4, sum_over_time(data[1m]))
+  planned_subquery: topk by (region, service) (4, sum_over_time(data[1m]))
+  query_time_aggregations: []
+- aggregations:
+  - aggregation_id: 3
+    read_count_threshold: 30
+  - aggregation_id: 4
+    read_count_threshold: 30
+  query: sum by (region, service, job) (sum_over_time(data[10m]))
+  planned_subquery: sum by (region, service, job) (sum_over_time(data[10m]))
+  query_time_aggregations: []
+- aggregations:
+  - aggregation_id: 5
+    read_count_threshold: 30
+  - aggregation_id: 6
+    read_count_threshold: 30
+  query: sum by (region, service) (sum_over_time(data[10m]))
+  planned_subquery: sum by (region, service) (sum_over_time(data[10m]))
+  query_time_aggregations: []
+- aggregations:
+  - aggregation_id: 7
+    read_count_threshold: 40
+  query: topk by (region, service) (4, sum_over_time(data[20m]))
+  planned_subquery: topk by (region, service) (4, sum_over_time(data[20m]))
+  query_time_aggregations: []

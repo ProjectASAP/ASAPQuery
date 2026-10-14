@@ -1,0 +1,34 @@
+metrics:
+- metric: data
+  labels: &id001
+  - region
+  - service
+  - job
+  - label_0
+- metric: data_total
+  labels: *id001
+query_groups:
+- id: 1
+  repetition_delay_ms: 1000
+  queries:
+  - avg by (region, service, job) (quantile_over_time(0.99, data[1s]))
+  - avg by (region) (quantile_over_time(0.95, data[1s]))
+  - avg by (region, service, job) (quantile_over_time(0.75, data[1s]))
+  - topk by (region, service) (4, sum_over_time(data[1m]))
+  controller_options:
+    accuracy_sla: 0.95
+- id: 2
+  repetition_delay_ms: 20000
+  queries:
+  - sum by (region, service, job) (sum_over_time(data[10m]))
+  - sum by (region, service) (sum_over_time(data[10m]))
+  controller_options:
+    accuracy_sla: 0.95
+- id: 3
+  repetition_delay_ms: 30000
+  queries:
+  - topk by (region, service) (4, sum_over_time(data[20m]))
+  controller_options:
+    accuracy_sla: 0.95
+aggregate_cleanup:
+  policy: read_based
