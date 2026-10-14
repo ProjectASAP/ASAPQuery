@@ -193,6 +193,21 @@ impl SQLPatternParser {
         query
     }
 
+    /// SELECT clauses that SQLQueryData cannot represent.
+    fn has_unsupported_clauses(select: &Select) -> bool {
+        select.distinct.is_some()
+            || select.top.is_some()
+            || select.into.is_some()
+            || !select.lateral_views.is_empty()
+            || select.prewhere.is_some()
+            || !select.cluster_by.is_empty()
+            || !select.distribute_by.is_empty()
+            || !select.sort_by.is_empty()
+            || select.having.is_some()
+            || !select.named_window.is_empty()
+            || select.window_before_qualify
+    }
+
     fn parse_select(&self, select: &Select) -> Option<SQLQueryData> {
         let (metric, has_subquery) = self.get_metric(select)?;
 
@@ -204,25 +219,13 @@ impl SQLPatternParser {
             return None;
         }
 
+        if Self::has_unsupported_clauses(select) {
+            println!("Unexpected SELECT fields present");
+            return None;
+        }
+
         if !has_subquery {
             let time_info = self.get_time_info(select, &metric)?;
-
-            // Check for unexpected fields
-            if select.distinct.is_some()
-                || select.top.is_some()
-                || select.into.is_some()
-                || !select.lateral_views.is_empty()
-                || select.prewhere.is_some()
-                || !select.cluster_by.is_empty()
-                || !select.distribute_by.is_empty()
-                || !select.sort_by.is_empty()
-                || select.having.is_some()
-                || !select.named_window.is_empty()
-                || select.window_before_qualify
-            {
-                println!("Unexpected SELECT fields present");
-                return None;
-            }
 
             Some(SQLQueryData {
                 aggregation_info: aggregation,
@@ -235,10 +238,31 @@ impl SQLPatternParser {
                 limit: None,
             })
         } else {
+            // The outer layer filters nothing: its rows are the inner layer's
+            // output, and the time range belongs to the inner layer.
+            if select.selection.is_some() {
+                println!("WHERE on the outer layer of a nested query is not supported");
+                return None;
+            }
+
             // Parse subquery
             let subquery = match &select.from[0].relation {
                 TableFactor::Derived { subquery, .. } => match subquery.body.as_ref() {
                     SetExpr::Select(inner_select) => {
+                        // Query-level clauses of the inner layer have no place
+                        // in its SQLQueryData, so they would be dropped.
+                        if subquery.with.is_some()
+                            || subquery.order_by.is_some()
+                            || subquery.limit_clause.is_some()
+                            || subquery.fetch.is_some()
+                        {
+                            println!("ORDER BY / LIMIT inside a subquery is not supported");
+                            return None;
+                        }
+                        if Self::has_unsupported_clauses(inner_select) {
+                            println!("Unexpected SELECT fields present in subquery");
+                            return None;
+                        }
                         let (inner_aggregation, inner_alias) =
                             self.get_aggregation(inner_select)?;
                         let inner_group_bys = self.get_groupbys(inner_select)?;
