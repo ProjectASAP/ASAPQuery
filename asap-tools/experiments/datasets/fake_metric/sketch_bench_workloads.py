@@ -46,6 +46,7 @@ import argparse
 import json
 import os
 import re
+import warnings
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -189,22 +190,22 @@ def parse_promql(promql: str, interval: int, labels: Dict[str, List[str]]) -> Qu
     return _parse_series(text, interval, labels, promql)
 
 
-def query_from_entry(entry: dict, metrics: dict) -> Query:
+def query_from_entry(entry: dict, metrics: dict, labels: Dict[str, List[str]]) -> Query:
     """One `e2e.queries` entry: PromQL, or a structured multi-grouping query
     `{table, value, capability, grouping, quantile, window_secs,
-    interval_secs}` that pools every sample of a group over the window."""
+    interval_secs}` that pools every sample of a group over the window.
+    `labels` is metric_labels(metrics)."""
     if "promql" in entry:
-        q = parse_promql(
-            entry["promql"], entry["interval_secs"], metric_labels(metrics)
-        )
+        q = parse_promql(entry["promql"], entry["interval_secs"], labels)
         if metrics[q.table]["type"] == "records":
             raise ValueError(f"PromQL over records metric {q.table!r}: {entry}")
         return q
     table, capability = entry["table"], entry["capability"]
     if capability not in STRUCTURED_AGGS:
         raise ValueError(f"unsupported capability {capability!r}: {entry}")
-    labels = metric_labels(metrics)[table]
-    unknown = set(entry["grouping"]) - set(labels)
+    if table not in labels:
+        raise ValueError(f"unknown table {table!r}: {entry}")
+    unknown = set(entry["grouping"]) - set(labels[table])
     if unknown or entry["value"] not in value_columns(metrics[table]):
         raise ValueError(f"unknown labels or value for {table!r}: {entry}")
     return Query(
@@ -348,7 +349,8 @@ def asapquery_sql(entry: dict) -> str:
     if "NOW()" not in entry.get("sql", ""):
         raise ValueError(f"structured entry without an ASAPQuery sql on NOW(): {entry}")
     end = floored_end_datetime(entry["interval_secs"])
-    return entry["sql"].replace("NOW()", f"'{end}'")
+    sql = entry["sql"].rstrip().rstrip(";")
+    return sql.replace("NOW()", f"'{end}'")
 
 
 def value_columns(desc: dict) -> List[str]:
@@ -361,6 +363,8 @@ def init_sql(metrics: dict) -> str:
     statements = []
     for table, desc in metrics.items():
         names = [label["name"] for label in desc["labels"]]
+        if not names:
+            raise ValueError(f"metric {table!r} has no labels")
         columns = [f"{name} String" for name in names] + [
             f"{value} Float64" for value in value_columns(desc)
         ]
@@ -388,8 +392,10 @@ def convert(
     table_path: str, data_file: str, starting_delay_secs: int, duration_secs: int
 ) -> str:
     with open(table_path) as f:
-        (workload,) = json.load(f)["workloads"]
-    e2e = workload["e2e"]
+        workloads = json.load(f)["workloads"]
+    if len(workloads) != 1:
+        raise ValueError(f"{table_path}: expected 1 workload, got {len(workloads)}")
+    e2e = workloads[0]["e2e"]
     metrics = e2e["metrics"]
     labels = metric_labels(metrics)
     stem = os.path.splitext(os.path.basename(table_path))[0]
@@ -402,8 +408,15 @@ def convert(
 
     by_interval: Dict[int, List[str]] = {}
     asapquery: List[str] = []
+    max_window = 0
     for entry in e2e["queries"]:
-        q = query_from_entry(entry, metrics)
+        q = query_from_entry(entry, metrics, labels)
+        if q.interval_secs > duration_secs:
+            raise ValueError(
+                f"interval {q.interval_secs}s exceeds --duration-secs "
+                f"{duration_secs}: {describe(entry)}"
+            )
+        max_window = max(max_window, q.window_secs)
         by_interval.setdefault(q.interval_secs, []).append(
             f"-- {describe(entry)}\n{raw_sql(q, labels)}"
         )
@@ -412,6 +425,13 @@ def convert(
     if asapquery:
         # For the ASAPQuery arm; the runner does not read it.
         write_statements(os.path.join(sql_dir, "asapquery.sql"), asapquery)
+    if starting_delay_secs < QUERY_TIME_OFFSET_SECS + max_window:
+        # Same data for every arm, so arms stay comparable; absolutes are biased.
+        warnings.warn(
+            f"--starting-delay-secs {starting_delay_secs} < "
+            f"{QUERY_TIME_OFFSET_SECS + max_window}: early windows start "
+            "before ingestion"
+        )
 
     query_groups = []
     for interval, statements in sorted(by_interval.items()):
@@ -440,7 +460,8 @@ def convert(
         "dataset": {
             "name": "custom",
             "local_data_file": data_file,
-            # The runner's loader fills one table; the paced feeder writes all.
+            # The runner's loader fills only this table; nothing fills the
+            # other metrics' tables yet.
             "table": next(iter(labels)),
             "init_sql_file": init_path,
             "max_rows": 0,
