@@ -339,13 +339,6 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
 }
 
 fn run_saved(args: &Args) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        matches!(
-            args.query_language,
-            QueryLanguage::promql | QueryLanguage::sql
-        ),
-        "--planner saved supports only --query-language promql or sql"
-    );
     let scrape_interval_ms = check_optimizer_flags(args, "saved")?;
     anyhow::ensure!(
         args.input_config.is_none(),

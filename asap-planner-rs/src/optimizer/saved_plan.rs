@@ -56,20 +56,15 @@ struct E2eQuery {
 }
 
 impl E2eQuery {
-    /// The query if it is written in `language`.
-    fn text(&self, language: QueryLanguage) -> anyhow::Result<Option<&str>> {
-        let (promql, sql) = match (&self.promql, &self.sql) {
+    /// The query if it is written in SQL (`sql`) or PromQL (otherwise).
+    fn text(&self, sql: bool) -> anyhow::Result<Option<&str>> {
+        match (&self.promql, &self.sql) {
             (Some(_), Some(_)) | (None, None) => bail!(
                 "e2e query reading {:?} needs exactly one of `promql` and `sql`",
                 self.rqes
             ),
-            (promql, sql) => (promql.as_deref(), sql.as_deref()),
-        };
-        Ok(match language {
-            QueryLanguage::promql => promql,
-            QueryLanguage::sql => sql,
-            other => bail!("--planner saved supports only promql and sql, not {other:?}"),
-        })
+            (promql, sql_text) => Ok(if sql { sql_text } else { promql }.as_deref()),
+        }
     }
 }
 
@@ -107,8 +102,9 @@ struct Chosen {
     rqe: String,
     sketch: String,
     params: Value,
-    window_secs: u64,
-    slide_secs: u64,
+    /// Fractional below a second: an instant query's window is one scrape.
+    window_secs: f64,
+    slide_secs: f64,
     /// Index of the plan's deployment.
     deployment: usize,
     /// Present only when the deployment's grouping differs from the RQE's
@@ -163,8 +159,24 @@ fn e2e_promql_config(
 fn e2e_sql_config(
     selected: &[(&E2eQuery, &str)],
     metrics: &BTreeMap<String, E2eMetric>,
-) -> SQLControllerConfig {
-    SQLControllerConfig {
+) -> anyhow::Result<SQLControllerConfig> {
+    let mut tables = Vec::new();
+    for (name, m) in metrics
+        .iter()
+        .filter(|(_, m)| m.kind == RECORDS_METRIC_TYPE)
+    {
+        ensure!(
+            !m.values.is_empty(),
+            "records metric {name:?} has no values"
+        );
+        tables.push(TableDefinition {
+            name: name.clone(),
+            time_column: SQL_TIME_COLUMN.to_string(),
+            value_columns: m.values.keys().cloned().collect(),
+            metadata_columns: m.labels.iter().map(|l| l.name.clone()).collect(),
+        });
+    }
+    Ok(SQLControllerConfig {
         query_groups: by_interval(selected)
             .into_iter()
             .map(|(secs, queries)| SQLQueryGroup {
@@ -174,20 +186,11 @@ fn e2e_sql_config(
                 controller_options: ControllerOptions::default(),
             })
             .collect(),
-        tables: metrics
-            .iter()
-            .filter(|(_, m)| m.kind == RECORDS_METRIC_TYPE)
-            .map(|(name, m)| TableDefinition {
-                name: name.clone(),
-                time_column: SQL_TIME_COLUMN.to_string(),
-                value_columns: m.values.keys().cloned().collect(),
-                metadata_columns: m.labels.iter().map(|l| l.name.clone()).collect(),
-            })
-            .collect(),
+        tables,
         windowing: None,
         sketch_parameters: None,
         aggregate_cleanup: None,
-    }
+    })
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
@@ -212,6 +215,13 @@ pub fn saved_plan_output(
     language: QueryLanguage,
     scrape_interval_ms: u64,
 ) -> anyhow::Result<PlannerOutput> {
+    let sql = match language {
+        QueryLanguage::sql => true,
+        QueryLanguage::promql => false,
+        other => {
+            bail!("--planner saved supports only --query-language promql or sql, not {other:?}")
+        }
+    };
     let table: Table = read_json(table_path)?;
     let [TableWorkload { e2e: Some(e2e) }] = table.workloads.as_slice() else {
         bail!(
@@ -255,7 +265,7 @@ pub fn saved_plan_output(
     }
     let mut selected: Vec<(&E2eQuery, &str)> = Vec::new();
     for q in &e2e.queries {
-        if let Some(text) = q.text(language)? {
+        if let Some(text) = q.text(sql)? {
             selected.push((q, text));
         }
     }
@@ -264,17 +274,16 @@ pub fn saved_plan_output(
         "{}: no e2e query is written in {language:?}",
         table_path.display()
     );
-    let (promql, sql);
-    let config = match language {
-        QueryLanguage::sql => {
-            sql = e2e_sql_config(&selected, &e2e.metrics);
-            MilpConfig::Sql(&sql)
-        }
-        _ => {
-            promql = e2e_promql_config(&selected, &e2e.metrics)?;
-            MilpConfig::Promql(&promql)
-        }
+    let (promql_config, sql_config);
+    let config = if sql {
+        sql_config = e2e_sql_config(&selected, &e2e.metrics)?;
+        MilpConfig::Sql(&sql_config)
+    } else {
+        promql_config = e2e_promql_config(&selected, &e2e.metrics)?;
+        MilpConfig::Promql(&promql_config)
     };
+    // The metric and table checks `--planner milp` makes.
+    config.hints()?;
     // Before the leaf split, which turns an avg into two leaves.
     reject_unwritable_queries(config)?;
 
@@ -283,10 +292,12 @@ pub fn saved_plan_output(
     for &(q, text) in &selected {
         let rqes = q.rqes.iter().map(String::as_str);
         let leaves: Vec<(String, Vec<&str>)> = match config {
-            // A SQL query is one leaf.
+            // A SQL query is one leaf, and its RQEs a set.
             MilpConfig::Sql(_) => {
                 ensure!(!q.rqes.is_empty(), "query {text:?} names no RQEs");
-                vec![(text.to_string(), rqes.collect())]
+                let mut rqes: Vec<&str> = rqes.collect();
+                rqes.sort_unstable();
+                vec![(text.to_string(), rqes)]
             }
             MilpConfig::Promql(_) => {
                 let leaves = decompose_to_leaves(text);
@@ -345,8 +356,10 @@ pub fn saved_plan_output(
                     .clone()
                     .unwrap_or_else(|| raqe.grouping_labels.clone()),
                 config: cost_entry(pick)?,
-                window_ms: pick.window_secs * 1000,
-                slide_ms: pick.slide_secs * 1000,
+                window_ms: whole_ms(pick.window_secs)
+                    .with_context(|| format!("RQE {rqe:?}'s window"))?,
+                slide_ms: whole_ms(pick.slide_secs)
+                    .with_context(|| format!("RQE {rqe:?}'s slide"))?,
                 key_tracker: None,
             };
             ensure!(
@@ -386,6 +399,20 @@ pub fn saved_plan_output(
         &deployments,
         &served_by,
     )?)
+}
+
+/// Largest gap between `secs` in ms and the nearest whole ms that is still
+/// float error, not a fraction of a ms.
+const WHOLE_MS_TOLERANCE: f64 = 1e-6;
+
+/// `secs` in ms, refusing a negative or non-finite value or a fraction of a ms.
+fn whole_ms(secs: f64) -> anyhow::Result<u64> {
+    let ms = secs * 1000.0;
+    ensure!(
+        ms.is_finite() && ms >= 0.0 && (ms - ms.round()).abs() < WHOLE_MS_TOLERANCE,
+        "{secs} s is not a whole number of ms"
+    );
+    Ok(ms.round() as u64)
 }
 
 /// The rules of sketch-bench's `is_eligible` that need no workload facts or
@@ -776,6 +803,106 @@ mod tests {
             .expect("refused")
             .to_string();
         assert!(err.contains("served by two deployments"), "{err}");
+    }
+
+    /// Every RQE of a SQL query is checked, not just the first.
+    #[test]
+    fn refuses_a_sql_query_whose_rqes_need_different_sketches() {
+        let mut plan = mixed_plan(1);
+        plan["plans"][0]["chosen"][2]["params"] = json!({"lg_k": 14});
+        let err = run_mixed(plan, QueryLanguage::sql)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("different sketches"), "{err}");
+    }
+
+    /// A SQL query's RQEs are a set: listing them in another order is the
+    /// same query.
+    #[test]
+    fn reads_a_repeated_sql_query_whose_rqes_are_reordered() {
+        let entry = r#"{"sql": "SELECT service, COUNT(DISTINCT user_id) FROM http WHERE ts BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY service",
+             "interval_secs": 60, "rqes": ["users_1pct", "users_5pct"]},"#;
+        let table = MIXED_TABLE.replace(
+            entry,
+            &format!(
+                "{entry}{}",
+                entry.replace(
+                    r#"["users_1pct", "users_5pct"]"#,
+                    r#"["users_5pct", "users_1pct"]"#
+                )
+            ),
+        );
+        assert_ne!(table, MIXED_TABLE);
+        run_in(
+            &table,
+            mixed_plan(1).to_string().as_bytes(),
+            None,
+            QueryLanguage::sql,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn refuses_a_records_metric_without_labels_or_values() {
+        for (from, to, reason) in [
+            (
+                r#""labels": [{"name": "region"}, {"name": "service"}],"#,
+                r#""labels": [],"#,
+                "metadata",
+            ),
+            (
+                r#""values": {"latency": {}, "user_id": {}}"#,
+                r#""values": {}"#,
+                r#"records metric "http" has no values"#,
+            ),
+        ] {
+            let table = MIXED_TABLE.replace(from, to);
+            assert_ne!(table, MIXED_TABLE);
+            let err = run_in(
+                &table,
+                mixed_plan(1).to_string().as_bytes(),
+                None,
+                QueryLanguage::sql,
+            )
+            .err()
+            .expect("refused")
+            .to_string();
+            assert!(err.contains(reason), "{err}");
+        }
+    }
+
+    #[test]
+    fn refuses_a_language_other_than_promql_or_sql() {
+        let err = run_in(
+            TABLE,
+            plans(shared_p50()).to_string().as_bytes(),
+            None,
+            QueryLanguage::elastic_sql,
+        )
+        .err()
+        .expect("refused")
+        .to_string();
+        assert!(err.contains("only --query-language promql or sql"), "{err}");
+    }
+
+    /// An instant query's window is one scrape, which sketch-bench writes in
+    /// fractional seconds (0.1 s at 10 samples/s).
+    #[test]
+    fn writes_a_sub_second_window_in_ms() {
+        let mut plan = plans(shared_p50());
+        plan["plans"][0]["chosen"][0]["window_secs"] = json!(0.1);
+        plan["plans"][0]["chosen"][0]["slide_secs"] = json!(0.1);
+        let yaml = run(plan, None).unwrap().to_streaming_yaml_string().unwrap();
+        assert!(yaml.contains("windowSizeMs: 100\n"), "{yaml}");
+
+        let mut plan = plans(shared_p50());
+        plan["plans"][0]["chosen"][0]["window_secs"] = json!(0.0005);
+        let err = format!("{:#}", run(plan, None).err().expect("refused"));
+        assert!(
+            err.contains("RQE \"sum\"'s window: 0.0005 s is not a whole number of ms"),
+            "{err}"
+        );
     }
 
     #[test]
