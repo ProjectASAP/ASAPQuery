@@ -325,7 +325,7 @@ def render(
             )
             is_rate = q.series_fn == "rate"
             sql = rate_from_samples(cols, samples, end, q.window_secs, is_rate)
-        if q.agg is not None:
+        if q.agg is not None and q.series_fn != "per_series_quantile":
             combine = raw_agg(q.agg, q.quantile)
             sql = f"SELECT {group}, {combine} AS value FROM ({sql}) GROUP BY {group}"
     if q.topk is not None:
