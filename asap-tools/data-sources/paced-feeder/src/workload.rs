@@ -1,11 +1,14 @@
-//! Seeded synthetic workload: one or more metrics, each a set of labelled
-//! series emitting `samples_per_sec` evenly spaced samples per second.
+//! Seeded synthetic workload: either one or more metrics, each a set of
+//! labelled series emitting `samples_per_sec` evenly spaced samples per
+//! second, or one or more `records` metrics (see [`crate::records`]).
 //!
 //! A sample's value depends only on `(metric seed, series, sample index)`,
 //! never on wall-clock time or on which sink sends it, so two feeders started
 //! with the same parameters produce identical data.
 
+use crate::records::{RecordMetric, Records};
 use serde::Deserialize;
+use std::sync::Arc;
 
 /// One generated sample of one metric. `series` indexes into [`Metric::series`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,8 +18,25 @@ pub struct Row {
     pub value: f64,
 }
 
+/// One tick's rows of one metric: samples of series, or records.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rows {
+    Samples(Vec<Row>),
+    Records(Records),
+}
+
+impl Rows {
+    pub fn len(&self) -> usize {
+        match self {
+            Rows::Samples(rows) => rows.len(),
+            Rows::Records(records) => records.len(),
+        }
+    }
+}
+
 /// A label with `cardinality` values, or, with `child_of`, that many values
-/// under each value of the parent label.
+/// under each value of the parent label. `skew` (records metrics only) is the
+/// Zipf exponent its values are drawn with.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LabelSpec {
@@ -24,6 +44,8 @@ pub struct LabelSpec {
     pub cardinality: u64,
     #[serde(default)]
     pub child_of: Option<String>,
+    #[serde(default)]
+    pub skew: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,10 +73,13 @@ pub struct Metric {
     pub seed: u64,
 }
 
+/// Gauge and counter `metrics` and `records` metrics, sent by one feeder.
 #[derive(Debug, Clone)]
 pub struct Workload {
+    /// Samples per second per series of `metrics`; unused for `records`.
     pub samples_per_sec: u32,
     pub metrics: Vec<Metric>,
+    pub records: Vec<Arc<RecordMetric>>,
 }
 
 impl Workload {
@@ -82,6 +107,7 @@ impl Workload {
             name: name.to_string(),
             cardinality: cardinality as u64,
             child_of: None,
+            skew: None,
         };
         let metric = Metric {
             name: name.to_string(),
@@ -100,6 +126,7 @@ impl Workload {
         Self {
             samples_per_sec,
             metrics: vec![metric],
+            records: Vec::new(),
         }
     }
 
@@ -107,17 +134,39 @@ impl Workload {
         self.metrics.iter().map(|m| m.series.len()).sum()
     }
 
+    /// Series samples or records per second.
     pub fn rows_per_tick(&self) -> usize {
         self.num_series() * self.samples_per_sec as usize
+            + self
+                .records
+                .iter()
+                .map(|r| r.records_per_sec as usize)
+                .sum::<usize>()
     }
 
-    /// The samples of `metric` for one-second tick `tick`, series-major: each
-    /// series' `samples_per_sec` samples in timestamp order, then the next
-    /// series'. Slot `j` of `n` is at `t + (j + 1) · 1 s / n`, where `t` is the
-    /// tick's start, so the tick lies in `(t, t + 1 s]`: the same left-open
-    /// interval as ASAPQuery's one-second windows, so a tick never spans two
-    /// of them.
-    pub fn tick_rows(&self, metric: usize, tick: u64, start_ms: i64) -> Vec<Row> {
+    /// The metric names, gauges and counters first, then records.
+    pub fn names(&self) -> Vec<String> {
+        let series = self.metrics.iter().map(|m| m.name.clone());
+        series
+            .chain(self.records.iter().map(|r| r.name.clone()))
+            .collect()
+    }
+
+    /// Rows of the `target`-th metric of [`Self::names`] for one-second tick
+    /// `tick`, with event time in `(t, t + 1 s]`, where `t` is
+    /// `start_ms + tick · 1 s`: the same left-open interval as ASAPQuery's
+    /// one-second windows, so a tick never spans two of them.
+    pub fn tick_rows(&self, target: usize, tick: u64, start_ms: i64) -> Rows {
+        match target.checked_sub(self.metrics.len()) {
+            None => Rows::Samples(self.series_rows(target, tick, start_ms)),
+            Some(r) => Rows::Records(self.records[r].tick(tick, start_ms)),
+        }
+    }
+
+    /// The samples of `metric` for tick `tick`, series-major: each series'
+    /// `samples_per_sec` samples in timestamp order, then the next series'.
+    /// Slot `j` of `n` is at `t + (j + 1) · 1 s / n`.
+    pub fn series_rows(&self, metric: usize, tick: u64, start_ms: i64) -> Vec<Row> {
         let per_sec = u64::from(self.samples_per_sec);
         let tick_ms = start_ms + tick as i64 * 1_000;
         let metric = &self.metrics[metric];
@@ -170,7 +219,7 @@ impl Metric {
 
 /// Counter-based uniform draw in (0, 1]: a stateless hash of the inputs, so
 /// any sample can be regenerated independently of the ones before it.
-fn unit_uniform(seed: u64, series: u64, sample_index: u64) -> f64 {
+pub fn unit_uniform(seed: u64, series: u64, sample_index: u64) -> f64 {
     let x = splitmix64(seed ^ splitmix64(series ^ splitmix64(sample_index)));
     // Top 53 bits, shifted into (0, 1] so the Pareto transform never divides by zero.
     ((x >> 11) + 1) as f64 / (1u64 << 53) as f64
@@ -194,7 +243,7 @@ mod tests {
     #[test]
     fn a_tick_is_series_major_in_timestamp_order() {
         let w = workload();
-        let rows = w.tick_rows(0, 5, 10_000);
+        let rows = w.series_rows(0, 5, 10_000);
         assert_eq!(rows.len(), 12);
         for (series, samples) in rows.chunks(2).enumerate() {
             assert!(samples.iter().all(|r| r.series == series));
@@ -206,7 +255,7 @@ mod tests {
     #[test]
     fn batches_keep_each_series_in_one_request_in_order() {
         let w = Workload::grouped("data", 7, 3, 2, 3, 1.5, 1.0);
-        let rows = w.tick_rows(0, 2, 0);
+        let rows = w.series_rows(0, 2, 0);
         // 7 rows round down to 2 series (6 rows); 1 row still takes a series.
         for (batch_rows, sizes) in [(7, vec![6, 6, 6]), (1, vec![3; 6]), (100, vec![18])] {
             let batches: Vec<_> = series_batches(rows.len(), 3, batch_rows).collect();
@@ -232,7 +281,7 @@ mod tests {
     fn values_depend_only_on_seed_series_and_sample_index() {
         let w = workload();
         let values = |w: &Workload, start_ms| -> Vec<f64> {
-            w.tick_rows(0, 4, start_ms)
+            w.series_rows(0, 4, start_ms)
                 .iter()
                 .map(|r| r.value)
                 .collect()
