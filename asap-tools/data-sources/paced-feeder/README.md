@@ -160,7 +160,8 @@ http: 2000000 records/s
 ```
 
 Event time starts at the next whole wall-clock second (or `--start-ms`), so
-`NOW()`-relative queries see the data as it arrives.
+`NOW()`-relative queries see the data as it arrives. `--send-at-ms` sends the
+first tick at a later wall-clock time, backdating the data by the difference.
 
 ## Usage
 

@@ -93,6 +93,11 @@ struct Args {
     /// next whole wall-clock second, so `NOW()`-relative queries see live data.
     #[arg(long)]
     start_ms: Option<i64>,
+    /// Wall-clock time to send the first tick, in ms since the epoch. Defaults
+    /// to `--start-ms`; a later time backdates the data by the difference, so
+    /// feeders launched at different moments share one event-time origin.
+    #[arg(long, requires = "start_ms")]
+    send_at_ms: Option<i64>,
 
     /// Rows per HTTP request, for gauges and counters rounded down to whole
     /// series (at least one). Defaults to 50,000 for remote write, which keeps
@@ -134,6 +139,7 @@ struct RunStats {
     samples_per_sec: Option<u32>,
     seed: u64,
     start_ms: i64,
+    send_at_ms: i64,
     duration_secs: u64,
     target_rows_per_sec: usize,
     rows_sent: usize,
@@ -262,6 +268,14 @@ fn next_whole_second_ms() -> i64 {
         .expect("system clock is after the epoch")
         .as_millis() as i64;
     (now_ms / 1_000 + 1) * 1_000
+}
+
+/// Data sent before its own timestamp would be in the future.
+fn check_send_at(start_ms: i64, send_at_ms: i64) -> Result<()> {
+    if send_at_ms < start_ms {
+        bail!("--send-at-ms ({send_at_ms}) must not be before --start-ms ({start_ms})");
+    }
+    Ok(())
 }
 
 /// Sleep until wall-clock `epoch_ms`, then return the monotonic instant it maps to.
@@ -426,6 +440,8 @@ async fn main() -> Result<()> {
     let sink = Arc::new(Sink::new(&args, sink_kind, url, &workload, batch_rows)?);
     let permits = Arc::new(Semaphore::new(args.concurrency));
     let start_ms = args.start_ms.unwrap_or_else(next_whole_second_ms);
+    let send_at_ms = args.send_at_ms.unwrap_or(start_ms);
+    check_send_at(start_ms, send_at_ms)?;
     let metric_names = workload.names();
 
     let series = if workload.metrics.is_empty() {
@@ -438,12 +454,12 @@ async fn main() -> Result<()> {
         )
     };
     eprintln!(
-        "paced_feeder: {sink_kind:?} -> {url}, {}{series} = {} rows/s for {duration_secs}s, start_ms={start_ms}",
+        "paced_feeder: {sink_kind:?} -> {url}, {}{series} = {} rows/s for {duration_secs}s, start_ms={start_ms}, send_at_ms={send_at_ms}",
         metric_names.join(", "),
         workload.rows_per_tick(),
     );
 
-    let base = wait_for_wall_clock(start_ms).await;
+    let base = wait_for_wall_clock(send_at_ms).await;
     let mut ticks = Vec::with_capacity(duration_secs as usize);
     let mut errors: Vec<String> = Vec::new();
     let mut failed_requests = 0;
@@ -536,6 +552,7 @@ async fn main() -> Result<()> {
         samples_per_sec: (!workload.metrics.is_empty()).then_some(workload.samples_per_sec),
         seed: args.seed,
         start_ms,
+        send_at_ms,
         duration_secs,
         target_rows_per_sec: workload.rows_per_tick(),
         rows_sent,
@@ -569,4 +586,16 @@ async fn main() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_at_may_backdate_but_not_postdate_the_data() {
+        assert!(check_send_at(1_000, 1_000).is_ok());
+        assert!(check_send_at(1_000, 301_000).is_ok());
+        assert!(check_send_at(1_000, 999).is_err());
+    }
 }
