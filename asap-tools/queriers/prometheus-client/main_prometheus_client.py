@@ -30,6 +30,7 @@ from classes.QueryLatencyExporter import QueryLatencyExporter
 from classes.query_client import QueryClient
 from classes.query_client_factory import QueryClientFactory
 from classes.query_template import QueryTemplate
+from classes.rqe_query_client import resolve_rqe_exprs_file
 from classes.query_time import (
     aligned_eval_time,
     first_aligned_eval_time,
@@ -224,6 +225,7 @@ def execute_single_query(
         response = server_object.execute_query(
             query=rendered_query,
             query_time=query_unix_time,
+            config_query=query,
         )
         query_end_time = time.time()
 
@@ -673,6 +675,21 @@ def main(args: Any) -> None:
                 server_name=server.name,
                 disable_ssl=True,
                 retry=debug_retry,
+            )
+
+            # Mount debug adapter for HTTP request logging
+            debug_adapter = DebugHTTPAdapter(server.name)
+            client.session.mount("http://", debug_adapter)
+            client.session.mount("https://", debug_adapter)
+        elif protocol == "rqe":
+            assert server.rqe_exprs_file is not None
+            client = QueryClientFactory.create(
+                protocol=protocol,
+                server_url=server.url,
+                server_name=server.name,
+                rqe_exprs_file=resolve_rqe_exprs_file(
+                    args.config_file, server.rqe_exprs_file
+                ),
             )
 
             # Mount debug adapter for HTTP request logging

@@ -47,6 +47,7 @@ class ClickHouseQueryClient(QueryClient):
         self,
         query: str,
         query_time: Optional[int] = None,
+        config_query: Optional[str] = None,
     ) -> QueryResponse:
         """
         Execute SQL query via ClickHouse HTTP interface.
@@ -55,6 +56,7 @@ class ClickHouseQueryClient(QueryClient):
             query: SQL query string (may contain template variables already substituted)
             query_time: Not directly used - time filtering should be done via
                         template substitution before calling this method
+            config_query: Unused; SQL is sent as rendered
 
         Returns:
             QueryResponse with normalized data

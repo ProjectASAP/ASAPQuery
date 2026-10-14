@@ -20,12 +20,18 @@ metrics the paced feeder generates. The config has:
   planner configs (e.g. from `asap-planner --planner saved`).
 - `streaming.forward_unsupported_queries=false`: Prometheus gets no data in
   sketchdb mode, so a forwarded query would come back empty.
+- `query_engine.rqe_exprs_file`: a side file next to the config,
+  `<config stem>.rqe_exprs.json`, mapping each query's text in the config to
+  the table's `expr` tree (queries without `expr` are left out). With
+  `--frontend rqe` the config sets `query_engine.frontend=rqe` and leaves out
+  the queries without `expr` (e.g. `rate`), with a note, so every query it runs
+  has a tree; the baseline mode runs the same queries.
 
 Usage (from asap-tools/experiments):
   python sketch_bench_e2e/sketch_bench_e2e_configs.py \\
       --workload-table <sketch-bench>/.../synthetic-templatesclassic-shared1.json \\
       --seed 42 --starting-delay-secs 120 --query-duration-secs 3600 \\
-      [--prebuilt-output-dir DIR] [--sql-queries FILE]
+      [--prebuilt-output-dir DIR] [--sql-queries FILE] [--frontend rqe]
 Then:
   python experiment_run_e2e.py experiment_type=sketch_bench_e2e/<table stem> ...
 """
@@ -42,6 +48,8 @@ EXPERIMENTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, EXPERIMENTS_DIR)
 
 from experiment_utils.config import (  # noqa: E402
+    QUERY_FRONTEND_PROMQL,
+    QUERY_FRONTEND_RQE,
     _load_sql_queries,
     check_prebuilt_controller_output,
 )
@@ -60,6 +68,8 @@ SERVERS = [
 ]
 SKETCHDB_MODE = {"mode": "sketchdb", "server": "sketchdb"}
 BASELINE_MODE = {"mode": "baseline", "server": "prometheus"}
+# The side file next to a generated config: <config stem> + this.
+RQE_EXPRS_SUFFIX = ".rqe_exprs.json"
 # Seconds the window ending at an evaluation time gets for its data to arrive.
 DEFAULT_QUERY_TIME_OFFSET_SECS = 10
 # Feeder time beyond the query phase: covers flow.steady_state_wait (60 s in
@@ -91,8 +101,12 @@ def build_config(
     records_per_sec: Optional[int] = None,
     prebuilt_output_dir: Optional[str] = None,
     sql_queries_file: Optional[str] = None,
-) -> Tuple[dict, List[str]]:
-    """Return (config, notes on what was skipped)."""
+    frontend: str = QUERY_FRONTEND_PROMQL,
+) -> Tuple[dict, List[str], Dict[str, dict]]:
+    """Return (config, notes on what was skipped, RQE side file: query text in
+    the config -> its `expr`)."""
+    if frontend not in (QUERY_FRONTEND_PROMQL, QUERY_FRONTEND_RQE):
+        raise ValueError(f"unknown frontend {frontend!r}")
     if sql_queries_file is not None and prebuilt_output_dir is None:
         # The planner rejects the SQL groups' `time_window_seconds` and can't
         # plan them; they need configs from `asap-planner --planner saved`.
@@ -100,11 +114,10 @@ def build_config(
     e2e = load_e2e(table_path)
     notes: List[str] = []
 
-    promql = [
-        (q["interval_secs"], q["promql"]) for q in e2e["queries"] if "promql" in q
-    ]
+    # (entry, query text in the config)
+    promql_entries = [(q, q["promql"]) for q in e2e["queries"] if "promql" in q]
     structured = [q for q in e2e["queries"] if "promql" not in q]
-    sql: List[Tuple[int, str]] = []
+    sql_entries: List[Tuple[dict, str]] = []
     if structured and sql_queries_file is None:
         notes.append(
             f"skipped {len(structured)} structured (multi-grouping) queries: "
@@ -117,11 +130,29 @@ def build_config(
                 f"{sql_queries_file} has {len(statements)} statements; the table "
                 f"has {len(structured)} structured queries"
             )
-        sql = [(q["interval_secs"], s) for q, s in zip(structured, statements)]
+        sql_entries = list(zip(structured, statements))
+
+    if frontend == QUERY_FRONTEND_RQE:
+        # The rqe querier has no PromQL/SQL fallback.
+        no_expr = [t for q, t in promql_entries + sql_entries if "expr" not in q]
+        if no_expr:
+            notes.append(
+                f"skipped {len(no_expr)} queries without an RQE expression "
+                f"(--frontend rqe): {no_expr}"
+            )
+        promql_entries = [(q, t) for q, t in promql_entries if "expr" in q]
+        sql_entries = [(q, t) for q, t in sql_entries if "expr" in q]
+    rqe_exprs: Dict[str, dict] = {}
+    for q, text in promql_entries + sql_entries:
+        if "expr" not in q:
+            continue
+        if rqe_exprs.setdefault(text, q["expr"]) != q["expr"]:
+            raise ValueError(f"{table_path}: two different exprs for {text!r}")
+    sql = [(q["interval_secs"], t) for q, t in sql_entries]
 
     query_groups = []
     for queries_by_interval, extra in (
-        (by_interval(promql), {}),
+        (by_interval([(q["interval_secs"], t) for q, t in promql_entries]), {}),
         # The SQL templates read only {{ end_time }} / {{ end_datetime }} (the
         # window is in the SQL); the client requires a window to render them.
         (by_interval(sql), {"time_window_seconds": 0}),
@@ -212,11 +243,27 @@ def build_config(
         prebuilt_output_dir = os.path.abspath(prebuilt_output_dir)
         check_prebuilt_controller_output(prebuilt_output_dir)
         config["controller"] = {"prebuilt_output_dir": prebuilt_output_dir}
-    return config, notes
+    if frontend == QUERY_FRONTEND_RQE:
+        config["query_engine"] = {"frontend": QUERY_FRONTEND_RQE}
+    return config, notes, rqe_exprs
 
 
-def write_config(config: dict, table_path: str, output_path: str) -> None:
+def rqe_exprs_path(output_path: str) -> str:
+    return os.path.splitext(output_path)[0] + RQE_EXPRS_SUFFIX
+
+
+def write_config(
+    config: dict, rqe_exprs: Dict[str, dict], table_path: str, output_path: str
+) -> None:
+    """Write the config and, next to it, its RQE side file."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    side_file = os.path.abspath(rqe_exprs_path(output_path))
+    with open(side_file, "w") as f:
+        json.dump(rqe_exprs, f, indent=1)
+    config = {
+        **config,
+        "query_engine": {**config.get("query_engine", {}), "rqe_exprs_file": side_file},
+    }
     with open(output_path, "w") as f:
         f.write("# @package _global_\n")
         f.write(f"# Generated by sketch_bench_e2e_configs.py from {table_path}\n")
@@ -250,10 +297,16 @@ def main() -> None:
     parser.add_argument("--records-per-sec", type=int)
     parser.add_argument("--prebuilt-output-dir")
     parser.add_argument("--sql-queries")
+    parser.add_argument(
+        "--frontend",
+        choices=[QUERY_FRONTEND_PROMQL, QUERY_FRONTEND_RQE],
+        default=QUERY_FRONTEND_PROMQL,
+        help="rqe: set query_engine.frontend=rqe and leave out queries without expr",
+    )
     parser.add_argument("--output", help="default: <output dir>/<table stem>.yaml")
     args = parser.parse_args()
 
-    config, notes = build_config(
+    config, notes, rqe_exprs = build_config(
         args.workload_table,
         seed=args.seed,
         starting_delay_secs=args.starting_delay_secs,
@@ -264,10 +317,11 @@ def main() -> None:
         records_per_sec=args.records_per_sec,
         prebuilt_output_dir=args.prebuilt_output_dir,
         sql_queries_file=args.sql_queries,
+        frontend=args.frontend,
     )
     stem = os.path.splitext(os.path.basename(args.workload_table))[0]
     output = args.output or os.path.join(DEFAULT_OUTPUT_DIR, f"{stem}.yaml")
-    write_config(config, args.workload_table, output)
+    write_config(config, rqe_exprs, args.workload_table, output)
     for note in notes:
         print(f"note: {note}")
     print(output)

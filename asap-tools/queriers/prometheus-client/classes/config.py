@@ -11,13 +11,19 @@ class ServerConfig:
         database: Optional[str],
         user: Optional[str],
         password: Optional[str],
+        # rqe-specific: JSON side file of query text -> RQE expression tree,
+        # relative to the client config's directory
+        rqe_exprs_file: Optional[str] = None,
     ):
+        if protocol == "rqe" and not rqe_exprs_file:
+            raise ValueError(f"server {name!r}: the rqe protocol needs rqe_exprs_file")
         self.name = name
         self.url = url
         self.protocol = protocol
         self.database = database
         self.user = user
         self.password = password
+        self.rqe_exprs_file = rqe_exprs_file
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ServerConfig":
@@ -28,6 +34,7 @@ class ServerConfig:
             database=data.get("database"),
             user=data.get("user"),
             password=data.get("password"),
+            rqe_exprs_file=data.get("rqe_exprs_file"),
         )
 
 

@@ -186,6 +186,7 @@ def main(cfg: DictConfig):
             cfg.aggregate_cleanup,
             cfg.get("sketch_parameters", None),
             cfg.get("windowing", None),
+            rqe_exprs_file=config.rqe_exprs_file_for_frontend(cfg.query_engine),
         )
     )
     sync.rsync_controller_client_configs(

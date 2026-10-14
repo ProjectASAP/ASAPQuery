@@ -89,6 +89,13 @@ query_engine:
   # dropping them; the run records their size and fails if any write failed.
   # Spill files stay on the node; results syncs skip them.
   spill: false
+  # How the querier sends queries to ASAPQuery: "promql" (PromQL/SQL text) or
+  # "rqe" (each query's RQE expression tree, POSTed to /api/v1/rqe_query).
+  # Baselines always get PromQL/SQL.
+  frontend: "promql"
+  # rqe only: JSON object of query text -> RQE expression tree, e.g. written
+  # by sketch_bench_e2e/sketch_bench_e2e_configs.py.
+  rqe_exprs_file: null
 
 # Controller configuration
 controller:

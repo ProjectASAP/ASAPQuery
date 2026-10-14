@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Type
 from .query_client import QueryClient
 from .prometheus_query_client import PrometheusQueryClient
 from .clickhouse_query_client import ClickHouseQueryClient
+from .rqe_query_client import RqeQueryClient
 
 
 class QueryClientFactory:
@@ -11,6 +12,7 @@ class QueryClientFactory:
     _registry: Dict[str, Type[QueryClient]] = {
         "prometheus": PrometheusQueryClient,
         "clickhouse": ClickHouseQueryClient,
+        "rqe": RqeQueryClient,
     }
 
     @classmethod

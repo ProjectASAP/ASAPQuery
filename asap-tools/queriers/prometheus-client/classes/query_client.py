@@ -26,13 +26,16 @@ class QueryClient(ABC):
         self,
         query: str,
         query_time: Optional[int] = None,
+        config_query: Optional[str] = None,
     ) -> QueryResponse:
         """
         Execute a query and return normalized response.
 
         Args:
-            query: The query string (PromQL, SQL, etc.)
+            query: The query string (PromQL, SQL, etc.), templates rendered
             query_time: Optional Unix timestamp for point-in-time queries
+            config_query: The query as the config lists it, before template
+                rendering; None means `query` is that text
 
         Returns:
             QueryResponse with normalized data

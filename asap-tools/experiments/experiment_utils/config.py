@@ -8,8 +8,9 @@ import os
 import re
 import shutil
 import copy
+import json
 import yaml
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import hydra.utils
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -19,6 +20,57 @@ from experiment_utils.providers.factory import create_provider
 
 # Keys the planner's `ControllerOptions` accepts.
 CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
+
+# `query_engine.frontend`: how the querier sends queries to ASAPQuery.
+QUERY_FRONTEND_PROMQL = "promql"
+QUERY_FRONTEND_RQE = "rqe"
+# The querier protocol that POSTs RQE expression trees.
+RQE_PROTOCOL = "rqe"
+# The side file's name next to the client configs, which the querier resolves
+# relative to its config.
+RQE_EXPRS_FILENAME = "rqe_exprs.json"
+
+
+def rqe_exprs_file_for_frontend(query_engine_cfg: Any) -> Optional[str]:
+    """The side file (query text -> RQE expression tree) the sketchdb server's
+    querier reads under `query_engine.frontend=rqe`; None under promql."""
+    frontend = query_engine_cfg.frontend
+    if frontend == QUERY_FRONTEND_PROMQL:
+        return None
+    if frontend != QUERY_FRONTEND_RQE:
+        raise ValueError(
+            f"query_engine.frontend must be {QUERY_FRONTEND_PROMQL!r} or "
+            f"{QUERY_FRONTEND_RQE!r}, got {frontend!r}"
+        )
+    path = query_engine_cfg.get("rqe_exprs_file")
+    if not path:
+        raise ValueError(
+            "query_engine.frontend=rqe needs query_engine.rqe_exprs_file "
+            "(written by sketch_bench_e2e_configs.py)"
+        )
+    return str(path)
+
+
+def _copy_rqe_exprs(
+    rqe_exprs_file: str, query_groups: List[Dict[str, Any]], output_dir: str
+) -> None:
+    """Copy the side file next to the client configs after checking it has a
+    tree for every query: the rqe querier has no PromQL/SQL fallback."""
+    with open(rqe_exprs_file) as f:
+        exprs = json.load(f)
+    if not isinstance(exprs, dict):
+        raise ValueError(
+            f"{rqe_exprs_file}: expected a JSON object of query text -> expr"
+        )
+    missing = [q for g in query_groups for q in g["queries"] if q not in exprs]
+    if missing:
+        raise ValueError(
+            f"{rqe_exprs_file} has no RQE expression for {missing}; drop these "
+            "queries for query_engine.frontend=rqe (sketch_bench_e2e_configs.py "
+            "--frontend rqe does)"
+        )
+    with open(os.path.join(output_dir, RQE_EXPRS_FILENAME), "w") as f:
+        json.dump(exprs, f, indent=1)
 
 
 def validate_basic_config(
@@ -370,8 +422,13 @@ def generate_controller_client_configs(
     aggregate_cleanup: DictConfig = None,
     sketch_parameters: DictConfig = None,
     windowing: DictConfig = None,
+    rqe_exprs_file: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
-    """Generate controller client configurations from experiment parameters."""
+    """Generate controller client configurations from experiment parameters.
+
+    With `rqe_exprs_file` (see `rqe_exprs_file_for_frontend`), the sketchdb
+    mode's server uses the rqe protocol and a copy of that side file.
+    """
     # experiment_params is already loaded by Hydra
     experiment_config = OmegaConf.to_container(experiment_params, resolve=True)
     assert experiment_config is not None and isinstance(experiment_config, dict)
@@ -413,6 +470,16 @@ def generate_controller_client_configs(
         "existing_streaming_config",
     }
 
+    if rqe_exprs_file is not None:
+        if not any(
+            m["mode"] == constants.SKETCHDB_EXPERIMENT_NAME for m in experiment_modes
+        ):
+            raise ValueError(
+                "query_engine.frontend=rqe needs a "
+                f"{constants.SKETCHDB_EXPERIMENT_NAME!r} experiment mode"
+            )
+        _copy_rqe_exprs(rqe_exprs_file, experiment_config["query_groups"], output_dir)
+
     for experiment_mode in experiment_modes:
         full_config = copy.deepcopy(experiment_config)
         del full_config["experiment"]
@@ -428,6 +495,23 @@ def generate_controller_client_configs(
             and experiment_mode["query_prometheus_too"]
         ):
             full_config["servers"] = servers_config
+
+        if (
+            rqe_exprs_file is not None
+            and experiment_mode["mode"] == constants.SKETCHDB_EXPERIMENT_NAME
+        ):
+            full_config["servers"] = [
+                (
+                    {
+                        **server,
+                        "protocol": RQE_PROTOCOL,
+                        "rqe_exprs_file": RQE_EXPRS_FILENAME,
+                    }
+                    if server["name"] == experiment_mode["server"]
+                    else server
+                )
+                for server in full_config["servers"]
+            ]
 
         # Full config — used by prometheus_client (needs "servers", etc.)
         with open(

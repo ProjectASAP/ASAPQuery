@@ -5,6 +5,43 @@ from prometheus_api_client import PrometheusConnect
 from .query_client import QueryClient, QueryResponse
 
 
+def normalize_vector(raw_result: list) -> Dict[frozenset, float]:
+    """
+    Convert a Prometheus instant-vector result to normalized format.
+
+    Prometheus response format:
+        [{"metric": {"label1": "value1", ...}, "value": [timestamp, "value_str"]}, ...]
+
+    Returns:
+        Dict mapping frozenset of labels to float value
+    """
+    result = {}
+    for item in raw_result:
+        metric_labels = frozenset(item.get("metric", {}).items())
+        value = item.get("value", [None, None])
+        if len(value) >= 2 and value[1] is not None:
+            try:
+                result[metric_labels] = float(value[1])
+            except (ValueError, TypeError):
+                # Skip non-numeric values (e.g., NaN represented as string)
+                pass
+    return result
+
+
+def fetch_runtime_info(server_url: str) -> Optional[Dict[str, Any]]:
+    """Query SketchDB/Prometheus runtime info endpoint."""
+    try:
+        response = requests.get(
+            f"{server_url}/api/v1/status/runtimeinfo",
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json().get("data", {})
+    except Exception:
+        pass
+    return None
+
+
 class PrometheusQueryClient(QueryClient):
     """Query client for Prometheus HTTP API."""
 
@@ -42,6 +79,7 @@ class PrometheusQueryClient(QueryClient):
         self,
         query: str,
         query_time: Optional[int] = None,
+        config_query: Optional[str] = None,
     ) -> QueryResponse:
         """
         Execute PromQL query via Prometheus HTTP API.
@@ -49,6 +87,7 @@ class PrometheusQueryClient(QueryClient):
         Args:
             query: PromQL query string
             query_time: Optional Unix timestamp for point-in-time query
+            config_query: Unused; PromQL is sent as rendered
 
         Returns:
             QueryResponse with normalized data
@@ -62,7 +101,7 @@ class PrometheusQueryClient(QueryClient):
                 raw_result = self._client.custom_query(query=query)
 
             # Normalize to Dict[frozenset, float]
-            normalized = self._normalize_response(raw_result)
+            normalized = normalize_vector(raw_result)
             return QueryResponse(
                 success=True,
                 data=normalized,
@@ -75,37 +114,5 @@ class PrometheusQueryClient(QueryClient):
                 error_message=str(e),
             )
 
-    def _normalize_response(self, raw_result: list) -> Dict[frozenset, float]:
-        """
-        Convert Prometheus response to normalized format.
-
-        Prometheus response format:
-            [{"metric": {"label1": "value1", ...}, "value": [timestamp, "value_str"]}, ...]
-
-        Returns:
-            Dict mapping frozenset of labels to float value
-        """
-        result = {}
-        for item in raw_result:
-            metric_labels = frozenset(item.get("metric", {}).items())
-            value = item.get("value", [None, None])
-            if len(value) >= 2 and value[1] is not None:
-                try:
-                    result[metric_labels] = float(value[1])
-                except (ValueError, TypeError):
-                    # Skip non-numeric values (e.g., NaN represented as string)
-                    pass
-        return result
-
     def get_runtime_info(self) -> Optional[Dict[str, Any]]:
-        """Query SketchDB/Prometheus runtime info endpoint."""
-        try:
-            response = requests.get(
-                f"{self.server_url}/api/v1/status/runtimeinfo",
-                timeout=10,
-            )
-            if response.status_code == 200:
-                return response.json().get("data", {})
-        except Exception:
-            pass
-        return None
+        return fetch_runtime_info(self.server_url)
