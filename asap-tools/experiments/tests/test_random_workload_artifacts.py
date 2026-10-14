@@ -51,6 +51,15 @@ class RenderArtifactsTest(unittest.TestCase):
             {"universe_keys": 10_000, "keys_per_series": 1_000},
         )
 
+    def test_pilot_profile_contains_only_common_queries(self):
+        profile = artifacts.pilot_profile(workloads.generate_workloads(seed=862)[0])
+
+        self.assertEqual(len(profile["included_query_ids"]), 7)
+        self.assertEqual(len(profile["excluded_query_ids"]), 3)
+        self.assertEqual(profile["data_ingestion_interval_ms"], 100)
+        self.assertTrue(profile["promql_query_groups"])
+        self.assertTrue(profile["clickhouse_query_groups"])
+
 
 if __name__ == "__main__":
     unittest.main()

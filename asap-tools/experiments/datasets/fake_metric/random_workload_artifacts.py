@@ -10,6 +10,8 @@ import yaml
 
 
 ACCURACY_SLA = 0.95
+PILOT_DURATION_MS = 10 * 60 * 1000
+QUERY_FRESHNESS_DELAY_SECS = 10
 PROMQL_METRICS = ("data", "data_total")
 SQL_EVENTS_TABLE = {
     "name": "events",
@@ -93,6 +95,39 @@ def query_groups(queries, query_key):
     ]
 
 
+def pilot_profile(workload):
+    """Five-system workload-01 profile for the common PromQL query subset."""
+    queries = [query for query in workload["queries"] if query["support"] == "common-promql"]
+    max_lookback_ms = max(query["lookback_ms"] for query in queries)
+    starting_delay = max_lookback_ms // 1000 + QUERY_FRESHNESS_DELAY_SECS
+
+    def groups(query_key):
+        result = []
+        for group in query_groups(queries, query_key):
+            interval = group["repetition_delay_ms"]
+            result.append(
+                {
+                    **group,
+                    "client_options": {
+                        "starting_delay": starting_delay,
+                        "repetitions": max(1, PILOT_DURATION_MS // interval),
+                        "align_to_interval": True,
+                        "query_time_offset": QUERY_FRESHNESS_DELAY_SECS,
+                    },
+                }
+            )
+        return result
+
+    return {
+        "workload_id": workload["id"],
+        "included_query_ids": [query["id"] for query in queries],
+        "excluded_query_ids": [query["id"] for query in workload["queries"] if query not in queries],
+        "data_ingestion_interval_ms": workload["data_facts"]["scrape_interval_ms"],
+        "promql_query_groups": groups("promql"),
+        "clickhouse_query_groups": groups("clickhouse_sql"),
+    }
+
+
 def render(workload):
     """Return planner inputs and query schedule derived from one manifest."""
     labels = [label["name"] for label in workload["labels"]]
@@ -102,6 +137,7 @@ def render(workload):
         "data_facts": workload["data_facts"],
         "queries": queries,
         "paced_feeder_table": paced_feeder_table(workload),
+        "pilot_profile": pilot_profile(workload),
         "promql_planner": {
             "metrics": [{"metric": metric, "labels": labels} for metric in PROMQL_METRICS],
             "query_groups": query_groups(queries, "promql"),
@@ -144,6 +180,9 @@ def main():
     table = args.out / "paced_feeder_table.json"
     table.write_text(json.dumps(rendered["paced_feeder_table"], indent=2, sort_keys=True) + "\n")
     print(table)
+    profile = args.out / "pilot_profile.yaml"
+    profile.write_text(yaml.safe_dump(rendered["pilot_profile"], sort_keys=False))
+    print(profile)
 
 
 if __name__ == "__main__":
