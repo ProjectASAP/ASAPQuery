@@ -5,7 +5,7 @@
 Run a practical, end-to-end version of the paper's §6.2 experiment before the
 full PR 862 workload.  The experiment should retain the important workload
 shape—many input series and few returned series—and show the benefit of
-planning a *workload* of related RQEs rather than isolated queries.
+planning a *workload* of related repeating query expressions (RQEs) rather than isolated queries.
 
 The experiment has ten deterministic random workloads.  Each workload contains
 exactly ten atomic user queries; binary arithmetic queries are out of scope for

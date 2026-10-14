@@ -64,8 +64,12 @@ def paced_feeder_table(workload):
                             "values": {
                                 facts["events"]["distinct_key"]: {
                                     "rotating_pool": {
-                                        "universe_keys": facts["events"]["user_id_universe_size"],
-                                        "keys_per_series": facts["events"]["user_ids_per_leaf"],
+                                        "universe_keys": facts["events"][
+                                            "user_id_universe_size"
+                                        ],
+                                        "keys_per_series": facts["events"][
+                                            "user_ids_per_leaf"
+                                        ],
                                     }
                                 }
                             },
@@ -91,13 +95,17 @@ def query_groups(queries, query_key):
             "queries": rendered,
             "controller_options": {"accuracy_sla": ACCURACY_SLA},
         }
-        for index, (interval_ms, rendered) in enumerate(sorted(grouped.items()), start=1)
+        for index, (interval_ms, rendered) in enumerate(
+            sorted(grouped.items()), start=1
+        )
     ]
 
 
 def pilot_profile(workload):
     """Five-system workload-01 profile for the common PromQL query subset."""
-    queries = [query for query in workload["queries"] if query["support"] == "common-promql"]
+    queries = [
+        query for query in workload["queries"] if query["support"] == "common-promql"
+    ]
     max_lookback_ms = max(query["lookback_ms"] for query in queries)
     starting_delay = max_lookback_ms // 1000 + QUERY_FRESHNESS_DELAY_SECS
 
@@ -121,7 +129,9 @@ def pilot_profile(workload):
     return {
         "workload_id": workload["id"],
         "included_query_ids": [query["id"] for query in queries],
-        "excluded_query_ids": [query["id"] for query in workload["queries"] if query not in queries],
+        "excluded_query_ids": [
+            query["id"] for query in workload["queries"] if query not in queries
+        ],
         "data_ingestion_interval_ms": workload["data_facts"]["scrape_interval_ms"],
         "promql_query_groups": groups("promql"),
         "clickhouse_query_groups": groups("clickhouse_sql"),
@@ -131,7 +141,9 @@ def pilot_profile(workload):
 def pilot_e2e_table(workload):
     """Render the common pilot as the existing sketch-bench E2E table shape."""
     table = paced_feeder_table(workload)
-    common = [query for query in workload["queries"] if query["support"] == "common-promql"]
+    common = [
+        query for query in workload["queries"] if query["support"] == "common-promql"
+    ]
     table["workloads"][0]["e2e"]["queries"] = [
         {
             "promql": query["promql"],
@@ -147,6 +159,7 @@ def render(workload):
     """Return planner inputs and query schedule derived from one manifest."""
     labels = [label["name"] for label in workload["labels"]]
     queries = workload["queries"]
+    pilot_queries = [query for query in queries if query["support"] == "common-promql"]
     return {
         "workload_id": workload["id"],
         "data_facts": workload["data_facts"],
@@ -155,8 +168,17 @@ def render(workload):
         "pilot_profile": pilot_profile(workload),
         "pilot_e2e_table": pilot_e2e_table(workload),
         "promql_planner": {
-            "metrics": [{"metric": metric, "labels": labels} for metric in PROMQL_METRICS],
+            "metrics": [
+                {"metric": metric, "labels": labels} for metric in PROMQL_METRICS
+            ],
             "query_groups": query_groups(queries, "promql"),
+            "aggregate_cleanup": {"policy": "read_based"},
+        },
+        "pilot_promql_planner": {
+            "metrics": [
+                {"metric": metric, "labels": labels} for metric in PROMQL_METRICS
+            ],
+            "query_groups": query_groups(pilot_queries, "promql"),
             "aggregate_cleanup": {"policy": "read_based"},
         },
         "sql_planner": {
@@ -175,7 +197,7 @@ def main():
     workload = json.loads(args.manifest.read_text())
     rendered = render(workload)
     args.out.mkdir(parents=True, exist_ok=True)
-    for name in ("promql_planner", "sql_planner"):
+    for name in ("promql_planner", "pilot_promql_planner", "sql_planner"):
         path = args.out / f"{name}.yaml"
         path.write_text(yaml.safe_dump(rendered[name], sort_keys=False))
         print(path)
@@ -194,13 +216,17 @@ def main():
     )
     print(schedule)
     table = args.out / "paced_feeder_table.json"
-    table.write_text(json.dumps(rendered["paced_feeder_table"], indent=2, sort_keys=True) + "\n")
+    table.write_text(
+        json.dumps(rendered["paced_feeder_table"], indent=2, sort_keys=True) + "\n"
+    )
     print(table)
     profile = args.out / "pilot_profile.yaml"
     profile.write_text(yaml.safe_dump(rendered["pilot_profile"], sort_keys=False))
     print(profile)
     e2e_table = args.out / "pilot_e2e_table.json"
-    e2e_table.write_text(json.dumps(rendered["pilot_e2e_table"], indent=2, sort_keys=True) + "\n")
+    e2e_table.write_text(
+        json.dumps(rendered["pilot_e2e_table"], indent=2, sort_keys=True) + "\n"
+    )
     print(e2e_table)
 
 
