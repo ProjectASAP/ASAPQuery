@@ -111,7 +111,8 @@ async fn main() -> Result<()> {
         streaming_config.clone(),
         cleanup_policy,
         config.store.lock_strategy,
-    );
+    )
+    .with_retention_slack_ms(config.store.retention_slack_ms);
     if let Some(dir) = &config.store.spill_dir {
         info!("Spilling evicted windows to {}", dir);
         store = store.with_spill(Arc::new(SpillWriter::new(dir)?));

@@ -2,8 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    resolve_exact_windows, sort_buckets_chronologically, EpochID, EvictedEntry, InternTable,
-    MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
+    resolve_exact_windows, retained_windows, sort_buckets_chronologically, EpochID, EvictedEntry,
+    InternTable, MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
 };
 use crate::stores::simple_map_store::spill::SpillWriter;
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
@@ -147,6 +147,9 @@ pub struct SimpleMapStoreGlobal {
 
     // Where evicted windows are archived; None drops them.
     pub(super) spill: Option<Arc<SpillWriter>>,
+
+    // Query delay CircularBuffer retention covers beyond the planned windows.
+    pub(super) retention_slack_ms: u64,
 }
 
 impl SimpleMapStoreGlobal {
@@ -162,6 +165,7 @@ impl SimpleMapStoreGlobal {
             streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
             spill: None,
+            retention_slack_ms: 0,
         }
     }
 
@@ -238,7 +242,7 @@ type GroupedBatch = HashMap<
 struct BatchConfig {
     metric: String,
     is_delta: bool,
-    num_aggregates_to_retain: Option<u64>,
+    retained_windows: Option<u64>,
     read_count_threshold: Option<u64>,
 }
 
@@ -287,7 +291,11 @@ impl Store for SimpleMapStoreGlobal {
                         metric: aggregation_config.metric.clone(),
                         is_delta: aggregation_config.aggregation_type
                             == AggregationType::DeltaSetAggregator,
-                        num_aggregates_to_retain: aggregation_config.num_aggregates_to_retain,
+                        retained_windows: retained_windows(
+                            aggregation_config.num_aggregates_to_retain,
+                            aggregation_config.slide_interval_ms,
+                            self.retention_slack_ms,
+                        ),
                         read_count_threshold: aggregation_config.read_count_threshold,
                     },
                     u64::MAX,
@@ -340,7 +348,7 @@ impl Store for SimpleMapStoreGlobal {
                     .entry(store_key)
                     .or_insert_with(PerKeyState::new);
                 if !cfg.is_delta {
-                    per_key.configure_epochs(cfg.num_aggregates_to_retain);
+                    per_key.configure_epochs(cfg.retained_windows);
                 }
             } // per_key borrow ends here
 

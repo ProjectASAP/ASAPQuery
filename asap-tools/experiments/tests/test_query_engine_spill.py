@@ -34,13 +34,17 @@ def engine_store(spill):
         profile_query_engine=False,
         ingest_json_config=None,
         spill=spill,
+        retention_slack_ms=11_000,
     )
     return config["store"]
 
 
 class SpillConfigTest(unittest.TestCase):
     def test_spill_off_leaves_spill_dir_unset(self):
-        self.assertEqual(engine_store(False), {"lock_strategy": "per-key"})
+        self.assertEqual(
+            engine_store(False),
+            {"lock_strategy": "per-key", "retention_slack_ms": 11_000},
+        )
 
     def test_spill_on_writes_under_the_engine_output_dir(self):
         self.assertEqual(

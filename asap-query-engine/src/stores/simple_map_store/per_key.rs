@@ -2,8 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    resolve_exact_windows, sort_buckets_chronologically, EpochID, EvictedEntry, InternTable,
-    MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
+    resolve_exact_windows, retained_windows, sort_buckets_chronologically, EpochID, EvictedEntry,
+    InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
 };
 use crate::stores::simple_map_store::spill::SpillWriter;
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
@@ -192,6 +192,9 @@ pub struct SimpleMapStorePerKey {
 
     // Where evicted windows are archived; None drops them.
     pub(super) spill: Option<Arc<SpillWriter>>,
+
+    // Query delay CircularBuffer retention covers beyond the planned windows.
+    pub(super) retention_slack_ms: u64,
 }
 
 impl SimpleMapStorePerKey {
@@ -204,6 +207,7 @@ impl SimpleMapStorePerKey {
             streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
             spill: None,
+            retention_slack_ms: 0,
         }
     }
 
@@ -391,7 +395,11 @@ impl SimpleMapStorePerKey {
 
         // Configure epoch capacity on first insert (Optimization 2)
         if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
-            data.configure_epochs(aggregation_config.num_aggregates_to_retain);
+            data.configure_epochs(retained_windows(
+                aggregation_config.num_aggregates_to_retain,
+                aggregation_config.slide_interval_ms,
+                self.retention_slack_ms,
+            ));
         }
 
         let mut evicted = Vec::new();

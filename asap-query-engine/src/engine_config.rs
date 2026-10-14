@@ -230,6 +230,9 @@ pub struct StoreSettings {
     pub lock_strategy: LockStrategy,
     /// Directory evicted windows are appended to; unset drops them.
     pub spill_dir: Option<String>,
+    /// How far in the past queries may evaluate; CircularBuffer keeps this much
+    /// beyond the planned windows. 0 keeps exactly the planned windows.
+    pub retention_slack_ms: u64,
 }
 
 impl Default for StoreSettings {
@@ -237,6 +240,7 @@ impl Default for StoreSettings {
         Self {
             lock_strategy: LockStrategy::PerKey,
             spill_dir: None,
+            retention_slack_ms: 0,
         }
     }
 }
@@ -486,6 +490,22 @@ output_dir: "./output"
             .extract()
             .expect("config should deserialize");
         assert_eq!(config.store.spill_dir.as_deref(), Some("/data/spill"));
+    }
+
+    #[test]
+    fn retention_slack_defaults_to_zero() {
+        let config: EngineConfig = Figment::new()
+            .merge(Yaml::string(MINIMAL_YAML))
+            .extract()
+            .expect("config should deserialize");
+        assert_eq!(config.store.retention_slack_ms, 0);
+
+        let config: EngineConfig = Figment::new()
+            .merge(Yaml::string(MINIMAL_YAML))
+            .merge(("store.retention_slack_ms", 11_000))
+            .extract()
+            .expect("config should deserialize");
+        assert_eq!(config.store.retention_slack_ms, 11_000);
     }
 
     #[test]

@@ -669,6 +669,9 @@ def main(cfg: DictConfig) -> None:
                 },
                 http_port=asap_http_port,
                 spill=cfg.query_engine.spill,
+                retention_slack_ms=config.get_retention_slack_ms(
+                    ep.query_groups, data_ingestion_interval_ms
+                ),
                 ingest_json_config={
                     "path": remote_data_file,
                     "metric_name": str(dataset_cfg.metric_name),

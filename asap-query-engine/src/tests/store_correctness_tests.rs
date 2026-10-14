@@ -211,6 +211,7 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     // Cleanup policies
     test_cleanup_circular_buffer_evicts_oldest_window(strategy);
     test_cleanup_circular_buffer_retains_newest_windows(strategy);
+    test_retention_slack_keeps_windows_for_delayed_queries(strategy);
     test_cleanup_read_based_evicts_after_threshold_reads(strategy);
     test_cleanup_read_based_unread_window_is_retained(strategy);
     test_delta_set_aggregator_bypasses_cleanup(strategy);
@@ -925,6 +926,55 @@ fn test_cleanup_circular_buffer_retains_newest_windows(strategy: LockStrategy) {
         timestamps_for_none_key(&result),
         vec![(7 * 60_000, 8 * 60_000), (8 * 60_000, 9 * 60_000)],
         "[{}] circular buffer must retain exactly the 2 newest windows after eviction",
+        label(strategy)
+    );
+}
+
+/// An instant query planned with retain=1 but evaluated 10s in the past (the
+/// harness's query_time_offset) found its window already evicted and fell back
+/// to Prometheus on every request. Slack keeps that window in memory.
+fn test_retention_slack_keeps_windows_for_delayed_queries(strategy: LockStrategy) {
+    let window_ms = 1_000;
+    let slack_ms = 10_000;
+    let config = AggregationConfig::new(
+        1,
+        AggregationType::Sum,
+        "".to_string(),
+        HashMap::new(),
+        KeyByLabelNames::empty(),
+        KeyByLabelNames::empty(),
+        KeyByLabelNames::empty(),
+        "".to_string(),
+        window_ms,
+        window_ms,
+        WindowType::Tumbling,
+        "".to_string(),
+        "cpu_usage".to_string(),
+        Some(1),
+        None,
+        None,
+        None,
+    );
+    let streaming = Arc::new(StreamingConfig::new(HashMap::from([(1, config)])));
+    let store =
+        SimpleMapStore::new_with_strategy(streaming, CleanupPolicy::CircularBuffer, strategy)
+            .with_retention_slack_ms(slack_ms);
+    let n = 30u64;
+    for i in 0..n {
+        let (out, acc) = sum_entry(1, i * window_ms, (i + 1) * window_ms, i as f64);
+        store.insert_precomputed_output(out, acc).unwrap();
+    }
+
+    // 1 planned + 10 slack windows: the window 10s before the newest is kept,
+    // the one before that is evicted.
+    let retained = (n - 11..n).map(|i| (i * window_ms, (i + 1) * window_ms));
+    let result = store
+        .query_precomputed_output("cpu_usage", 1, 0, n * window_ms)
+        .unwrap();
+    assert_eq!(
+        timestamps_for_none_key(&result),
+        retained.collect::<Vec<_>>(),
+        "[{}] retain=1 plus 10s of 1s windows must keep exactly the newest 11",
         label(strategy)
     );
 }

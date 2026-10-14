@@ -429,6 +429,10 @@ def main(cfg: DictConfig):
                 backend_config=backend_config,
                 http_port=http_port,
                 spill=args.spill,
+                retention_slack_ms=config.get_retention_slack_ms(
+                    cfg.experiment_params.get("query_groups"),
+                    data_ingestion_interval_ms,
+                ),
                 remote_write_port=args.remote_write_base_port,
             )
             # For precompute mode the query engine IS the Prometheus remote-write

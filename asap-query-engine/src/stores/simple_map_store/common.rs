@@ -11,6 +11,24 @@ pub type EpochID = u64;
 /// Epochs (1 current + sealed) a key keeps. With one, the store retains
 /// exactly `num_aggregates_to_retain` windows, the count the planner sizes.
 pub const MAX_EPOCHS: usize = 1;
+
+/// Windows a CircularBuffer store keeps: the planned count plus enough windows to
+/// cover `retention_slack_ms` of query delay, e.g. a query evaluated 10s in the past
+/// needs 10 more 1s windows. `None` (no planned count) stays unlimited.
+pub fn retained_windows(
+    num_aggregates_to_retain: Option<u64>,
+    slide_interval_ms: u64,
+    retention_slack_ms: u64,
+) -> Option<u64> {
+    num_aggregates_to_retain.map(|n| {
+        if retention_slack_ms == 0 {
+            n
+        } else {
+            n + retention_slack_ms.div_ceil(slide_interval_ms)
+        }
+    })
+}
+
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
 /// An entry removed from an epoch by cleanup.
 pub type EvictedEntry = (TimestampRange, MetricID, Arc<dyn AggregateCore>);
@@ -480,4 +498,18 @@ pub fn resolve_exact_windows(
     }
 
     (results, matched_windows, total_entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retained_windows;
+
+    #[test]
+    fn retention_slack_adds_whole_windows_rounded_up() {
+        // 11s of slack: 11 more 1s windows, but one more 60s window.
+        assert_eq!(retained_windows(Some(1), 1_000, 11_000), Some(12));
+        assert_eq!(retained_windows(Some(15), 60_000, 11_000), Some(16));
+        assert_eq!(retained_windows(Some(15), 60_000, 0), Some(15));
+        assert_eq!(retained_windows(None, 1_000, 11_000), None);
+    }
 }

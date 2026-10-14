@@ -121,6 +121,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         profile_query_engine: bool,
         ingest_json_config: Optional[dict],
         spill: bool,
+        retention_slack_ms: int,
     ) -> dict:
         """
         Build an EngineConfig dict matching asap-query-engine's engine_config.rs schema.
@@ -141,6 +142,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                                should match streaming.remote_write.base_port in the Hydra config
             lock_strategy: Lock strategy for SimpleMapStore ('global' or 'per-key')
             spill: Append evicted windows under <output_dir>/spill instead of dropping them
+            retention_slack_ms: Extra CircularBuffer history for queries evaluated in the past
 
         Returns:
             Dict matching the EngineConfig YAML schema
@@ -159,7 +161,10 @@ class QueryEngineRustService(BaseQueryEngineService):
                 "port": remote_write_port,
             }
 
-        store = {"lock_strategy": lock_strategy}
+        store = {
+            "lock_strategy": lock_strategy,
+            "retention_slack_ms": retention_slack_ms,
+        }
         if spill:
             store["spill_dir"] = os.path.join(output_dir, SPILL_SUBDIR)
 
@@ -239,6 +244,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         backend_config: dict,
         http_port: int,
         spill: bool,
+        retention_slack_ms: int,
         remote_write_port: int = 8080,
         ingest_json_config: Optional[dict] = None,
     ) -> None:
@@ -263,6 +269,8 @@ class QueryEngineRustService(BaseQueryEngineService):
                             asap-query-engine/src/engine_config.rs.
             http_port: Port for the query engine's HTTP API server
             spill: Append evicted windows to disk; check them with record_spill()
+            retention_slack_ms: Extra CircularBuffer history for queries evaluated in
+                                the past; see config.get_retention_slack_ms
             remote_write_port: Port the precompute engine listens on for Prometheus remote
                                write; should match streaming.remote_write.base_port (default 8080)
         """
@@ -290,6 +298,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                 lock_strategy,
                 ingest_json_config,
                 spill,
+                retention_slack_ms,
             )
         else:
             self._start_bare_metal(
@@ -307,6 +316,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                 lock_strategy,
                 ingest_json_config,
                 spill,
+                retention_slack_ms,
             )
 
     def _start_bare_metal(
@@ -325,6 +335,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         lock_strategy: str,
         ingest_json_config: Optional[dict],
         spill: bool,
+        retention_slack_ms: int,
     ) -> None:
         """Start Rust QueryEngine using bare metal deployment."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
@@ -364,6 +375,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             profile_query_engine=profile_query_engine,
             ingest_json_config=ingest_json_config,
             spill=spill,
+            retention_slack_ms=retention_slack_ms,
         )
         self._write_engine_config_to_remote(
             config_dict=config,
@@ -411,6 +423,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         lock_strategy: str,
         ingest_json_config: Optional[dict],
         spill: bool,
+        retention_slack_ms: int,
     ) -> None:
         """Start Rust QueryEngine using containerized deployment with Jinja template."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
@@ -435,6 +448,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             profile_query_engine=profile_query_engine,
             ingest_json_config=ingest_json_config,
             spill=spill,
+            retention_slack_ms=retention_slack_ms,
         )
         # Write the config to the host path that is volume-mounted as /app/outputs,
         # so the container finds it at /app/outputs/engine_config.yaml.

@@ -75,6 +75,16 @@ impl SimpleMapStore {
         self
     }
 
+    /// Keep `retention_slack_ms` of extra windows under CircularBuffer, so queries
+    /// evaluated that far in the past still find their windows.
+    pub fn with_retention_slack_ms(mut self, retention_slack_ms: u64) -> Self {
+        match &mut self {
+            SimpleMapStore::Global(store) => store.retention_slack_ms = retention_slack_ms,
+            SimpleMapStore::PerKey(store) => store.retention_slack_ms = retention_slack_ms,
+        }
+        self
+    }
+
     /// Replace the streaming config at runtime. Delegates to the active variant.
     pub fn update_streaming_config(&self, new_config: StreamingConfig) {
         match self {
