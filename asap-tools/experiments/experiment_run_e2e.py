@@ -556,8 +556,9 @@ def main(cfg: DictConfig):
         ):
             sync.copy_prometheus_data(provider, local_experiment_dir, args.node_offset)
 
+        spill_error = None
         if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-            query_engine_service.record_spill()
+            spill_error = query_engine_service.record_spill()
 
         # Skip teardown if the no_teardown flag is set
         if not args.no_teardown:
@@ -605,6 +606,10 @@ def main(cfg: DictConfig):
             local_experiment_dir,
             node_offset=args.node_offset,
         )
+        # Raised only after teardown and sync, so results come back and the
+        # node is clean for the next run.
+        if spill_error:
+            raise RuntimeError(spill_error)
 
 
 if __name__ == "__main__":

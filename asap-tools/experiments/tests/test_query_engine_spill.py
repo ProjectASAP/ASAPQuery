@@ -71,7 +71,7 @@ class RecordSpillTest(unittest.TestCase):
             completed("4096\n"),
             completed(METRICS.format(errors="0")),
         ]
-        self.service.record_spill()
+        self.assertIsNone(self.service.record_spill())
         with open(self.service.local_spill_report) as f:
             self.assertEqual(json.load(f), {"spill_bytes": 4096, "write_errors": 0})
 
@@ -80,8 +80,7 @@ class RecordSpillTest(unittest.TestCase):
             completed("4096\n"),
             completed(METRICS.format(errors="2")),
         ]
-        with self.assertRaisesRegex(RuntimeError, "2 spill writes failed"):
-            self.service.record_spill()
+        self.assertIn("2 spill writes failed", self.service.record_spill())
 
     def test_missing_error_counter_fails_the_run(self):
         # An engine without spill wiring must not pass as "no errors".
@@ -89,14 +88,19 @@ class RecordSpillTest(unittest.TestCase):
             completed("4096\n"),
             completed("other_metric 1\n"),
         ]
-        with self.assertRaisesRegex(ValueError, "missing"):
-            self.service.record_spill()
+        self.assertIn("missing", self.service.record_spill())
+
+    def test_failed_check_is_returned_not_raised(self):
+        # Raising here skipped the rsync and teardown that follow, leaving the
+        # stack running on the node.
+        self.provider.execute_command.side_effect = [completed("\n")]
+        self.assertIn("spill check failed", self.service.record_spill())
 
     def test_spill_off_is_a_no_op(self):
         service = QueryEngineRustService(
             self.provider, use_container=False, node_offset=0
         )
-        service.record_spill()
+        self.assertIsNone(service.record_spill())
         self.provider.execute_command.assert_not_called()
 
 

@@ -717,7 +717,7 @@ def main(cfg: DictConfig) -> None:
                 pre_query_wait_seconds=steady_state_wait,
                 monitor_interval_seconds=monitor_interval_seconds,
             )
-            query_engine_service.record_spill()
+            spill_error = query_engine_service.record_spill()
 
             sync.rsync_experiment_data(
                 provider,
@@ -728,6 +728,10 @@ def main(cfg: DictConfig) -> None:
 
             if not no_teardown:
                 query_engine_service.stop()
+            # Raised only after sync and teardown, so results come back and the
+            # node is clean for the next run.
+            if spill_error:
+                raise RuntimeError(spill_error)
 
         else:
             # --- baseline mode ---

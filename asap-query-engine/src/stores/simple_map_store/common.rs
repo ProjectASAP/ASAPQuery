@@ -8,25 +8,22 @@ use tracing::debug;
 pub type MetricID = u32;
 pub type EpochID = u64;
 
-/// Epochs (1 current + sealed) a key keeps. With one, the store retains
-/// exactly `num_aggregates_to_retain` windows, the count the planner sizes.
-pub const MAX_EPOCHS: usize = 1;
-
 /// Windows a CircularBuffer store keeps: the planned count plus enough windows to
 /// cover `retention_slack_ms` of query delay, e.g. a query evaluated 10s in the past
-/// needs 10 more 1s windows. `None` (no planned count) stays unlimited.
+/// needs 10 more 1s windows. `None` (no planned count) stays unlimited. A slide of 0
+/// means tumbling, so windows step by `window_size_ms`.
 pub fn retained_windows(
     num_aggregates_to_retain: Option<u64>,
+    window_size_ms: u64,
     slide_interval_ms: u64,
     retention_slack_ms: u64,
 ) -> Option<u64> {
-    num_aggregates_to_retain.map(|n| {
-        if retention_slack_ms == 0 {
-            n
-        } else {
-            n + retention_slack_ms.div_ceil(slide_interval_ms)
-        }
-    })
+    let step_ms = if slide_interval_ms == 0 {
+        window_size_ms
+    } else {
+        slide_interval_ms
+    };
+    num_aggregates_to_retain.map(|n| n + retention_slack_ms.div_ceil(step_ms))
 }
 
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
@@ -166,6 +163,14 @@ impl MutableEpoch {
         }
     }
 
+    /// The `n` oldest distinct windows, oldest first.
+    pub fn oldest_windows(&self, n: usize) -> Vec<TimestampRange> {
+        let mut windows: Vec<TimestampRange> = self.windows_set.iter().copied().collect();
+        windows.sort_unstable();
+        windows.truncate(n);
+        windows
+    }
+
     pub fn window_count(&self) -> usize {
         self.windows_set.len()
     }
@@ -219,6 +224,9 @@ impl MutableEpoch {
     /// Consume this epoch and produce an immutable SealedEpoch by sorting in-place.
     /// Zips the three columns into tuples and sorts — moves Arcs without cloning.
     /// O(M log M) paid once at rotation time, not at query time.
+    /// Unused since CircularBuffer stopped sealing; the sealed-epoch paths remain
+    /// only until they are removed.
+    #[allow(dead_code)]
     pub fn seal(self) -> SealedEpoch {
         let min_start = self.min_start;
         let max_end = self.max_end;
@@ -446,6 +454,7 @@ impl SealedEpoch {
 
     /// Deduplicated windows (entries sorted, so consecutive dupes are adjacent).
     /// Used to purge `read_counts` when this epoch is dropped.
+    #[allow(dead_code)]
     pub fn unique_windows(&self) -> Vec<TimestampRange> {
         let mut windows: Vec<TimestampRange> = self.entries.iter().map(|(tr, _, _)| *tr).collect();
         windows.dedup();
@@ -507,9 +516,15 @@ mod tests {
     #[test]
     fn retention_slack_adds_whole_windows_rounded_up() {
         // 11s of slack: 11 more 1s windows, but one more 60s window.
-        assert_eq!(retained_windows(Some(1), 1_000, 11_000), Some(12));
-        assert_eq!(retained_windows(Some(15), 60_000, 11_000), Some(16));
-        assert_eq!(retained_windows(Some(15), 60_000, 0), Some(15));
-        assert_eq!(retained_windows(None, 1_000, 11_000), None);
+        assert_eq!(retained_windows(Some(1), 1_000, 1_000, 11_000), Some(12));
+        assert_eq!(retained_windows(Some(15), 60_000, 60_000, 11_000), Some(16));
+        assert_eq!(retained_windows(Some(15), 60_000, 60_000, 0), Some(15));
+        assert_eq!(retained_windows(None, 1_000, 1_000, 11_000), None);
+    }
+
+    #[test]
+    fn zero_slide_steps_by_window_size() {
+        // Tumbling configs may leave slideIntervalMs at 0; dividing by it panicked.
+        assert_eq!(retained_windows(Some(1), 1_000, 0, 11_000), Some(12));
     }
 }

@@ -3,9 +3,9 @@ use crate::data_model::{
 };
 use crate::stores::simple_map_store::common::{
     resolve_exact_windows, retained_windows, sort_buckets_chronologically, EpochID, EvictedEntry,
-    InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
+    InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange,
 };
-use crate::stores::simple_map_store::spill::SpillWriter;
+use crate::stores::simple_map_store::spill::{resolve_evicted, SpillWriter};
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
 use std::collections::{BTreeMap, HashMap};
@@ -27,15 +27,9 @@ struct StoreKeyData {
     /// Sealed (immutable) epochs stored as flat sorted Vecs (Optimization 2).
     sealed_epochs: BTreeMap<EpochID, SealedEpoch>,
 
-    /// Monotonically increasing ID of the current epoch.
-    current_epoch_id: EpochID,
-
-    /// Max distinct time-windows per epoch before sealing.
-    /// None = unlimited (set on first insert from num_aggregates_to_retain).
-    epoch_capacity: Option<usize>,
-
-    /// Max total epochs (1 current + sealed) to retain before dropping the oldest.
-    max_epochs: usize,
+    /// Distinct windows CircularBuffer keeps. None = unlimited (set on first
+    /// insert from the planned retention plus slack).
+    window_limit: Option<usize>,
 
     /// Track how many times each timestamp range has been read.
     /// Behind Mutex so range queries can use a read lock on the outer RwLock.
@@ -48,86 +42,39 @@ impl StoreKeyData {
             intern: InternTable::new(),
             current_epoch: MutableEpoch::new(),
             sealed_epochs: BTreeMap::new(),
-            current_epoch_id: 0,
-            epoch_capacity: None,
-            max_epochs: MAX_EPOCHS,
+            window_limit: None,
             read_counts: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Set epoch_capacity on first insert (no-op after first call).
-    fn configure_epochs(&mut self, num_aggregates_to_retain: Option<u64>) {
-        if self.epoch_capacity.is_none() {
-            if let Some(cap) = num_aggregates_to_retain {
-                self.epoch_capacity = Some(cap as usize);
+    /// Set window_limit on first insert (no-op after first call).
+    fn configure_window_limit(&mut self, retained_windows: Option<u64>) {
+        if self.window_limit.is_none() {
+            if let Some(limit) = retained_windows {
+                self.window_limit = Some(limit as usize);
             }
         }
     }
 
-    /// Seal the current epoch when full, then evict the minimum number of oldest windows
-    /// to keep total distinct windows ≤ `epoch_capacity * max_epochs`.
-    ///
-    /// Matches legacy per-window eviction semantics: only the exact number of windows
-    /// needed to reach the retention limit are removed, which may be fewer than a full epoch.
-    /// Returns the evicted entries.
-    fn maybe_rotate_epoch(&mut self) -> Vec<EvictedEntry> {
-        let capacity = match self.epoch_capacity {
-            Some(c) if c > 0 => c,
+    /// Evict the oldest distinct windows beyond `window_limit`, returning the evicted
+    /// entries. CircularBuffer never seals, so every window stays in the current epoch
+    /// and its distinct-window count is exact even when a window's series arrive in
+    /// batches interleaved with other windows' (one batch per precompute worker).
+    fn evict_beyond_window_limit(&mut self) -> Vec<EvictedEntry> {
+        let limit = match self.window_limit {
+            Some(l) if l > 0 => l,
             _ => return Vec::new(), // unlimited
         };
-        let retention_limit = capacity * self.max_epochs;
-
-        // Step 1: seal current epoch if it has hit the window capacity threshold.
-        if self.current_epoch.window_count() >= capacity {
-            let hint = self.current_epoch.len();
-            let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
-            self.sealed_epochs.insert(self.current_epoch_id, old.seal());
-            self.current_epoch_id += 1;
-        }
-
-        // Step 2: evict oldest windows until total distinct windows ≤ retention_limit.
-        // Uses O(E) distinct_window_count() calls (E ≤ max_epochs, a small constant).
-        let total: usize = self.current_epoch.window_count()
-            + self
-                .sealed_epochs
-                .values()
-                .map(|e| e.distinct_window_count())
-                .sum::<usize>();
-
-        if total <= retention_limit {
+        let over = self.current_epoch.window_count().saturating_sub(limit);
+        if over == 0 {
             return Vec::new();
         }
-        let mut over = total - retention_limit;
-        let mut evicted = Vec::new();
-
-        while over > 0 {
-            let oldest_id = match self.sealed_epochs.keys().next().copied() {
-                Some(id) => id,
-                None => break,
-            };
-            let oldest_windows = self.sealed_epochs[&oldest_id].unique_windows();
-            let n_evict = over.min(oldest_windows.len());
-            let to_remove = oldest_windows[..n_evict].to_vec();
-            over -= n_evict;
-
-            {
-                let read_counts = self.read_counts.get_mut().unwrap();
-                for w in &to_remove {
-                    read_counts.remove(w);
-                }
-            }
-            if n_evict == oldest_windows.len() {
-                evicted.extend(self.sealed_epochs.remove(&oldest_id).unwrap().entries);
-            } else {
-                evicted.extend(
-                    self.sealed_epochs
-                        .get_mut(&oldest_id)
-                        .unwrap()
-                        .remove_windows(&to_remove),
-                );
-            }
+        let to_remove = self.current_epoch.oldest_windows(over);
+        let read_counts = self.read_counts.get_mut().unwrap();
+        for w in &to_remove {
+            read_counts.remove(w);
         }
-        evicted
+        self.current_epoch.remove_windows(&to_remove)
     }
 
     /// Apply ReadBased cleanup across current and sealed epochs, returning the evicted
@@ -211,12 +158,6 @@ impl SimpleMapStorePerKey {
         }
     }
 
-    fn spill(&self, aggregation_id: u64, intern: &InternTable, evicted: &[EvictedEntry]) {
-        if let Some(spill) = &self.spill {
-            spill.spill(aggregation_id, intern, evicted);
-        }
-    }
-
     /// Replace the streaming config at runtime. Called by the applier task after
     /// the planner fires. Stale precomputed data for dropped aggregations expires
     /// naturally via the existing cleanup policy.
@@ -281,8 +222,8 @@ impl SimpleMapStorePerKey {
     ) -> Vec<EvictedEntry> {
         match self.cleanup_policy {
             CleanupPolicy::CircularBuffer => {
-                // configure_epochs was already called before insert;
-                // rotation is handled by maybe_rotate_epoch after each insert batch.
+                // configure_window_limit was already called before insert;
+                // eviction is handled by evict_beyond_window_limit after each insert.
                 // Nothing additional needed here.
                 let _ = (num_aggregates_to_retain, metric, aggregation_id);
                 Vec::new()
@@ -393,16 +334,16 @@ impl SimpleMapStorePerKey {
             .get_aggregation_config(aggregation_id)
             .ok_or_else(|| format!("Aggregation config not found for {}", aggregation_id))?;
 
-        // Configure epoch capacity on first insert (Optimization 2)
+        // Configure the window limit on first insert
         if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
-            data.configure_epochs(retained_windows(
+            data.configure_window_limit(retained_windows(
                 aggregation_config.num_aggregates_to_retain,
+                aggregation_config.window_size_ms,
                 aggregation_config.slide_interval_ms,
                 self.retention_slack_ms,
             ));
         }
 
-        let mut evicted = Vec::new();
         for (output, precompute) in items {
             // Intern the label key (Optimization 1)
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
@@ -411,13 +352,13 @@ impl SimpleMapStorePerKey {
             // Insert into current (mutable) epoch.
             data.current_epoch
                 .insert(metric_id, timestamp_range, Arc::from(precompute));
+        }
 
-            // After each item, check if we should rotate (CircularBuffer, Optimization 2)
-            if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator
-                && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer)
-            {
-                evicted.extend(data.maybe_rotate_epoch());
-            }
+        let mut evicted = Vec::new();
+        if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator
+            && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer)
+        {
+            evicted.extend(data.evict_beyond_window_limit());
         }
 
         // Apply retention policy if configured (but exclude DeltaSetAggregator)
@@ -430,7 +371,15 @@ impl SimpleMapStorePerKey {
                 aggregation_config.read_count_threshold,
             ));
         }
-        self.spill(aggregation_id, &data.intern, &evicted);
+        // Keys are resolved under the lock; serializing and writing happen after it.
+        let to_spill = self
+            .spill
+            .as_ref()
+            .map(|spill| (spill, resolve_evicted(&data.intern, evicted)));
+        drop(data);
+        if let Some((spill, entries)) = to_spill {
+            spill.spill(aggregation_id, &entries);
+        }
 
         #[cfg(feature = "lock_profiling")]
         {

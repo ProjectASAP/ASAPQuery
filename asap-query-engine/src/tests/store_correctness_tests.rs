@@ -212,6 +212,7 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_cleanup_circular_buffer_evicts_oldest_window(strategy);
     test_cleanup_circular_buffer_retains_newest_windows(strategy);
     test_retention_slack_keeps_windows_for_delayed_queries(strategy);
+    test_circular_buffer_keeps_every_series_of_retained_windows(strategy);
     test_cleanup_read_based_evicts_after_threshold_reads(strategy);
     test_cleanup_read_based_unread_window_is_retained(strategy);
     test_delta_set_aggregator_bypasses_cleanup(strategy);
@@ -510,9 +511,8 @@ fn test_exact_query_correct_across_interleaved_inserts_and_queries(strategy: Loc
 }
 
 fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
-    // capacity=2 => the store keeps the 2 newest windows. After 11 inserts,
-    // window 9 sits in the sealed epoch and window 10 in the current
-    // (still-open) one; windows 0..9 are evicted.
+    // retain=2 => the store keeps the 2 newest windows. After 11 inserts,
+    // windows 9 and 10 remain and windows 0..9 are evicted.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
@@ -979,6 +979,65 @@ fn test_retention_slack_keeps_windows_for_delayed_queries(strategy: LockStrategy
     );
 }
 
+/// Sealing an epoch once it held N windows split a window whose series arrived
+/// after the seal across two epochs; the window was counted twice and its early
+/// series evicted while it was still retained. Precompute workers each send
+/// their own batch per window, so a window's series arrive interleaved with
+/// other windows' — modelled here by inserting window w's series b, then
+/// window w+1's series a, then window w's series c.
+fn test_circular_buffer_keeps_every_series_of_retained_windows(strategy: LockStrategy) {
+    let series = |host: &str, w: u64| {
+        keyed_entry(
+            1,
+            w * 60_000,
+            (w + 1) * 60_000,
+            key(&[host]),
+            Box::new(SumAccumulator::with_sum(1.0)),
+        )
+    };
+    for retain in [1u64, 3] {
+        let store = make_store(
+            strategy,
+            CleanupPolicy::CircularBuffer,
+            &[(1, AggregationType::Sum, Some(retain), None)],
+        );
+        let n = 6u64;
+        let (out, acc) = series("a", 0);
+        store.insert_precomputed_output(out, acc).unwrap();
+        for w in 0..n {
+            let (out, acc) = series("b", w);
+            store.insert_precomputed_output(out, acc).unwrap();
+            if w + 1 < n {
+                let (out, acc) = series("a", w + 1);
+                store.insert_precomputed_output(out, acc).unwrap();
+            }
+            let (out, acc) = series("c", w);
+            store.insert_precomputed_output(out, acc).unwrap();
+        }
+
+        for w in n - retain..n {
+            let window = store
+                .query_precomputed_output_exact("cpu_usage", 1, w * 60_000, (w + 1) * 60_000)
+                .unwrap();
+            assert_eq!(
+                total_bucket_count(&window),
+                3,
+                "[{}] retain={retain}: window {w} must keep all 3 series",
+                label(strategy)
+            );
+        }
+        let all = store
+            .query_precomputed_output("cpu_usage", 1, 0, n * 60_000)
+            .unwrap();
+        assert_eq!(
+            total_bucket_count(&all),
+            3 * retain as usize,
+            "[{}] retain={retain}: exactly {retain} windows of 3 series remain",
+            label(strategy)
+        );
+    }
+}
+
 // ── cleanup: read-based ───────────────────────────────────────────────────────
 
 fn test_cleanup_read_based_evicts_after_threshold_reads(strategy: LockStrategy) {
@@ -1096,9 +1155,8 @@ fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
 /// moment an order-sensitive accumulator (`DeltaSetAggregator` included, if
 /// its rotation exemption is ever relaxed) hits this path.
 ///
-/// capacity=2 with 7 inserts leaves window 6 in the current epoch and window
-/// 5 in the sealed one — the exact shape under which "current checked first"
-/// prepends a newer window ahead of an older one.
+/// retain=2 with 7 inserts leaves windows 5 and 6; the returned order must
+/// still be chronological.
 ///
 /// Deliberately does NOT use `timestamps_for_none_key` — that helper sorts
 /// before returning, which would mask exactly the bug this test exists to

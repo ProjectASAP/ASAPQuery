@@ -50,19 +50,24 @@ impl StreamingConfig {
         data: &Value,
         inference_config: Option<&InferenceConfig>,
     ) -> Result<Self> {
-        let mut retention_map: HashMap<u64, u64> = HashMap::new();
+        // None = unbounded, which wins over any bounded count from another reference.
+        let mut retention_map: HashMap<u64, Option<u64>> = HashMap::new();
         let mut read_count_threshold_map: HashMap<u64, u64> = HashMap::new();
 
         if let Some(inference_config) = inference_config {
             for query_config in &inference_config.query_configs {
                 for aggregation in &query_config.aggregations {
                     let aggregation_id = aggregation.aggregation_id;
-                    if let Some(num_aggregates) = aggregation.num_aggregates_to_retain {
-                        retention_map
-                            .entry(aggregation_id)
-                            .and_modify(|retain| *retain = (*retain).max(num_aggregates))
-                            .or_insert(num_aggregates);
-                    }
+                    let num_aggregates = aggregation.num_aggregates_to_retain;
+                    retention_map
+                        .entry(aggregation_id)
+                        .and_modify(|retain| {
+                            *retain = match (*retain, num_aggregates) {
+                                (Some(a), Some(b)) => Some(a.max(b)),
+                                _ => None,
+                            }
+                        })
+                        .or_insert(num_aggregates);
 
                     if let Some(read_count_threshold) = aggregation.read_count_threshold {
                         let threshold = read_count_threshold_map.entry(aggregation_id).or_insert(0);
@@ -95,11 +100,12 @@ impl StreamingConfig {
                             aggregation_id
                         )
                     })?;
-                    let num_aggregates_to_retain = retention_map.get(&aggregation_id_u64);
+                    let num_aggregates_to_retain =
+                        retention_map.get(&aggregation_id_u64).copied().flatten();
                     let read_count_threshold = read_count_threshold_map.get(&aggregation_id_u64);
                     let config = AggregationConfig::from_yaml_data(
                         aggregation_data,
-                        num_aggregates_to_retain.copied(),
+                        num_aggregates_to_retain,
                         read_count_threshold.copied(),
                         query_language,
                     )?;
@@ -452,6 +458,30 @@ aggregations:
 
             assert_eq!(config[1].num_aggregates_to_retain, Some(7));
             assert_eq!(config[1].read_count_threshold, None);
+        }
+    }
+
+    #[test]
+    fn shared_references_keep_unbounded_retention() {
+        // A reference without a retained count needs every window; a bounded
+        // reference to the same aggregation must not cap it, in either order.
+        let yaml = minmax_yaml("MinMax", "max");
+        for references in [[None, Some(2)], [Some(2), None]] {
+            let mut inference =
+                InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::CircularBuffer);
+            inference.query_configs = references
+                .into_iter()
+                .enumerate()
+                .map(|(i, retain)| {
+                    QueryConfig::new(format!("max(metric[{i}m])"))
+                        .add_aggregation(AggregationReference::new(1, retain))
+                })
+                .collect();
+
+            let config = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+                .expect("shared aggregation references should load");
+
+            assert_eq!(config[1].num_aggregates_to_retain, None, "{references:?}");
         }
     }
 

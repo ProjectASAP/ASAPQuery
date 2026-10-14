@@ -508,29 +508,33 @@ class QueryEngineRustService(BaseQueryEngineService):
                 print(f"Failed to start Rust QueryEngine container: {e}")
                 raise
 
-    def record_spill(self) -> None:
+    def record_spill(self) -> Optional[str]:
         """
         Write the spill directory's size and the engine's spill write-error count
         to query_engine_output/spill_report.json. Call while the engine is still
-        running. Raises if any spill write failed. No-op when spill is off.
+        running. Returns why the run should fail (a failed spill write, or the
+        check itself failing), or None. Never raises, so callers can sync results
+        and tear down before failing the run. No-op when spill is off.
         """
         if self.remote_spill_dir is None:
-            return
-        spill_bytes = int(
-            self._run_on_node(f"du -sb {self.remote_spill_dir} | cut -f1")
-        )
-        metrics = self._run_on_node(
-            f"curl -fsS --max-time {constants.HTTP_READINESS_CURL_TIMEOUT_SECONDS} "
-            f"http://127.0.0.1:{self.http_port}/metrics"
-        )
-        write_errors = parse_spill_write_errors(metrics)
-        with open(self.local_spill_report, "w") as f:
-            json.dump({"spill_bytes": spill_bytes, "write_errors": write_errors}, f)
+            return None
+        try:
+            spill_bytes = int(
+                self._run_on_node(f"du -sb {self.remote_spill_dir} | cut -f1")
+            )
+            metrics = self._run_on_node(
+                f"curl -fsS --max-time {constants.HTTP_READINESS_CURL_TIMEOUT_SECONDS} "
+                f"http://127.0.0.1:{self.http_port}/metrics"
+            )
+            write_errors = parse_spill_write_errors(metrics)
+            with open(self.local_spill_report, "w") as f:
+                json.dump({"spill_bytes": spill_bytes, "write_errors": write_errors}, f)
+        except Exception as e:
+            return f"spill check failed: {e}"
         print(f"Spill: {spill_bytes} bytes on disk, {write_errors} failed writes")
         if write_errors > 0:
-            raise RuntimeError(
-                f"{write_errors} spill writes failed; see the query engine log"
-            )
+            return f"{write_errors} spill writes failed; see the query engine log"
+        return None
 
     def _run_on_node(self, cmd: str) -> str:
         result = self.provider.execute_command(

@@ -5,13 +5,15 @@
 //! (bincode label values; length `NO_KEY` and no bytes for an unkeyed
 //! window), accumulator length, accumulator bytes (`serialize_to_bytes`).
 
-use super::common::{EvictedEntry, InternTable};
+use super::common::{EvictedEntry, InternTable, TimestampRange};
+use crate::data_model::{AggregateCore, KeyByLabelValues};
 use dashmap::DashMap;
 use lazy_static::lazy_static;
 use prometheus::{register_counter, Counter};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tracing::error;
 
 /// Key length recorded for a window without a label key.
@@ -25,9 +27,28 @@ lazy_static! {
     .unwrap();
 }
 
+/// An evicted entry with its label key resolved, so it can be spilled after
+/// the store lock (which guards the intern table) is released.
+pub type SpillEntry = (
+    TimestampRange,
+    Option<KeyByLabelValues>,
+    Arc<dyn AggregateCore>,
+);
+
+/// Resolve each evicted entry's interned key.
+pub fn resolve_evicted(intern: &InternTable, evicted: Vec<EvictedEntry>) -> Vec<SpillEntry> {
+    evicted
+        .into_iter()
+        .map(|(window, metric_id, aggregate)| {
+            (window, intern.resolve(metric_id).clone(), aggregate)
+        })
+        .collect()
+}
+
 pub struct SpillWriter {
     dir: PathBuf,
-    files: DashMap<u64, File>,
+    // One lock per file, so writes for different aggregations don't wait on each other.
+    files: DashMap<u64, Arc<Mutex<File>>>,
 }
 
 impl SpillWriter {
@@ -42,17 +63,17 @@ impl SpillWriter {
         })
     }
 
-    /// Appends `evicted` to the aggregation's file. A failure is logged and
+    /// Appends `entries` to the aggregation's file. A failure is logged and
     /// counted, not returned: the windows leave memory either way.
-    pub fn spill(&self, aggregation_id: u64, intern: &InternTable, evicted: &[EvictedEntry]) {
-        if evicted.is_empty() {
+    pub fn spill(&self, aggregation_id: u64, entries: &[SpillEntry]) {
+        if entries.is_empty() {
             return;
         }
-        if let Err(e) = self.append(aggregation_id, intern, evicted) {
+        if let Err(e) = self.append(aggregation_id, entries) {
             SPILL_WRITE_ERRORS_TOTAL.inc();
             error!(
                 "spilling {} evicted entries of aggregation {aggregation_id} failed: {e}",
-                evicted.len()
+                entries.len()
             );
         }
     }
@@ -60,27 +81,31 @@ impl SpillWriter {
     fn append(
         &self,
         aggregation_id: u64,
-        intern: &InternTable,
-        evicted: &[EvictedEntry],
+        entries: &[SpillEntry],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut buf = Vec::new();
-        for (window, metric_id, aggregate) in evicted {
+        for (window, key, aggregate) in entries {
             buf.extend_from_slice(&window.0.to_le_bytes());
             buf.extend_from_slice(&window.1.to_le_bytes());
-            match intern.resolve(*metric_id) {
+            match key {
                 Some(key) => put_len_prefixed(&mut buf, &key.serialize_to_bytes()?),
                 None => buf.extend_from_slice(&NO_KEY.to_le_bytes()),
             }
             put_len_prefixed(&mut buf, &aggregate.serialize_to_bytes()?);
         }
-        let mut file = self.files.entry(aggregation_id).or_try_insert_with(|| {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.dir.join(format!("agg_{aggregation_id}.bin")))
-        })?;
+        let file = self
+            .files
+            .entry(aggregation_id)
+            .or_try_insert_with(|| {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.dir.join(format!("agg_{aggregation_id}.bin")))
+                    .map(|file| Arc::new(Mutex::new(file)))
+            })?
+            .clone();
         // One write per batch, so a killed process loses at most the batch in flight.
-        file.write_all(&buf)?;
+        file.lock().unwrap().write_all(&buf)?;
         Ok(())
     }
 }

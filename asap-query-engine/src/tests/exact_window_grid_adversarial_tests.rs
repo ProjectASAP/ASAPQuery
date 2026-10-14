@@ -353,9 +353,8 @@ mod tests {
     /// retained span in a single query rather than probing one window at a
     /// time.
     ///
-    /// capacity=2, 11 inserts => retention_limit=2, evicting windows 0..9.
-    /// Window 9 remains in the sealed epoch and window 10 in the current
-    /// (newest, still "mutable") one.
+    /// retain=2, 11 inserts => windows 9 and 10 remain, windows 0..9 are
+    /// evicted.
     #[test]
     fn store_query_range_spans_sealed_and_mutable_epochs() {
         let store = make_store(
