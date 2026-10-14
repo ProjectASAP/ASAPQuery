@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from typing import Callable, Dict, List, Tuple
 
 import jinja2
@@ -120,7 +121,7 @@ class ParseTest(unittest.TestCase):
         cardinality = mg_entry("cardinality", ["region", "service"], 300)
         quantile = mg_entry("quantile", ["service"], 900)
         self.assertEqual(
-            sbw.query_from_entry(cardinality, METRICS),
+            sbw.query_from_entry(cardinality, METRICS, LABELS),
             sbw.Query(
                 "http",
                 60,
@@ -133,7 +134,7 @@ class ParseTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            sbw.query_from_entry(quantile, METRICS),
+            sbw.query_from_entry(quantile, METRICS, LABELS),
             sbw.Query(
                 "http",
                 60,
@@ -152,9 +153,32 @@ class ParseTest(unittest.TestCase):
             {**mg_entry("cardinality", ["region"], 300), "capability": "sum"},
             mg_entry("cardinality", ["instance"], 300),
             {**mg_entry("quantile", ["region"], 300), "value": "bytes"},
+            {**mg_entry("quantile", ["region"], 300), "table": "nope"},
+            # records tables have no `value` column.
+            {"promql": "sum_over_time(http[1m])", "interval_secs": 60, "rqes": []},
         ]:
             with self.subTest(entry=entry), self.assertRaises(ValueError):
-                sbw.query_from_entry(entry, METRICS)
+                sbw.query_from_entry(entry, METRICS, LABELS)
+
+    def test_asapquery_sql_without_now_raises(self):
+        entry = mg_entry("quantile", ["service"], 300)
+        entry["sql"] = entry["sql"].replace("NOW()", "now()")
+        with self.assertRaises(ValueError):
+            sbw.asapquery_sql(entry)
+
+    def test_asapquery_sql_strips_trailing_semicolon(self):
+        entry = mg_entry("quantile", ["service"], 300)
+        plain = sbw.asapquery_sql(entry)
+        entry["sql"] += "; \n"
+        self.assertEqual(sbw.asapquery_sql(entry), plain)
+
+    def test_metric_without_labels_raises(self):
+        with self.assertRaises(ValueError):
+            sbw.init_sql({"data": {"type": "gauge", "labels": []}}, [], False)
+
+    def test_describe_is_one_line(self):
+        entry = {"promql": "sum by (job) (\n  data\n)", "interval_secs": 1}
+        self.assertEqual(sbw.describe(entry), "sum by (job) ( data )")
 
 
 def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
@@ -174,8 +198,9 @@ def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
         agg = "QUANTILE(0.99, latency)"
     group = ", ".join(grouping)
     entry["sql"] = (
-        f"SELECT {group}, {agg} FROM http WHERE ts BETWEEN "
-        f"DATEADD(s, -{window_secs}, NOW()) AND NOW() GROUP BY {group}"
+        f"SELECT {group + ', ' if group else ''}{agg} FROM http WHERE ts BETWEEN "
+        f"DATEADD(s, -{window_secs}, NOW()) AND NOW()"
+        + (f" GROUP BY {group}" if group else "")
     )
     return entry
 
@@ -254,8 +279,11 @@ class ConvertTest(unittest.TestCase):
             cwd = os.getcwd()
             os.chdir(tmp)
             try:
+                # 30 s < offset + the 15m windows: early windows predate data.
+                with self.assertWarns(UserWarning):
+                    out_paths = sbw.convert(table, "data.json", 30, 600)
                 cfgs = {}
-                for path in sbw.convert(table, "data.json", 30, 600):
+                for path in out_paths:
                     with open(path) as f:
                         cfg = yaml.safe_load(f)
                     (arm,) = cfg["experiment"]
@@ -347,6 +375,29 @@ class ConvertTest(unittest.TestCase):
                     self.assertNotIn("MATERIALIZED VIEW", f.read())
                 sql_dir = os.path.dirname(cfg["dataset"]["init_sql_file"])
                 self.assertFalse(os.path.exists(os.path.join(sql_dir, "init_mv.sql")))
+            finally:
+                os.chdir(cwd)
+
+    def test_checks_workloads_duration_and_delay(self):
+        e2e = {"metrics": METRICS, "queries": [mg_entry("quantile", ["service"], 300)]}
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "t.json")
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with open(table, "w") as f:
+                    json.dump({"workloads": [{"e2e": e2e}, {"e2e": e2e}]}, f)
+                with self.assertRaises(ValueError):
+                    sbw.convert(table, "data.json", 310, 600)
+                with open(table, "w") as f:
+                    json.dump({"workloads": [{"e2e": e2e}]}, f)
+                # Interval 60 s, so 30 s would yield 0 repetitions.
+                with self.assertRaises(ValueError):
+                    sbw.convert(table, "data.json", 310, 30)
+                # Delay covers offset + window: no warning.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    sbw.convert(table, "data.json", 310, 600)
             finally:
                 os.chdir(cwd)
 
@@ -592,7 +643,7 @@ def pooled(records, t_ms: int, w_ms: int, q: "sbw.Query") -> Vector:
 MULTIGROUP = [
     mg_entry("quantile", list(g), w)
     for w in (120, 300)
-    for n in (1, 2, 3)
+    for n in (0, 1, 2, 3)
     for g in itertools.combinations(["region", "service", "endpoint"], n)
 ] + [
     mg_entry("cardinality", g, w)
@@ -678,7 +729,7 @@ def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]
         for t, p, ref in CASES
     ]
     for entry in MULTIGROUP:
-        q = sbw.query_from_entry(entry, METRICS)
+        q = sbw.query_from_entry(entry, METRICS, LABELS)
         w_ms = q.window_secs * 1000
         cases.append(
             (sbw.describe(entry), q, lambda e, q=q, w=w_ms: pooled(records, e, w, q))
@@ -703,7 +754,9 @@ class KeyPruningTest(unittest.TestCase):
         series = [(t, ("job_0", "label_0_0"), (1.0,)) for t in times]
         cases = [
             (
-                sbw.query_from_entry(mg_entry("cardinality", ["region"], 60), METRICS),
+                sbw.query_from_entry(
+                    mg_entry("cardinality", ["region"], 60), METRICS, LABELS
+                ),
                 sum(start_ms < t <= end_s * 1000 for t in times),
             ),
             (

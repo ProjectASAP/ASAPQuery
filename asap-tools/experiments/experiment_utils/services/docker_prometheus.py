@@ -6,7 +6,12 @@ import os
 
 from .base import DockerServiceBase
 from experiment_utils.providers.base import InfrastructureProvider
-from constants import PROMETHEUS_CONFIG_DIR, PROMETHEUS_CONFIG_FILE
+from constants import (
+    PROMETHEUS_CONFIG_DIR,
+    PROMETHEUS_CONFIG_FILE,
+    PROMETHEUS_QUERY_MAX_SAMPLES,
+    PROMETHEUS_QUERY_TIMEOUT,
+)
 
 
 class DockerPrometheusService(DockerServiceBase):
@@ -98,6 +103,8 @@ class DockerPrometheusService(DockerServiceBase):
                 "--web.console.libraries=/etc/prometheus/console_libraries",
                 "--web.console.templates=/etc/prometheus/consoles",
                 "--web.enable-lifecycle",
+                f"--query.timeout={PROMETHEUS_QUERY_TIMEOUT}",
+                f"--query.max-samples={PROMETHEUS_QUERY_MAX_SAMPLES}",
             ]
         )
 

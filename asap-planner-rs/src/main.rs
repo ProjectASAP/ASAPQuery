@@ -89,18 +89,18 @@ struct Args {
     /// MILP only. YAML workload facts: per metric, positive `value_range` and
     /// `cardinality` per label set, including all labels (the series count),
     /// plus the `shape` of each grouping sketches may serve.
-    #[arg(long = "workload-facts", required_if_eq("planner", "milp"))]
+    #[arg(long = "workload-facts")]
     workload_facts: Option<PathBuf>,
 
     /// MILP only. The flat cost table sketch-bench's
     /// `study_saturation.py --phase optimizer-cost` writes
     /// (`rqe_atomic_costs.json`).
-    #[arg(long = "atomic-costs", required_if_eq("planner", "milp"))]
+    #[arg(long = "atomic-costs")]
     atomic_costs: Option<PathBuf>,
 
     /// MILP only. sketch-bench's saturation-study directory: sketch accuracy
     /// is read off its error-vs-N curves at each grouping's `shape`.
-    #[arg(long = "saturation-dir", required_if_eq("planner", "milp"))]
+    #[arg(long = "saturation-dir")]
     saturation_dir: Option<PathBuf>,
 
     /// MILP only. Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
@@ -141,6 +141,12 @@ fn main() -> anyhow::Result<()> {
     let engine = match args.streaming_engine {
         EngineArg::Precompute => StreamingEngine::Precompute,
     };
+
+    if args.planner == PlannerArg::Milp {
+        anyhow::bail!(
+            "--planner milp is temporarily disabled; use --planner saved for sketch-bench eval plans"
+        );
+    }
 
     if args.planner != PlannerArg::Saved {
         anyhow::ensure!(

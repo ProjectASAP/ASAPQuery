@@ -511,6 +511,7 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
         accuracy_sla,
         latency_sla_ms: item.latency_sla_ms,
         topk_k,
+        accuracy_covers_share: None,
     })
 }
 

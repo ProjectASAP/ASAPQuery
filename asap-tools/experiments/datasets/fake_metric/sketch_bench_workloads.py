@@ -36,7 +36,10 @@ baseline SQL that labels both arms' results.
 Semantics are those of Prometheus 2.53 (the version installation/prometheus
 installs for bare-metal runs), whose windows are closed on both ends: range
 vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
-each series in [T - 1s, T] (a lookback of one scrape interval); quantiles use
+each series in [T - 1s, T] (a lookback of one scrape interval, not
+Prometheus's 5m default: the feeder writes every series every scrape, so the
+two agree unless a sample is missing, where Prometheus would return the
+series' last value and this SQL drops the series); quantiles use
 quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
 never reset). Structured queries involve no Prometheus: they read ASAPQuery's
 left-open window (T - W, T], the window its SQL frontend and precompute
@@ -46,14 +49,9 @@ the value field, quantile is quantileExactInclusive. T is the client's
 query shapes raise.
 
 Evaluation times: each query group sets `align_to_interval` and a
-`query_time_offset` of QUERY_TIME_OFFSET_SECS. The query client of PR #841
-then evaluates repetition k at floor((start - O) / T) * T + k * T and sends
-it O seconds later, so every run and arm answers the same windows. The
-current client ignores `align_to_interval`: it subtracts O from the eval
-time and sleeps T after each repetition's queries finish, so its eval times
-drift by the query latency. A 1 s group whose queries take 0.3 s skips
-about one T in four, and a 60 s group occasionally repeats or skips a T;
-arms then answer different windows.
+`query_time_offset` of QUERY_TIME_OFFSET_SECS, so the query client evaluates
+repetition k at floor((start - O) / T) * T + k * T and sends it O seconds
+later; every run and arm answers the same windows.
 
 Run from asap-tools/experiments:
     python3 datasets/fake_metric/sketch_bench_workloads.py \
@@ -65,6 +63,7 @@ import json
 import os
 import re
 import sys
+import warnings
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -88,8 +87,8 @@ BASELINE_MV = constants.BASELINE_MV_EXPERIMENT_NAME
 
 OUT_CONFIG_DIR = "config/experiment_type/sketch_bench_clickhouse"
 CLICKHOUSE_URL = "http://localhost:8123"
-# Seconds after an eval time the client sends it (PR #841's default), so
-# data up to the eval time has arrived.
+# Seconds after an eval time the client sends it, so data up to the eval
+# time has arrived.
 QUERY_TIME_OFFSET_SECS = 10
 VALUE_COLUMN = "value"
 # Instant vectors read the latest sample of each series in the last scrape.
@@ -216,19 +215,22 @@ def parse_promql(promql: str, interval: int, labels: Dict[str, List[str]]) -> Qu
     return _parse_series(text, interval, labels, promql)
 
 
-def query_from_entry(entry: dict, metrics: dict) -> Query:
+def query_from_entry(entry: dict, metrics: dict, labels: Dict[str, List[str]]) -> Query:
     """One `e2e.queries` entry: PromQL, or a structured multi-grouping query
     `{table, value, capability, grouping, quantile, window_secs,
-    interval_secs}` that pools every sample of a group over the window."""
+    interval_secs}` that pools every sample of a group over the window.
+    `labels` is metric_labels(metrics)."""
     if "promql" in entry:
-        return parse_promql(
-            entry["promql"], entry["interval_secs"], metric_labels(metrics)
-        )
+        q = parse_promql(entry["promql"], entry["interval_secs"], labels)
+        if metrics[q.table]["type"] == "records":
+            raise ValueError(f"PromQL over records metric {q.table!r}: {entry}")
+        return q
     table, capability = entry["table"], entry["capability"]
     if capability not in STRUCTURED_AGGS:
         raise ValueError(f"unsupported capability {capability!r}: {entry}")
-    labels = metric_labels(metrics)[table]
-    unknown = set(entry["grouping"]) - set(labels)
+    if table not in labels:
+        raise ValueError(f"unknown table {table!r}: {entry}")
+    unknown = set(entry["grouping"]) - set(labels[table])
     if unknown or entry["value"] not in value_columns(metrics[table]):
         raise ValueError(f"unknown labels or value for {table!r}: {entry}")
     return Query(
@@ -247,7 +249,7 @@ def query_from_entry(entry: dict, metrics: dict) -> Query:
 def describe(entry: dict) -> str:
     """A one-line comment naming the query."""
     if "promql" in entry:
-        return entry["promql"]
+        return " ".join(entry["promql"].split())
     level = f"{entry['quantile']}, " if entry["capability"] == "quantile" else ""
     return (
         f"{entry['capability']}({level}{entry['value']}) by "
@@ -280,7 +282,11 @@ def render(
         value = agg(q.agg, q.quantile)
         if q.ratio_quantile is not None:
             value = f"{value} / {agg('quantile', q.ratio_quantile)}"
-        sql = f"SELECT {group}, {value} AS value {window} GROUP BY {group}"
+        if group:
+            sql = f"SELECT {group}, {value} AS value {window} GROUP BY {group}"
+        else:
+            # The grand total: one row, none for an empty window.
+            sql = f"SELECT {value} AS value {window} HAVING count() > 0"
     else:
         if q.series_fn == "last":
             sql = (
@@ -359,15 +365,17 @@ def asapquery_sql(entry: dict) -> str:
     """A structured entry's `sql` with NOW() replaced by the floored eval time.
 
     ASAPQuery's SQL frontend takes a datetime literal but cannot floor it, so
-    the literal is floored in the client's template (UTC; the frontend reads
-    timezone-naive literals as server-local time). The frontend maps
+    the literal is floored in the client's template. The literal is UTC and
+    the frontend reads timezone-naive literals as server-local time, so the
+    ASAPQuery server must run in UTC. The frontend maps
     `ts BETWEEN DATEADD(s, -W, E) AND E` to (start, duration) = (E - W, W) and
     answers over (E - W, E], as the ClickHouse SQL does for structured queries.
     """
-    if "sql" not in entry:
-        raise ValueError(f"structured entry without its ASAPQuery sql: {entry}")
+    if "NOW()" not in entry.get("sql", ""):
+        raise ValueError(f"structured entry without an ASAPQuery sql on NOW(): {entry}")
     end = floored_end_datetime(entry["interval_secs"])
-    return entry["sql"].replace("NOW()", f"'{end}'")
+    sql = entry["sql"].rstrip().rstrip(";")
+    return sql.replace("NOW()", f"'{end}'")
 
 
 def value_columns(desc: dict) -> List[str]:
@@ -535,6 +543,8 @@ def init_sql(metrics: dict, views: List[View], create_views: bool) -> str:
     statements = [f"DROP TABLE IF EXISTS {view.name}" for view in views]
     for table, desc in metrics.items():
         names = [label["name"] for label in desc["labels"]]
+        if not names:
+            raise ValueError(f"metric {table!r} has no labels")
         columns = [f"{name} String" for name in names] + [
             f"{value} Float64" for value in value_columns(desc)
         ]
@@ -565,15 +575,23 @@ def convert(
 ) -> List[str]:
     """Writes the SQL files and one config per arm; returns the config paths."""
     with open(table_path) as f:
-        (workload,) = json.load(f)["workloads"]
-    e2e = workload["e2e"]
+        workloads = json.load(f)["workloads"]
+    if len(workloads) != 1:
+        raise ValueError(f"{table_path}: expected 1 workload, got {len(workloads)}")
+    e2e = workloads[0]["e2e"]
     metrics = e2e["metrics"]
     labels = metric_labels(metrics)
     stem = os.path.splitext(os.path.basename(table_path))[0]
     sql_dir = os.path.join(OUT_CONFIG_DIR, stem)
     os.makedirs(sql_dir, exist_ok=True)
 
-    entries = [(e, query_from_entry(e, metrics)) for e in e2e["queries"]]
+    entries = [(e, query_from_entry(e, metrics, labels)) for e in e2e["queries"]]
+    for entry, q in entries:
+        if q.interval_secs > duration_secs:
+            raise ValueError(
+                f"interval {q.interval_secs}s exceeds --duration-secs "
+                f"{duration_secs}: {describe(entry)}"
+            )
     unservable = [describe(e) for e, q in entries if q.window_secs % q.interval_secs]
     if unservable:
         print(
@@ -609,6 +627,14 @@ def convert(
     if asapquery:
         # For the ASAPQuery arm; the runner does not read it.
         write_statements(os.path.join(sql_dir, "asapquery.sql"), asapquery)
+    max_window = max((q.window_secs for _, q in entries), default=0)
+    if starting_delay_secs < QUERY_TIME_OFFSET_SECS + max_window:
+        # Same data for every arm, so arms stay comparable; absolutes are biased.
+        warnings.warn(
+            f"--starting-delay-secs {starting_delay_secs} < "
+            f"{QUERY_TIME_OFFSET_SECS + max_window}: early windows start "
+            "before ingestion"
+        )
 
     query_groups = []
     for interval, files in sorted(by_interval.items()):
@@ -627,7 +653,6 @@ def convert(
                 "client_options": {
                     "starting_delay": starting_delay_secs,
                     "repetitions": duration_secs // interval,
-                    # Takes effect with PR #841's query client; see above.
                     "align_to_interval": True,
                     "query_time_offset": QUERY_TIME_OFFSET_SECS,
                 },
@@ -643,7 +668,8 @@ def convert(
             "dataset": {
                 "name": "custom",
                 "local_data_file": data_file,
-                # The runner's loader fills one table; the paced feeder writes all.
+                # The runner's loader fills only this table; nothing fills the
+                # other metrics' tables yet.
                 "table": next(iter(labels)),
                 "init_sql_file": init_paths[mode],
                 "max_rows": 0,
