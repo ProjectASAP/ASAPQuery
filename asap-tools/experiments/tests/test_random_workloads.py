@@ -61,11 +61,18 @@ class GenerateWorkloadsTest(unittest.TestCase):
                 self.assertEqual(query["output_series_upper_bound"], expected)
                 self.assertLessEqual(query["output_series_upper_bound"], 200)
 
-    def test_spatial_quantiles_repeat_at_whole_second_cadence(self):
+    def test_quantiles_cover_a_thousand_samples_per_series(self):
+        # sketch-bench's accuracy curves start at N = 1,000; below it no
+        # saved plan can serve the quantile.
         for workload in workloads.generate_workloads(seed=4):
             for query in workload["queries"]:
                 if query["rqes"][0]["capability"] == "quantile":
-                    self.assertEqual(query["lookback_ms"], workloads.SECOND_MS)
+                    samples = (
+                        query["lookback_ms"]
+                        // workload["data_facts"]["scrape_interval_ms"]
+                    )
+                    self.assertEqual(samples, 1_000)
+                    self.assertIn("data[100s]", query["promql"])
                     self.assertEqual(query["interval_ms"], workloads.SECOND_MS)
 
     def test_manifest_declares_deterministic_feeder_facts(self):

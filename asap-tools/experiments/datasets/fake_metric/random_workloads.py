@@ -19,8 +19,10 @@ SAMPLES_PER_SEC_PER_SERIES = 10
 ACCURACY_SLA = 0.95
 SECOND_MS = 1_000
 MINUTE_MS = 60 * SECOND_MS
-SPATIAL_LOOKBACK_MS = SECOND_MS
-SPATIAL_INTERVAL_MS = SECOND_MS
+# 100 s at 10 samples/s gives each series' quantile sketch 1,000 samples, the
+# first N sketch-bench's accuracy curves cover.
+QUANTILE_LOOKBACK_MS = 100 * SECOND_MS
+QUANTILE_INTERVAL_MS = SECOND_MS
 LABEL_HIERARCHY = (
     ("region", 4, None),
     ("service", 5, "region"),
@@ -29,7 +31,11 @@ LABEL_HIERARCHY = (
 )
 LABEL_CARDINALITIES = {name: cardinality for name, cardinality, _ in LABEL_HIERARCHY}
 METRIC_LABELS = [
-    {"name": name, "cardinality": cardinality, **({"child_of": parent} if parent else {})}
+    {
+        "name": name,
+        "cardinality": cardinality,
+        **({"child_of": parent} if parent else {}),
+    }
     for name, cardinality, parent in LABEL_HIERARCHY
 ]
 GROUPINGS = (("region",), ("region", "service"), ("region", "service", "job"))
@@ -76,7 +82,7 @@ def clickhouse_quantile(grouping, phi):
     return (
         f"SELECT {group}, AVG(series_quantile) AS value FROM "
         f"(SELECT {leaves}, quantileExact({phi:.2f})(value) AS series_quantile FROM data "
-        f"WHERE {clickhouse_time_filter(SPATIAL_LOOKBACK_MS)} GROUP BY {leaves}) GROUP BY {group}"
+        f"WHERE {clickhouse_time_filter(QUANTILE_LOOKBACK_MS)} GROUP BY {leaves}) GROUP BY {group}"
     )
 
 
@@ -99,7 +105,7 @@ def workload_data_facts(seed):
     """Return the feeder contract shared by every workload from one seed."""
     return {
         "feeder_seed": seed,
-        "scrape_interval_ms": SPATIAL_LOOKBACK_MS // 10,
+        "scrape_interval_ms": SECOND_MS // SAMPLES_PER_SEC_PER_SERIES,
         "backfill_history_ms": BACKFILL_HISTORY_MS,
         "series": {
             "leaf_count": LEAF_SERIES_COUNT,
@@ -164,24 +170,34 @@ def query(
         "interval_ms": interval_ms,
         "promql": rendered if support != "sql-only" else None,
         "sql": rendered if support == "sql-only" else None,
-        "clickhouse_sql": clickhouse_sql or (rendered if support == "sql-only" else None),
+        "clickhouse_sql": clickhouse_sql
+        or (rendered if support == "sql-only" else None),
         "rqes": [rqe],
     }
 
 
 def sum_query(query_id, grouping, lookback_ms, interval_ms):
     rendered = f"sum by ({grouping_text(grouping)}) (sum_over_time(data[{duration(lookback_ms)}]))"
-    return query(query_id, "sum", grouping, lookback_ms, interval_ms, rendered, "common-promql", clickhouse_sql=clickhouse_sum(grouping, lookback_ms))
+    return query(
+        query_id,
+        "sum",
+        grouping,
+        lookback_ms,
+        interval_ms,
+        rendered,
+        "common-promql",
+        clickhouse_sql=clickhouse_sum(grouping, lookback_ms),
+    )
 
 
 def quantile_query(query_id, grouping, phi):
-    rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[1s]))"
+    rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[{QUANTILE_LOOKBACK_MS // SECOND_MS}s]))"
     return query(
         query_id,
         "quantile",
         grouping,
-        SPATIAL_LOOKBACK_MS,
-        SPATIAL_INTERVAL_MS,
+        QUANTILE_LOOKBACK_MS,
+        QUANTILE_INTERVAL_MS,
         rendered,
         "common-promql",
         clickhouse_sql=clickhouse_quantile(grouping, phi),
@@ -326,7 +342,9 @@ def validate_workload(workload):
     if not 0 < events["user_ids_per_leaf"] <= events["user_id_universe_size"]:
         raise ValueError("distinct user pools must fit in the declared universe")
     if len(queries) != QUERIES_PER_WORKLOAD:
-        raise ValueError(f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries")
+        raise ValueError(
+            f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries"
+        )
     if len({query["id"] for query in queries}) != len(queries):
         raise ValueError("query IDs must be unique")
     rqe_keys = {

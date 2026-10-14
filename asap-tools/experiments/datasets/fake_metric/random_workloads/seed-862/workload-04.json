@@ -116,16 +116,16 @@
       "support": "common-promql"
     },
     {
-      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.75)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
+      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.75)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 100 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
       "grouping": [
         "region"
       ],
       "id": "q03-quantile",
       "interval_ms": 1000,
-      "lookback_ms": 1000,
+      "lookback_ms": 100000,
       "output_groups": 4,
       "output_series_upper_bound": 4,
-      "promql": "avg by (region) (quantile_over_time(0.75, data[1s]))",
+      "promql": "avg by (region) (quantile_over_time(0.75, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -135,7 +135,7 @@
           ],
           "id": "q03-quantile/rqe",
           "interval_ms": 1000,
-          "lookback_ms": 1000,
+          "lookback_ms": 100000,
           "metric": "data",
           "phi": 0.75
         }
@@ -144,17 +144,17 @@
       "support": "common-promql"
     },
     {
-      "clickhouse_sql": "SELECT region, service, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.75)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service",
+      "clickhouse_sql": "SELECT region, service, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.75)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 100 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service",
       "grouping": [
         "region",
         "service"
       ],
       "id": "q04-quantile",
       "interval_ms": 1000,
-      "lookback_ms": 1000,
+      "lookback_ms": 100000,
       "output_groups": 20,
       "output_series_upper_bound": 20,
-      "promql": "avg by (region, service) (quantile_over_time(0.75, data[1s]))",
+      "promql": "avg by (region, service) (quantile_over_time(0.75, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -165,7 +165,7 @@
           ],
           "id": "q04-quantile/rqe",
           "interval_ms": 1000,
-          "lookback_ms": 1000,
+          "lookback_ms": 100000,
           "metric": "data",
           "phi": 0.75
         }
@@ -174,16 +174,16 @@
       "support": "common-promql"
     },
     {
-      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.95)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
+      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.95)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 100 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
       "grouping": [
         "region"
       ],
       "id": "q05-quantile",
       "interval_ms": 1000,
-      "lookback_ms": 1000,
+      "lookback_ms": 100000,
       "output_groups": 4,
       "output_series_upper_bound": 4,
-      "promql": "avg by (region) (quantile_over_time(0.95, data[1s]))",
+      "promql": "avg by (region) (quantile_over_time(0.95, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -193,7 +193,7 @@
           ],
           "id": "q05-quantile/rqe",
           "interval_ms": 1000,
-          "lookback_ms": 1000,
+          "lookback_ms": 100000,
           "metric": "data",
           "phi": 0.95
         }

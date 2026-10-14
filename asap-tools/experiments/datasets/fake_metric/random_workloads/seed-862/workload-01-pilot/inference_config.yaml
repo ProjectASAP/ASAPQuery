@@ -14,9 +14,9 @@ metrics:
 queries:
 - aggregations:
   - aggregation_id: 1
-    read_count_threshold: 1
-  query: avg by (region, service, job) (quantile_over_time(0.99, data[1s]))
-  planned_subquery: quantile_over_time(0.99, data[1s])
+    read_count_threshold: 100
+  query: avg by (region, service, job) (quantile_over_time(0.99, data[100s]))
+  planned_subquery: quantile_over_time(0.99, data[1m40s])
   query_time_aggregations:
   - operator: avg
     grouping:
@@ -28,9 +28,9 @@ queries:
     parameter: null
 - aggregations:
   - aggregation_id: 1
-    read_count_threshold: 1
-  query: avg by (region) (quantile_over_time(0.95, data[1s]))
-  planned_subquery: quantile_over_time(0.95, data[1s])
+    read_count_threshold: 100
+  query: avg by (region) (quantile_over_time(0.95, data[100s]))
+  planned_subquery: quantile_over_time(0.95, data[1m40s])
   query_time_aggregations:
   - operator: avg
     grouping:
@@ -40,9 +40,9 @@ queries:
     parameter: null
 - aggregations:
   - aggregation_id: 1
-    read_count_threshold: 1
-  query: avg by (region, service, job) (quantile_over_time(0.75, data[1s]))
-  planned_subquery: quantile_over_time(0.75, data[1s])
+    read_count_threshold: 100
+  query: avg by (region, service, job) (quantile_over_time(0.75, data[100s]))
+  planned_subquery: quantile_over_time(0.75, data[1m40s])
   query_time_aggregations:
   - operator: avg
     grouping:

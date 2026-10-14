@@ -116,7 +116,7 @@
       "support": "common-promql"
     },
     {
-      "clickhouse_sql": "SELECT region, service, job, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.99)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service, job",
+      "clickhouse_sql": "SELECT region, service, job, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.99)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 100 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service, job",
       "grouping": [
         "region",
         "service",
@@ -124,10 +124,10 @@
       ],
       "id": "q03-quantile",
       "interval_ms": 1000,
-      "lookback_ms": 1000,
+      "lookback_ms": 100000,
       "output_groups": 200,
       "output_series_upper_bound": 200,
-      "promql": "avg by (region, service, job) (quantile_over_time(0.99, data[1s]))",
+      "promql": "avg by (region, service, job) (quantile_over_time(0.99, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -139,7 +139,7 @@
           ],
           "id": "q03-quantile/rqe",
           "interval_ms": 1000,
-          "lookback_ms": 1000,
+          "lookback_ms": 100000,
           "metric": "data",
           "phi": 0.99
         }
@@ -148,7 +148,7 @@
       "support": "common-promql"
     },
     {
-      "clickhouse_sql": "SELECT region, service, job, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.95)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service, job",
+      "clickhouse_sql": "SELECT region, service, job, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.95)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 100 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region, service, job",
       "grouping": [
         "region",
         "service",
@@ -156,10 +156,10 @@
       ],
       "id": "q04-quantile",
       "interval_ms": 1000,
-      "lookback_ms": 1000,
+      "lookback_ms": 100000,
       "output_groups": 200,
       "output_series_upper_bound": 200,
-      "promql": "avg by (region, service, job) (quantile_over_time(0.95, data[1s]))",
+      "promql": "avg by (region, service, job) (quantile_over_time(0.95, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -171,7 +171,7 @@
           ],
           "id": "q04-quantile/rqe",
           "interval_ms": 1000,
-          "lookback_ms": 1000,
+          "lookback_ms": 100000,
           "metric": "data",
           "phi": 0.95
         }
@@ -180,16 +180,16 @@
       "support": "common-promql"
     },
     {
-      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.50)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 1 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
+      "clickhouse_sql": "SELECT region, AVG(series_quantile) AS value FROM (SELECT region, service, job, label_0, quantileExact(0.50)(value) AS series_quantile FROM data WHERE ts BETWEEN NOW() - INTERVAL 100 SECOND AND NOW() GROUP BY region, service, job, label_0) GROUP BY region",
       "grouping": [
         "region"
       ],
       "id": "q05-quantile",
       "interval_ms": 1000,
-      "lookback_ms": 1000,
+      "lookback_ms": 100000,
       "output_groups": 4,
       "output_series_upper_bound": 4,
-      "promql": "avg by (region) (quantile_over_time(0.50, data[1s]))",
+      "promql": "avg by (region) (quantile_over_time(0.50, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -199,7 +199,7 @@
           ],
           "id": "q05-quantile/rqe",
           "interval_ms": 1000,
-          "lookback_ms": 1000,
+          "lookback_ms": 100000,
           "metric": "data",
           "phi": 0.5
         }

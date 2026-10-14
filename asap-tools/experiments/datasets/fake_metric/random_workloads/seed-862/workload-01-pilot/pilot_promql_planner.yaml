@@ -11,9 +11,9 @@ query_groups:
 - id: 1
   repetition_delay_ms: 1000
   queries:
-  - avg by (region, service, job) (quantile_over_time(0.99, data[1s]))
-  - avg by (region) (quantile_over_time(0.95, data[1s]))
-  - avg by (region, service, job) (quantile_over_time(0.75, data[1s]))
+  - avg by (region, service, job) (quantile_over_time(0.99, data[100s]))
+  - avg by (region) (quantile_over_time(0.95, data[100s]))
+  - avg by (region, service, job) (quantile_over_time(0.75, data[100s]))
   - topk by (region, service) (4, sum_over_time(data[1m]))
   controller_options:
     accuracy_sla: 0.95

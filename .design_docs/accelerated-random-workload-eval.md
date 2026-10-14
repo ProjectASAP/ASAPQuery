@@ -51,17 +51,19 @@ unbounded.
 
 | Lookback `W` | Allowed repeat intervals `T` |
 | ---: | ---: |
-| 1 s | 1 s |
+| 100 s | 1 s |
 | 1 min | 1 s, 2 s |
 | 5 min | 5 s, 10 s |
 | 10 min | 10 s, 20 s |
 | 20 min | 30 s, 60 s |
 
 The maximum accelerated backfill is therefore only 20 minutes of event-time
-history.  The first 1 s class is for spatial queries; temporal queries use the
-1--20 minute classes.  Scraping remains every 100 ms, so each spatial query
-still consumes ten samples per leaf series.  Its whole-second repetition and
-lookback are compatible with the current exact-MV arm; it is not gated on
+history.  The first 100 s class is for quantile queries; the other temporal
+queries use the 1--20 minute classes.  Scraping remains every 100 ms, so each
+quantile query consumes 1,000 samples per leaf series: the first N that
+sketch-bench's accuracy curves cover, below which no saved plan can serve it.
+Its whole-second repetition and lookback are compatible with the current
+exact-MV arm; it is not gated on
 [#876](https://github.com/ProjectASAP/ASAPQuery/issues/876).  That issue is
 needed only for a future sub-second query/MV schedule.
 
@@ -117,12 +119,6 @@ top-k, so it is a gated template rather than an unconditional member of the
 first pilot workload.
 
 ### Quantile
-
-For the 1 s spatial class, PromQL has exact grouped semantics:
-
-```promql
-quantile by (G) (phi, data)
-```
 
 For a temporal grouped quantile, PromQL cannot directly express a pooled
 quantile over every raw sample in each group.  The PromQL-compatible rendering
