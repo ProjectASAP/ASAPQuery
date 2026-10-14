@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+from copy import deepcopy
 
 
 sys.path.insert(
@@ -67,6 +68,13 @@ class GenerateWorkloadsTest(unittest.TestCase):
                     )
                 )
             self.assertEqual(len(keys), len(set(keys)))
+
+    def test_validation_rejects_duplicate_atomic_rqes(self):
+        workload = deepcopy(workloads.generate_workloads(seed=1)[0])
+        workload["queries"][4]["rqes"][0] = deepcopy(workload["queries"][3]["rqes"][0])
+
+        with self.assertRaisesRegex(ValueError, "must not repeat an atomic RQE"):
+            workloads.validate_workload(workload)
 
 
 if __name__ == "__main__":

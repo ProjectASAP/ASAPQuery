@@ -8,17 +8,40 @@ write runner-specific configuration.
 
 import argparse
 import json
+import math
 import random
 from pathlib import Path
 
 
+WORKLOAD_COUNT = 10
+QUERIES_PER_WORKLOAD = 10
+SAMPLES_PER_SEC_PER_SERIES = 10
+ACCURACY_SLA = 0.95
+SECOND_MS = 1_000
+MINUTE_MS = 60 * SECOND_MS
+SPATIAL_LOOKBACK_MS = 100
+SPATIAL_INTERVAL_MS = 100
+LABEL_HIERARCHY = (
+    ("region", 4, None),
+    ("service", 5, "region"),
+    ("job", 10, "service"),
+    ("label_0", 50, "job"),
+)
+LABEL_CARDINALITIES = {name: cardinality for name, cardinality, _ in LABEL_HIERARCHY}
+METRIC_LABELS = [
+    {"name": name, "cardinality": cardinality, **({"child_of": parent} if parent else {})}
+    for name, cardinality, parent in LABEL_HIERARCHY
+]
 GROUPINGS = (("region",), ("region", "service"), ("region", "service", "job"))
-GROUP_COUNTS = {grouping: groups for grouping, groups in zip(GROUPINGS, (4, 20, 200))}
+GROUP_COUNTS = {
+    grouping: math.prod(LABEL_CARDINALITIES[label] for label in grouping)
+    for grouping in GROUPINGS
+}
 TEMPORAL_TIMES = (
-    (60_000, (1_000, 2_000)),
-    (300_000, (5_000, 10_000)),
-    (600_000, (10_000, 20_000)),
-    (1_200_000, (30_000, 60_000)),
+    (MINUTE_MS, (SECOND_MS, 2 * SECOND_MS)),
+    (5 * MINUTE_MS, (5 * SECOND_MS, 10 * SECOND_MS)),
+    (10 * MINUTE_MS, (10 * SECOND_MS, 20 * SECOND_MS)),
+    (20 * MINUTE_MS, (30 * SECOND_MS, MINUTE_MS)),
 )
 QUANTILES = (0.50, 0.75, 0.90, 0.95, 0.99)
 TOPK_VALUES = (4, 8)
@@ -26,7 +49,7 @@ TOPK_VALUES = (4, 8)
 
 def duration(milliseconds):
     """Render a whole-minute duration for the supported PromQL templates."""
-    return f"{milliseconds // 60_000}m"
+    return f"{milliseconds // MINUTE_MS}m"
 
 
 def grouping_text(grouping):
@@ -56,7 +79,7 @@ def query(
         "grouping_labels": list(grouping),
         "lookback_ms": lookback_ms,
         "interval_ms": interval_ms,
-        "accuracy_sla": 0.95,
+        "accuracy_sla": ACCURACY_SLA,
         **params,
     }
     return {
@@ -83,7 +106,14 @@ def sum_query(query_id, grouping, lookback_ms, interval_ms):
 def quantile_query(query_id, grouping, phi):
     rendered = f"quantile by ({grouping_text(grouping)}) ({phi:.2f}, data)"
     return query(
-        query_id, "quantile", grouping, 100, 100, rendered, "common-promql", phi=phi
+        query_id,
+        "quantile",
+        grouping,
+        SPATIAL_LOOKBACK_MS,
+        SPATIAL_INTERVAL_MS,
+        rendered,
+        "common-promql",
+        phi=phi,
     )
 
 
@@ -153,8 +183,8 @@ def generate_workload(seed, index):
     rng = random.Random(f"{seed}/{index}")
     fine, coarse = GROUPINGS[2], GROUPINGS[1]
     rollup_w, rollup_t = choose_temporal_time(rng)
-    short_w, short_t = 60_000, rng.choice((1_000, 2_000))
-    long_w, long_t = 1_200_000, rng.choice((30_000, 60_000))
+    short_w, short_t = MINUTE_MS, rng.choice((SECOND_MS, 2 * SECOND_MS))
+    long_w, long_t = 20 * MINUTE_MS, rng.choice((30 * SECOND_MS, MINUTE_MS))
     quantile_specs = rng.sample(
         [(grouping, phi) for grouping in GROUPINGS for phi in QUANTILES], 3
     )
@@ -198,13 +228,8 @@ def generate_workload(seed, index):
         "version": 1,
         "id": f"workload-{index:02d}",
         "seed": seed,
-        "labels": [
-            {"name": "region", "cardinality": 4},
-            {"name": "service", "cardinality": 5, "child_of": "region"},
-            {"name": "job", "cardinality": 10, "child_of": "service"},
-            {"name": "label_0", "cardinality": 50, "child_of": "job"},
-        ],
-        "samples_per_sec_per_series": 10,
+        "labels": METRIC_LABELS,
+        "samples_per_sec_per_series": SAMPLES_PER_SEC_PER_SERIES,
         "queries": queries,
     }
     validate_workload(workload)
@@ -214,8 +239,8 @@ def generate_workload(seed, index):
 def validate_workload(workload):
     """Reject manifests that violate the experiment's stable public contract."""
     queries = workload["queries"]
-    if len(queries) != 10:
-        raise ValueError("a workload must contain exactly ten queries")
+    if len(queries) != QUERIES_PER_WORKLOAD:
+        raise ValueError(f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries")
     if len({query["id"] for query in queries}) != len(queries):
         raise ValueError("query IDs must be unique")
     rqe_keys = {
@@ -253,7 +278,7 @@ def validate_workload(workload):
         raise ValueError("a workload must contain the fine side of a roll-up chain")
 
 
-def generate_workloads(seed, workload_count=10):
+def generate_workloads(seed, workload_count=WORKLOAD_COUNT):
     """Generate the deterministic workload suite for one experiment seed."""
     return [generate_workload(seed, index) for index in range(1, workload_count + 1)]
 
