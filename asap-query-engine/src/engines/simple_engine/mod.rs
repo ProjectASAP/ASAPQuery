@@ -3141,11 +3141,9 @@ impl SimpleEngine {
                         Some(&query_bounds),
                     )
                     .into_iter()
-                    // A fully unlabeled result (fallback_key was None and
-                    // the value accumulator has no self-keys) has no
-                    // RangeVectorElement representation -- matches today's
-                    // behavior of producing no sample for this combination.
-                    .filter_map(|(key, value)| key.map(|key| (key, value)))
+                    // A missing store key denotes the single scalar row of
+                    // a global aggregate; represent it with empty labels.
+                    .map(|(key, value)| (key.unwrap_or_else(KeyByLabelValues::new), value))
                     .collect();
 
                 // Rank and truncate to k within this group only -- a

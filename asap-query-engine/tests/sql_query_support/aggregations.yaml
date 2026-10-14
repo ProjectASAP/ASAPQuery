@@ -127,7 +127,7 @@ cases:
 
   - name: sum
     query: SELECT SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: sum-by-job
     query: SELECT job, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
     expected: supported
@@ -136,7 +136,7 @@ cases:
     expected: supported
   - name: count
     query: SELECT COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: count-by-job
     query: SELECT job, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
     expected: supported
@@ -152,13 +152,13 @@ cases:
     expected: supported
   - name: sum-sum-over-time
     query: SELECT SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: sum-without-job-sum-over-time
     query: SELECT instance, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY instance
     expected: supported
   - name: sum-count-over-time
     query: SELECT COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: sum-by-job-count-over-time
     query: SELECT job, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
     expected: supported
@@ -170,7 +170,7 @@ cases:
     expected: supported
   - name: min-min-over-time
     query: SELECT MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: min-by-job-min-over-time
     query: SELECT job, MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
     expected: supported
@@ -182,7 +182,7 @@ cases:
     expected: supported
   - name: max-max-over-time
     query: SELECT MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: max-by-job-max-over-time
     query: SELECT job, MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
     expected: supported

@@ -847,11 +847,7 @@ impl SQLPatternParser {
                     }
                 }
 
-                if group_bys.is_empty() {
-                    None
-                } else {
-                    Some(group_bys)
-                }
+                Some(group_bys)
             }
             _ => None,
         }

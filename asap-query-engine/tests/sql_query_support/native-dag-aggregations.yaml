@@ -11,7 +11,7 @@ repetition_delay_ms: 60000
 cases:
   - name: tumbling-sum
     query: SELECT SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: keyed-count
     query: SELECT job, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
     expected: supported

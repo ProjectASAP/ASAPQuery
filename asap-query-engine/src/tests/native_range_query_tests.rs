@@ -2202,7 +2202,11 @@ mod tests {
     fn create_range_engine_self_keyed(
         metric: &str,
         aggregated_label: &str,
-        data: Vec<(u64, CountMinSketchWithHeapAccumulator)>,
+        data: Vec<(
+            u64,
+            Option<KeyByLabelValues>,
+            CountMinSketchWithHeapAccumulator,
+        )>,
         promql_query: &str,
     ) -> SimpleEngine {
         let mut aggregation_configs = HashMap::new();
@@ -2239,8 +2243,8 @@ mod tests {
             CleanupPolicy::NoCleanup,
         ));
 
-        for (timestamp, acc) in data {
-            let output = PrecomputedOutput::new(timestamp - WINDOW_MS, timestamp, None, 1);
+        for (timestamp, key, acc) in data {
+            let output = PrecomputedOutput::new(timestamp - WINDOW_MS, timestamp, key, 1);
             store
                 .insert_precomputed_output(output, Box::new(acc))
                 .unwrap();
@@ -2287,8 +2291,12 @@ mod tests {
         sketch.inner.update("host-c", 10.0);
 
         let query = "topk(5, transfer_events)";
-        let engine =
-            create_range_engine_self_keyed("transfer_events", "srcip", vec![(1000, sketch)], query);
+        let engine = create_range_engine_self_keyed(
+            "transfer_events",
+            "srcip",
+            vec![(1000, None, sketch)],
+            query,
+        );
 
         let result = engine
             .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
@@ -2331,6 +2339,61 @@ mod tests {
             "expected host-a's count-min-sketch estimate (30.0), got {}",
             host_a.samples[0].value
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_empty_self_keyed_topk_does_not_emit_outer_key() {
+        let query = "topk(5, transfer_events)";
+        let engine = create_range_engine_self_keyed(
+            "transfer_events",
+            "srcip",
+            vec![(
+                1000,
+                Some(KeyByLabelValues::new()),
+                CountMinSketchWithHeapAccumulator::new(3, 1024, 32),
+            )],
+            query,
+        );
+
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail");
+        let (_, query_result) = result.expect("range query failed");
+
+        assert!(
+            matrix_values(query_result).is_empty(),
+            "an empty self-keyed heap must not become an unlabeled result"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_global_sum_returns_one_unlabeled_series() {
+        let query = "sum(requests)";
+        let engine = create_engine_multi_timestamp_with_window(
+            "requests",
+            AggregationType::Sum,
+            vec![],
+            vec![(
+                1000,
+                None,
+                Box::new(SumAccumulator::with_sum(42.0)) as Box<dyn AggregateCore>,
+            )],
+            query,
+            1000,
+            1000,
+            WindowType::Tumbling,
+        );
+
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail");
+        let (_, query_result) = result.expect("range query failed");
+        let elements = matrix_values(query_result);
+
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].labels, KeyByLabelValues::new());
+        assert_eq!(elements[0].samples.len(), 1);
+        assert_eq!(elements[0].samples[0].value, 42.0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

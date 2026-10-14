@@ -56,40 +56,40 @@ cases:
 
   - name: quantile-0.1
     query: SELECT QUANTILE(0.1, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.2
     query: SELECT QUANTILE(0.2, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.3
     query: SELECT QUANTILE(0.3, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.4
     query: SELECT QUANTILE(0.4, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.5
     query: SELECT QUANTILE(0.5, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.6
     query: SELECT QUANTILE(0.6, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.7
     query: SELECT QUANTILE(0.7, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.75
     query: SELECT QUANTILE(0.75, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.8
     query: SELECT QUANTILE(0.8, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.9
     query: SELECT QUANTILE(0.9, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.95
     query: SELECT QUANTILE(0.95, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: quantile-0.99
     query: SELECT QUANTILE(0.99, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
 
   - name: quantile-0.5-by-job
     query: SELECT job, QUANTILE(0.5, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
