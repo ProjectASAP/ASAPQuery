@@ -7,16 +7,17 @@
 //! is written to `--stats-out` so a run can be checked for keeping up.
 
 mod encode;
+mod table;
 mod workload;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use encode::{Encoder, RemoteWriteEncoder, RowBinaryEncoder, ROW_BINARY_COLUMNS};
+use encode::{row_binary_columns, Encoder, RemoteWriteEncoder, RowBinaryEncoder};
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
-use workload::{series_batches, Workload};
+use workload::{series_batches, Row, Workload};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -30,42 +31,55 @@ enum SinkKind {
 #[derive(Debug, Parser)]
 #[command(about = "Send a seeded synthetic workload in real time to ASAPQuery or ClickHouse")]
 struct Args {
-    #[arg(long, value_enum)]
-    sink: SinkKind,
+    #[arg(long, value_enum, required_unless_present = "verify_facts")]
+    sink: Option<SinkKind>,
     /// Remote write endpoint (`http://host:port/api/v1/write`) or ClickHouse
     /// HTTP base URL (`http://host:8123`).
+    #[arg(long, required_unless_present = "verify_facts")]
+    url: Option<String>,
+    /// With `--groups`: the metric name sent as `__name__` (remote write
+    /// only; default `data`). With `--workload-table`: send only this metric.
     #[arg(long)]
-    url: String,
-    /// Metric name sent as `__name__` (remote write only).
-    #[arg(long, default_value = "data")]
-    metric: String,
-    /// Target table, optionally `database.table` (ClickHouse only), made of
-    /// `[A-Za-z0-9_]` characters. Must have columns `ts DateTime64(3), label_0 String, instance String, value Float64`.
-    #[arg(long, default_value = "data")]
+    metric: Option<String>,
+    /// Target table, optionally `database.table` (ClickHouse with `--groups`
+    /// only), made of `[A-Za-z0-9_]` characters. Must have columns `ts DateTime64(3), label_0 String, instance String, value Float64`.
+    #[arg(long, default_value = "data", conflicts_with = "workload_table")]
     table: String,
     #[arg(long, env = "CLICKHOUSE_USER")]
     clickhouse_user: Option<String>,
     #[arg(long, env = "CLICKHOUSE_PASSWORD")]
     clickhouse_password: Option<String>,
 
+    /// Generate the metrics of a sketch-bench workload table's
+    /// `workloads[0].e2e.metrics` instead of the `--groups` workload. Each
+    /// metric's ClickHouse table is named after it.
+    #[arg(long, conflicts_with_all = ["groups", "series_per_group", "pareto_shape", "pareto_scale"])]
+    workload_table: Option<String>,
     /// Number of `label_0` values (C).
-    #[arg(long)]
-    groups: usize,
+    #[arg(long, required_unless_present = "workload_table")]
+    groups: Option<usize>,
     /// Number of `instance` values per group (s).
+    #[arg(long, required_unless_present = "workload_table")]
+    series_per_group: Option<usize>,
+    /// Samples per second per series. Defaults to 1 with `--groups`, and to
+    /// the table's `samples_per_sec_per_series` with `--workload-table`.
     #[arg(long)]
-    series_per_group: usize,
-    #[arg(long, default_value_t = 1)]
-    samples_per_sec: u32,
+    samples_per_sec: Option<u32>,
     #[arg(long, default_value_t = 1.5)]
     pareto_shape: f64,
     #[arg(long, default_value_t = 1.0)]
     pareto_scale: f64,
     #[arg(long, default_value_t = 42)]
     seed: u64,
+    /// Print, for every subset of each metric's labels, the expected and the
+    /// generated number of distinct label-value tuples, then exit without
+    /// sending; non-zero if any differ.
+    #[arg(long)]
+    verify_facts: bool,
 
     /// Seconds of event time to send.
-    #[arg(long)]
-    duration_secs: u64,
+    #[arg(long, required_unless_present = "verify_facts")]
+    duration_secs: Option<u64>,
     /// Event time of the first tick, in ms since the epoch. Defaults to the
     /// next whole wall-clock second, so `NOW()`-relative queries see live data.
     #[arg(long)]
@@ -99,11 +113,14 @@ struct TickStats {
 #[derive(Debug, Serialize)]
 struct RunStats {
     sink: SinkKind,
-    groups: usize,
-    series_per_group: usize,
+    /// Unset with `--workload-table`.
+    groups: Option<usize>,
+    series_per_group: Option<usize>,
+    pareto_shape: Option<f64>,
+    pareto_scale: Option<f64>,
+    workload_table: Option<String>,
+    metrics: Vec<String>,
     samples_per_sec: u32,
-    pareto_shape: f64,
-    pareto_scale: f64,
     seed: u64,
     start_ms: i64,
     duration_secs: u64,
@@ -121,50 +138,67 @@ struct RunStats {
     ticks: Vec<TickStats>,
 }
 
-struct Sink {
-    client: reqwest::Client,
+/// Where one metric's rows go: the request to send them with and their encoder.
+struct Target {
     request: reqwest::RequestBuilder,
     encoder: Box<dyn Encoder>,
 }
 
+struct Sink {
+    client: reqwest::Client,
+    /// One per metric of the workload, in order.
+    targets: Vec<Target>,
+}
+
 impl Sink {
-    fn new(args: &Args, workload: &Workload) -> Result<Self> {
+    fn new(args: &Args, sink: SinkKind, url: &str, workload: &Workload) -> Result<Self> {
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(args.concurrency)
             .build()?;
-        let (request, encoder): (_, Box<dyn Encoder>) = match args.sink {
-            SinkKind::RemoteWrite => (
-                client
-                    .post(&args.url)
-                    .header("Content-Encoding", "snappy")
-                    .header("Content-Type", "application/x-protobuf")
-                    .header("X-Prometheus-Remote-Write-Version", "0.1.0"),
-                Box::new(RemoteWriteEncoder::new(workload, &args.metric)),
-            ),
-            SinkKind::Clickhouse => {
-                let query = format!(
-                    "INSERT INTO {} ({ROW_BINARY_COLUMNS}) FORMAT RowBinary",
-                    args.table
-                );
-                let mut request = client.post(&args.url).query(&[("query", query)]);
-                if let Some(user) = &args.clickhouse_user {
-                    request = request.header("X-ClickHouse-User", user);
+        let targets = workload
+            .metrics
+            .iter()
+            .map(|metric| match sink {
+                SinkKind::RemoteWrite => Target {
+                    request: client
+                        .post(url)
+                        .header("Content-Encoding", "snappy")
+                        .header("Content-Type", "application/x-protobuf")
+                        .header("X-Prometheus-Remote-Write-Version", "0.1.0"),
+                    encoder: Box::new(RemoteWriteEncoder::new(metric, &metric.name)),
+                },
+                SinkKind::Clickhouse => {
+                    let table = if args.workload_table.is_some() {
+                        &metric.name
+                    } else {
+                        &args.table
+                    };
+                    let query = format!(
+                        "INSERT INTO {table} ({}) FORMAT RowBinary",
+                        row_binary_columns(metric)
+                    );
+                    let mut request = client.post(url).query(&[("query", query)]);
+                    if let Some(user) = &args.clickhouse_user {
+                        request = request.header("X-ClickHouse-User", user);
+                    }
+                    if let Some(password) = &args.clickhouse_password {
+                        request = request.header("X-ClickHouse-Key", password);
+                    }
+                    Target {
+                        request,
+                        encoder: Box::new(RowBinaryEncoder::new(metric)),
+                    }
                 }
-                if let Some(password) = &args.clickhouse_password {
-                    request = request.header("X-ClickHouse-Key", password);
-                }
-                (request, Box::new(RowBinaryEncoder::new(workload)))
-            }
-        };
-        Ok(Self {
-            client,
-            request,
-            encoder,
-        })
+            })
+            .collect();
+        Ok(Self { client, targets })
     }
 
-    async fn send(&self, body: Vec<u8>) -> Result<()> {
-        let request = self
+    async fn send(&self, metric: usize, rows: &[Row]) -> Result<usize> {
+        let target = &self.targets[metric];
+        let body = target.encoder.encode(rows);
+        let bytes = body.len();
+        let request = target
             .request
             .try_clone()
             .context("request builder must be clonable")?
@@ -176,7 +210,7 @@ impl Sink {
             let text = response.text().await.unwrap_or_default();
             bail!("HTTP {status}: {}", text.trim());
         }
-        Ok(())
+        Ok(bytes)
     }
 }
 
@@ -209,17 +243,81 @@ async fn wait_for_wall_clock(epoch_ms: i64) -> Instant {
     Instant::now()
 }
 
+fn build_workload(args: &Args) -> Result<Workload> {
+    if let Some(path) = &args.workload_table {
+        return table::load(
+            path,
+            args.metric.as_deref(),
+            args.samples_per_sec,
+            args.seed,
+        );
+    }
+    let (groups, series_per_group) = (
+        args.groups.unwrap_or_default(),
+        args.series_per_group.unwrap_or_default(),
+    );
+    if groups == 0 || series_per_group == 0 {
+        bail!("--groups and --series-per-group must be positive");
+    }
+    if args.pareto_shape <= 0.0 || args.pareto_scale <= 0.0 {
+        bail!("--pareto-shape and --pareto-scale must be positive");
+    }
+    Ok(Workload::grouped(
+        args.metric.as_deref().unwrap_or("data"),
+        args.seed,
+        groups,
+        series_per_group,
+        args.samples_per_sec.unwrap_or(1),
+        args.pareto_shape,
+        args.pareto_scale,
+    ))
+}
+
+/// Prints the facts check of every metric; true if every fact holds.
+fn verify_facts(workload: &Workload) -> bool {
+    let mut ok = true;
+    for metric in &workload.metrics {
+        println!("{}: {} series", metric.name, metric.series.len());
+        println!("  {:<40} {:>12} {:>12}", "labels", "expected", "generated");
+        for fact in table::facts(&metric.labels, &metric.series) {
+            let holds = fact.expected == fact.actual;
+            ok &= holds;
+            println!(
+                "  {:<40} {:>12} {:>12}{}",
+                fact.labels.join(","),
+                fact.expected,
+                fact.actual,
+                if holds { "" } else { "  MISMATCH" }
+            );
+        }
+    }
+    ok
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    if args.groups == 0 || args.series_per_group == 0 || args.samples_per_sec == 0 {
-        bail!("--groups, --series-per-group and --samples-per-sec must be positive");
+    let workload = build_workload(&args)?;
+    if workload.samples_per_sec == 0 {
+        bail!("samples per second must be positive");
     }
     // Timestamps are in ms, so more samples per second would repeat a timestamp
     // within a series, which remote write drops and ClickHouse keeps.
-    if args.samples_per_sec > 1_000 {
-        bail!("--samples-per-sec must be at most 1000");
+    if workload.samples_per_sec > 1_000 {
+        bail!("samples per second must be at most 1000");
     }
+    if args.verify_facts {
+        if !verify_facts(&workload) {
+            bail!("the generated series do not match the description");
+        }
+        return Ok(());
+    }
+    let (Some(sink_kind), Some(url), Some(duration_secs)) =
+        (args.sink, args.url.as_deref(), args.duration_secs)
+    else {
+        bail!("--sink, --url and --duration-secs are required");
+    };
+
     // The table name is interpolated into the INSERT query.
     if args.table.is_empty()
         || !args
@@ -229,10 +327,7 @@ async fn main() -> Result<()> {
     {
         bail!("--table must be made of [A-Za-z0-9_.] characters");
     }
-    if args.pareto_shape <= 0.0 || args.pareto_scale <= 0.0 {
-        bail!("--pareto-shape and --pareto-scale must be positive");
-    }
-    let batch_rows = args.batch_rows.unwrap_or(match args.sink {
+    let batch_rows = args.batch_rows.unwrap_or(match sink_kind {
         SinkKind::RemoteWrite => 50_000,
         SinkKind::Clickhouse => 100_000,
     });
@@ -243,34 +338,25 @@ async fn main() -> Result<()> {
         validate_start_ms(start_ms)?;
     }
 
-    let workload = Workload {
-        seed: args.seed,
-        groups: args.groups,
-        series_per_group: args.series_per_group,
-        samples_per_sec: args.samples_per_sec,
-        pareto_shape: args.pareto_shape,
-        pareto_scale: args.pareto_scale,
-    };
-    let sink = Arc::new(Sink::new(&args, &workload)?);
+    let sink = Arc::new(Sink::new(&args, sink_kind, url, &workload)?);
     let permits = Arc::new(Semaphore::new(args.concurrency));
     let start_ms = args.start_ms.unwrap_or_else(next_whole_second_ms);
+    let metric_names: Vec<String> = workload.metrics.iter().map(|m| m.name.clone()).collect();
 
     eprintln!(
-        "paced_feeder: {:?} -> {}, {} series x {}/s = {} rows/s for {}s, start_ms={start_ms}",
-        args.sink,
-        args.url,
+        "paced_feeder: {sink_kind:?} -> {url}, {} ({} series) x {}/s = {} rows/s for {duration_secs}s, start_ms={start_ms}",
+        metric_names.join(", "),
         workload.num_series(),
-        args.samples_per_sec,
+        workload.samples_per_sec,
         workload.rows_per_tick(),
-        args.duration_secs
     );
 
     let base = wait_for_wall_clock(start_ms).await;
-    let mut ticks = Vec::with_capacity(args.duration_secs as usize);
+    let mut ticks = Vec::with_capacity(duration_secs as usize);
     let mut errors: Vec<String> = Vec::new();
     let mut failed_requests = 0;
 
-    for tick in 0..args.duration_secs {
+    for tick in 0..duration_secs {
         let scheduled = base + Duration::from_secs(tick);
         tokio::time::sleep_until(scheduled.into()).await;
         let started = Instant::now();
@@ -281,19 +367,20 @@ async fn main() -> Result<()> {
         // group's samples across series may not. That is safe for ASAPQuery:
         // the tick lies in one window (see `tick_rows`) and is under one
         // second behind the watermark, within the allowed lateness.
-        let tick_rows = Arc::new(workload.tick_rows(tick, start_ms));
-        let per_series = args.samples_per_sec as usize;
+        let per_series = workload.samples_per_sec as usize;
         let mut tasks = tokio::task::JoinSet::new();
-        for range in series_batches(tick_rows.len(), per_series, batch_rows) {
-            let (tick_rows, sink) = (Arc::clone(&tick_rows), Arc::clone(&sink));
-            let permit = Arc::clone(&permits).acquire_owned().await?;
-            tasks.spawn(async move {
-                let _permit = permit;
-                let rows = range.len();
-                let body = sink.encoder.encode(&tick_rows[range]);
-                let bytes = body.len();
-                sink.send(body).await.map(|()| (rows, bytes))
-            });
+        for metric in 0..workload.metrics.len() {
+            let metric_rows = Arc::new(workload.tick_rows(metric, tick, start_ms));
+            for range in series_batches(metric_rows.len(), per_series, batch_rows) {
+                let (metric_rows, sink) = (Arc::clone(&metric_rows), Arc::clone(&sink));
+                let permit = Arc::clone(&permits).acquire_owned().await?;
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let rows = range.len();
+                    let sent = sink.send(metric, &metric_rows[range]).await;
+                    sent.map(|bytes| (rows, bytes))
+                });
+            }
         }
 
         while let Some(joined) = tasks.join_next().await {
@@ -337,18 +424,21 @@ async fn main() -> Result<()> {
 
     // A run that keeps up still spans the full duration, even though the last
     // tick's work ends before its second does.
-    let wall_secs = base.elapsed().as_secs_f64().max(args.duration_secs as f64);
+    let wall_secs = base.elapsed().as_secs_f64().max(duration_secs as f64);
     let rows_sent: usize = ticks.iter().map(|t| t.rows).sum();
+    let grouped = args.workload_table.is_none();
     let run = RunStats {
-        sink: args.sink,
+        sink: sink_kind,
         groups: args.groups,
         series_per_group: args.series_per_group,
-        samples_per_sec: args.samples_per_sec,
-        pareto_shape: args.pareto_shape,
-        pareto_scale: args.pareto_scale,
+        pareto_shape: grouped.then_some(args.pareto_shape),
+        pareto_scale: grouped.then_some(args.pareto_scale),
+        workload_table: args.workload_table.clone(),
+        metrics: metric_names,
+        samples_per_sec: workload.samples_per_sec,
         seed: args.seed,
         start_ms,
-        duration_secs: args.duration_secs,
+        duration_secs,
         target_rows_per_sec: workload.rows_per_tick(),
         rows_sent,
         bytes_sent: ticks.iter().map(|t| t.bytes).sum(),
