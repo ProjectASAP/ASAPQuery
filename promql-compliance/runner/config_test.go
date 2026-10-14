@@ -1,6 +1,10 @@
 package runner
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -169,5 +173,143 @@ queries:
 `))
 	if err == nil {
 		t.Fatal("LoadSuite accepted an invalid instant vector order direction")
+	}
+}
+
+const plannerOutputSuite = `name: fixed-output
+planner_output_dir: %s
+queries:
+  - name: up
+    expr: up
+    instant_offsets_seconds: [60]
+`
+
+// writePlannerOutputSuite writes a suite under root/suites whose
+// planner_output_dir is configured, plus the named files under
+// root/suites/fixed.
+func writePlannerOutputSuite(t *testing.T, configured string, files ...string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	suiteDirectory := filepath.Join(root, "suites")
+	outputDirectory := filepath.Join(suiteDirectory, "fixed")
+	if err := os.MkdirAll(outputDirectory, 0o755); err != nil {
+		t.Fatalf("create planner output directory: %v", err)
+	}
+	writePlannerOutputFiles(t, outputDirectory, files...)
+	suitePath := filepath.Join(suiteDirectory, "suite.yaml")
+	if err := os.WriteFile(suitePath, []byte(fmt.Sprintf(plannerOutputSuite, configured)), 0o600); err != nil {
+		t.Fatalf("write suite: %v", err)
+	}
+	return suitePath, outputDirectory
+}
+
+func writePlannerOutputFiles(t *testing.T, directory string, files ...string) {
+	t.Helper()
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
+func TestLoadSuiteFileResolvesPlannerOutputDirAgainstSuiteFile(t *testing.T) {
+	suitePath, outputDirectory := writePlannerOutputSuite(t, "fixed", plannerStreamingConfigFile, plannerInferenceConfigFile)
+
+	// Load through a relative suite path so resolution cannot depend on the
+	// caller's working directory matching the suite's directory.
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	relativeSuitePath, err := filepath.Rel(workingDirectory, suitePath)
+	if err != nil {
+		t.Fatalf("Rel: %v", err)
+	}
+	suite, err := LoadSuiteFile(relativeSuitePath)
+	if err != nil {
+		t.Fatalf("LoadSuiteFile: %v", err)
+	}
+	if got, want := suite.PlannerOutputDir, outputDirectory; got != want {
+		t.Fatalf("planner output dir = %q, want %q", got, want)
+	}
+}
+
+func TestLoadSuiteFileAcceptsAbsolutePlannerOutputDir(t *testing.T) {
+	outputDirectory := t.TempDir()
+	writePlannerOutputFiles(t, outputDirectory, plannerStreamingConfigFile, plannerInferenceConfigFile)
+	suitePath, _ := writePlannerOutputSuite(t, outputDirectory)
+
+	suite, err := LoadSuiteFile(suitePath)
+	if err != nil {
+		t.Fatalf("LoadSuiteFile: %v", err)
+	}
+	if got, want := suite.PlannerOutputDir, outputDirectory; got != want {
+		t.Fatalf("planner output dir = %q, want %q", got, want)
+	}
+}
+
+func TestLoadSuiteFileLeavesPlannerOutputDirUnsetByDefault(t *testing.T) {
+	suite, err := LoadSuiteFile("../suites/temporal.yaml")
+	if err != nil {
+		t.Fatalf("LoadSuiteFile: %v", err)
+	}
+	if suite.PlannerOutputDir != "" {
+		t.Fatalf("planner output dir = %q, want empty", suite.PlannerOutputDir)
+	}
+}
+
+func TestLoadSuiteFileRejectsIncompletePlannerOutputDir(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configured string
+		files      []string
+		missing    string
+	}{
+		{"missing inference config", "fixed", []string{plannerStreamingConfigFile}, plannerInferenceConfigFile},
+		{"missing streaming config", "fixed", []string{plannerInferenceConfigFile}, plannerStreamingConfigFile},
+		{"missing directory", "absent", nil, plannerStreamingConfigFile},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			suitePath, _ := writePlannerOutputSuite(t, test.configured, test.files...)
+			_, err := LoadSuiteFile(suitePath)
+			if err == nil {
+				t.Fatal("LoadSuiteFile accepted a planner_output_dir without both config files")
+			}
+			if !strings.Contains(err.Error(), test.missing) {
+				t.Fatalf("error %q does not name the missing file %q", err, test.missing)
+			}
+		})
+	}
+}
+
+func TestLoadSuiteFileRejectsPlannerOutputDirectoryInPlaceOfFile(t *testing.T) {
+	suitePath, outputDirectory := writePlannerOutputSuite(t, "fixed", plannerStreamingConfigFile)
+	if err := os.Mkdir(filepath.Join(outputDirectory, plannerInferenceConfigFile), 0o755); err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	if _, err := LoadSuiteFile(suitePath); err == nil {
+		t.Fatal("LoadSuiteFile accepted a directory as a planner config file")
+	}
+}
+
+// LoadSuite has no suite file to resolve a relative planner_output_dir
+// against, so every Suite it returns already holds an absolute, validated one.
+func TestLoadSuiteRequiresAnAbsoluteValidPlannerOutputDir(t *testing.T) {
+	if _, err := LoadSuite([]byte(fmt.Sprintf(plannerOutputSuite, "fixed"))); err == nil ||
+		!strings.Contains(err.Error(), "LoadSuiteFile") {
+		t.Fatalf("LoadSuite accepted a relative planner_output_dir (err: %v)", err)
+	}
+
+	outputDirectory := t.TempDir()
+	if _, err := LoadSuite([]byte(fmt.Sprintf(plannerOutputSuite, outputDirectory))); err == nil {
+		t.Fatal("LoadSuite accepted a planner_output_dir without its config files")
+	}
+	writePlannerOutputFiles(t, outputDirectory, plannerStreamingConfigFile, plannerInferenceConfigFile)
+	suite, err := LoadSuite([]byte(fmt.Sprintf(plannerOutputSuite, outputDirectory)))
+	if err != nil {
+		t.Fatalf("LoadSuite: %v", err)
+	}
+	if got := suite.PlannerOutputDir; got != outputDirectory {
+		t.Fatalf("planner output dir = %q, want %q", got, outputDirectory)
 	}
 }

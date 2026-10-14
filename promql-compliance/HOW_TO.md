@@ -128,6 +128,27 @@ To change the five-minute cap or one-second ingestion assumption, change the
 runner’s generated-config logic in `runner/run.go`. Do not edit the generated
 configuration: it is temporary and is deleted after the run.
 
+## Use fixed planner output
+
+By default the planner generates the engine's streaming and inference
+configs from the suite. To test configs the planner does not produce, such as
+roll-ups from a finer grouping, check the configs in next to the suite and
+point the suite at their directory:
+
+```yaml
+name: rollup
+planner_output_dir: rollup-planner-output
+```
+
+The path is relative to the suite file. The directory must contain
+`streaming_config.yaml` and `inference_config.yaml` in the planner's output
+format; the runner fails at load time if either is missing. The planner
+service then does not run, and the query engine reads the directory in place
+of the planner's output volume. This needs Docker Compose v2.24.4 or later
+(for `!override`); the runner checks the version first. With
+already-running targets the field has no effect, and the planner input is
+generated and validated as usual. `suites/rollup.yaml` is an example.
+
 ## Configure tolerance
 
 Set a suite-wide default:

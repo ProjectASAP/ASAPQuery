@@ -747,6 +747,47 @@ query_groups:
 }
 
 #[test]
+fn topk_of_sum_collapses_into_one_heap_keyed_by_the_inner_labels() {
+    let query = "topk(3, sum by (job) (sum_over_time(http_requests_total[5m])))";
+    let c = Controller::from_yaml_with_schema(
+        &format!(
+            r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: 60000
+"#
+        ),
+        http_requests_schema(),
+        default_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "sum"));
+    assert_eq!(
+        out.aggregation_labels("CountMinSketchWithHeap", "aggregated"),
+        vec!["job".to_string()],
+        "the heap ranks per-job sums, not per-series values"
+    );
+    assert!(out
+        .aggregation_labels("CountMinSketchWithHeap", "grouping")
+        .is_empty());
+
+    let inference: serde_yaml::Value =
+        serde_yaml::from_str(&out.to_inference_yaml_string().unwrap()).unwrap();
+    let planned_query = &inference["queries"][0];
+    assert_eq!(planned_query["planned_subquery"].as_str(), Some(query));
+    assert_eq!(
+        planned_query["query_time_aggregations"].as_sequence(),
+        Some(&vec![]),
+        "the heap answers topk itself; no query-time stage runs"
+    );
+}
+
+#[test]
 fn heap_parameters_require_explicit_count_events_weighting() {
     let error = asap_planner::planner::sketch::build_sketch_parameters(
         AggregationType::CountMinSketchWithHeap,
