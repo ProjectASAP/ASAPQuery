@@ -150,9 +150,21 @@ class ParseTest(unittest.TestCase):
             {**mg_entry("cardinality", ["region"], 300), "capability": "sum"},
             mg_entry("cardinality", ["instance"], 300),
             {**mg_entry("quantile", ["region"], 300), "value": "bytes"},
+            # records tables have no `value` column.
+            {"promql": "sum_over_time(http[1m])", "interval_secs": 60, "rqes": []},
         ]:
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 sbw.query_from_entry(entry, METRICS)
+
+    def test_asapquery_sql_without_now_raises(self):
+        entry = mg_entry("quantile", ["service"], 300)
+        entry["sql"] = entry["sql"].replace("NOW()", "now()")
+        with self.assertRaises(ValueError):
+            sbw.asapquery_sql(entry)
+
+    def test_describe_is_one_line(self):
+        entry = {"promql": "sum by (job) (\n  data\n)", "interval_secs": 1}
+        self.assertEqual(sbw.describe(entry), "sum by (job) ( data )")
 
 
 def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
@@ -172,8 +184,9 @@ def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
         agg = "QUANTILE(0.99, latency)"
     group = ", ".join(grouping)
     entry["sql"] = (
-        f"SELECT {group}, {agg} FROM http WHERE ts BETWEEN "
-        f"DATEADD(s, -{window_secs}, NOW()) AND NOW() GROUP BY {group}"
+        f"SELECT {group + ', ' if group else ''}{agg} FROM http WHERE ts BETWEEN "
+        f"DATEADD(s, -{window_secs}, NOW()) AND NOW()"
+        + (f" GROUP BY {group}" if group else "")
     )
     return entry
 
@@ -503,7 +516,7 @@ def pooled(records, t_ms: int, w_ms: int, q: "sbw.Query") -> Vector:
 MULTIGROUP = [
     mg_entry("quantile", list(g), w)
     for w in (120, 300)
-    for n in (1, 2, 3)
+    for n in (0, 1, 2, 3)
     for g in itertools.combinations(["region", "service", "endpoint"], n)
 ] + [
     mg_entry("cardinality", g, w)

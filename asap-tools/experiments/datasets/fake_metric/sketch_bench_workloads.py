@@ -20,7 +20,10 @@ For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
 Semantics are those of Prometheus 2.53 (the version installation/prometheus
 installs for bare-metal runs), whose windows are closed on both ends: range
 vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
-each series in [T - 1s, T] (a lookback of one scrape interval); quantiles use
+each series in [T - 1s, T] (a lookback of one scrape interval, not
+Prometheus's 5m default: the feeder writes every series every scrape, so the
+two agree unless a sample is missing, where Prometheus would return the
+series' last value and this SQL drops the series); quantiles use
 quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
 never reset). Structured queries involve no Prometheus: they read ASAPQuery's
 left-open window (T - W, T], the window its SQL frontend and precompute
@@ -30,14 +33,9 @@ the value field, quantile is quantileExactInclusive. T is the client's
 query shapes raise.
 
 Evaluation times: each query group sets `align_to_interval` and a
-`query_time_offset` of QUERY_TIME_OFFSET_SECS. The query client of PR #841
-then evaluates repetition k at floor((start - O) / T) * T + k * T and sends
-it O seconds later, so every run and arm answers the same windows. The
-current client ignores `align_to_interval`: it subtracts O from the eval
-time and sleeps T after each repetition's queries finish, so its eval times
-drift by the query latency. A 1 s group whose queries take 0.3 s skips
-about one T in four, and a 60 s group occasionally repeats or skips a T;
-arms then answer different windows.
+`query_time_offset` of QUERY_TIME_OFFSET_SECS, so the query client evaluates
+repetition k at floor((start - O) / T) * T + k * T and sends it O seconds
+later; every run and arm answers the same windows.
 
 Run from asap-tools/experiments:
     python3 datasets/fake_metric/sketch_bench_workloads.py \
@@ -63,8 +61,8 @@ from generate_workloads import (
 
 OUT_CONFIG_DIR = "config/experiment_type/sketch_bench_clickhouse"
 CLICKHOUSE_URL = "http://localhost:8123"
-# Seconds after an eval time the client sends it (PR #841's default), so
-# data up to the eval time has arrived.
+# Seconds after an eval time the client sends it, so data up to the eval
+# time has arrived.
 QUERY_TIME_OFFSET_SECS = 10
 VALUE_COLUMN = "value"
 # Instant vectors read the latest sample of each series in the last scrape.
@@ -196,9 +194,12 @@ def query_from_entry(entry: dict, metrics: dict) -> Query:
     `{table, value, capability, grouping, quantile, window_secs,
     interval_secs}` that pools every sample of a group over the window."""
     if "promql" in entry:
-        return parse_promql(
+        q = parse_promql(
             entry["promql"], entry["interval_secs"], metric_labels(metrics)
         )
+        if metrics[q.table]["type"] == "records":
+            raise ValueError(f"PromQL over records metric {q.table!r}: {entry}")
+        return q
     table, capability = entry["table"], entry["capability"]
     if capability not in STRUCTURED_AGGS:
         raise ValueError(f"unsupported capability {capability!r}: {entry}")
@@ -222,7 +223,7 @@ def query_from_entry(entry: dict, metrics: dict) -> Query:
 def describe(entry: dict) -> str:
     """A one-line comment naming the query."""
     if "promql" in entry:
-        return entry["promql"]
+        return " ".join(entry["promql"].split())
     level = f"{entry['quantile']}, " if entry["capability"] == "quantile" else ""
     return (
         f"{entry['capability']}({level}{entry['value']}) by "
@@ -255,7 +256,11 @@ def render(
         value = agg(q.agg, q.quantile)
         if q.ratio_quantile is not None:
             value = f"{value} / {agg('quantile', q.ratio_quantile)}"
-        sql = f"SELECT {group}, {value} AS value {window} GROUP BY {group}"
+        if group:
+            sql = f"SELECT {group}, {value} AS value {window} GROUP BY {group}"
+        else:
+            # The grand total: one row, none for an empty window.
+            sql = f"SELECT {value} AS value {window} HAVING count() > 0"
     else:
         if q.series_fn == "last":
             sql = (
@@ -334,13 +339,14 @@ def asapquery_sql(entry: dict) -> str:
     """A structured entry's `sql` with NOW() replaced by the floored eval time.
 
     ASAPQuery's SQL frontend takes a datetime literal but cannot floor it, so
-    the literal is floored in the client's template (UTC; the frontend reads
-    timezone-naive literals as server-local time). The frontend maps
+    the literal is floored in the client's template. The literal is UTC and
+    the frontend reads timezone-naive literals as server-local time, so the
+    ASAPQuery server must run in UTC. The frontend maps
     `ts BETWEEN DATEADD(s, -W, E) AND E` to (start, duration) = (E - W, W) and
     answers over (E - W, E], as the ClickHouse SQL does for structured queries.
     """
-    if "sql" not in entry:
-        raise ValueError(f"structured entry without its ASAPQuery sql: {entry}")
+    if "NOW()" not in entry.get("sql", ""):
+        raise ValueError(f"structured entry without an ASAPQuery sql on NOW(): {entry}")
     end = floored_end_datetime(entry["interval_secs"])
     return entry["sql"].replace("NOW()", f"'{end}'")
 
@@ -422,7 +428,6 @@ def convert(
                 "client_options": {
                     "starting_delay": starting_delay_secs,
                     "repetitions": duration_secs // interval,
-                    # Takes effect with PR #841's query client; see above.
                     "align_to_interval": True,
                     "query_time_offset": QUERY_TIME_OFFSET_SECS,
                 },
