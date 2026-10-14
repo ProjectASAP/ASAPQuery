@@ -59,7 +59,7 @@ struct Args {
 
     /// `milp` plans with sketch-bench's rqe-optimizer: PromQL or SQL with
     /// --input_config only, labels from its `metrics:` hints or tables'
-    /// `metadata_columns`. `saved` writes a PromQL plan sketch-bench's
+    /// `metadata_columns`. `saved` writes a PromQL or SQL plan sketch-bench's
     /// `autosketch_vs_asap` already solved.
     #[arg(long, value_enum, default_value = "legacy")]
     planner: PlannerArg,
@@ -70,7 +70,8 @@ struct Args {
     plan: Option<PathBuf>,
 
     /// Saved only. The eval workload table the plan was solved for; its
-    /// `e2e` block gives the PromQL queries and metric labels.
+    /// `e2e` block gives the queries in --query-language and the metrics'
+    /// labels.
     #[arg(long = "workload-table", required_if_eq("planner", "saved"))]
     workload_table: Option<PathBuf>,
 
@@ -338,10 +339,6 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
 }
 
 fn run_saved(args: &Args) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        args.query_language == QueryLanguage::promql,
-        "--planner saved supports only --query-language promql"
-    );
     let scrape_interval_ms = check_optimizer_flags(args, "saved")?;
     anyhow::ensure!(
         args.input_config.is_none(),
@@ -359,6 +356,7 @@ fn run_saved(args: &Args) -> anyhow::Result<()> {
             weights: args.weights.as_deref().expect("clap requires --weights"),
             sla_ms: args.sla_ms,
         },
+        args.query_language,
         scrape_interval_ms,
     )?
     .write_to_dir(&args.output_dir)?;
