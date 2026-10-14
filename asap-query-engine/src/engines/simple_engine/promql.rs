@@ -1775,7 +1775,7 @@ mod topk_pipeline_tests {
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for i in 1..=15u64 {
             let srcip = format!("10.0.0.{i}");
-            sketch.inner.update(&srcip, (i * 10) as f64);
+            sketch.update(&srcip, (i * 10) as i32);
         }
 
         let output =
@@ -1893,7 +1893,7 @@ mod topk_pipeline_tests {
         let window = &context.store_plan.values_query;
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for i in 1..=15u64 {
-            sketch.inner.update(&format!("10.0.0.{i}"), (i * 10) as f64);
+            sketch.update(&format!("10.0.0.{i}"), (i * 10) as i32);
         }
         store
             .insert_precomputed_output(
@@ -1980,7 +1980,7 @@ mod topk_pipeline_tests {
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for i in 1..=15u64 {
             let srcip = format!("10.0.0.{i}");
-            sketch.inner.update(&srcip, (i * 10) as f64);
+            sketch.update(&srcip, (i * 10) as i32);
         }
 
         let output =
@@ -2154,7 +2154,7 @@ mod topk_pipeline_tests {
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for i in 1..=15u64 {
             let srcip = format!("10.0.0.{i}");
-            sketch.inner.update(&srcip, (i * 10) as f64);
+            sketch.update(&srcip, (i * 10) as i32);
         }
 
         let output =
@@ -2212,7 +2212,7 @@ mod topk_pipeline_tests {
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for i in 1..=15u64 {
             let srcip = format!("10.0.0.{i}");
-            sketch.inner.update(&srcip, (i * 10) as f64);
+            sketch.update(&srcip, (i * 10) as i32);
         }
         let output =
             PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);

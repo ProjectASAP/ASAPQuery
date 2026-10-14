@@ -758,8 +758,12 @@ impl AccumulatorUpdater for CmsWithHeapAccumulatorUpdater {
     }
 
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, _timestamp_ms: i64) {
-        let weight = if self.count_events { 1.0 } else { value };
-        self.acc.inner.update(&key.to_semicolon_str(), weight);
+        let count = if self.count_events {
+            1
+        } else {
+            value.round() as i32
+        };
+        self.acc.update(&key.to_semicolon_str(), count);
     }
 
     impl_accumulator_methods!(acc);
@@ -775,7 +779,7 @@ impl AccumulatorUpdater for CmsWithHeapAccumulatorUpdater {
 
     fn memory_usage_bytes(&self) -> usize {
         std::mem::size_of::<CountMinSketchWithHeapAccumulator>()
-            + self.row_num * self.col_num * std::mem::size_of::<f64>()
+            + self.row_num * self.col_num * std::mem::size_of::<i32>()
     }
 }
 
@@ -1928,14 +1932,24 @@ mod tests {
 
         let key = KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]);
         for _ in 0..5 {
-            updater.update_keyed(&key, 10.0, 0);
+            updater.update_keyed(&key, 1.6, 0);
         }
         let acc = updater.take_accumulator();
         let cms = acc
             .as_any()
             .downcast_ref::<CountMinSketchWithHeapAccumulator>()
             .unwrap();
-        assert_eq!(cms.query_key(&key), 50.0, "sum of 5×10 == 50");
+        assert_eq!(cms.query_key(&key), 10.0, "sum of 5×round(1.6) == 10");
+    }
+
+    #[test]
+    fn test_cms_with_heap_memory_uses_i32_counters() {
+        let updater = CmsWithHeapAccumulatorUpdater::new(3, 7, 32, true);
+
+        assert_eq!(
+            updater.memory_usage_bytes(),
+            std::mem::size_of::<CountMinSketchWithHeapAccumulator>() + 3 * 7 * 4
+        );
     }
 
     #[test]
