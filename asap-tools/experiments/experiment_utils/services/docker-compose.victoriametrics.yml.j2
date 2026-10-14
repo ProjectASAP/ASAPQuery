@@ -11,7 +11,14 @@ services:
     command:
       - "-storageDataPath=/victoria-metrics-data"
       - "-httpListenAddr=:8428"
-      - "-retentionPeriod=1d"
+      # Keep a 24 h window plus the run, and let long-window queries finish
+      # (the defaults are 30 s per query and 10 s waiting in the queue).
+      - "-retentionPeriod=3d"
+      - "-search.maxQueryDuration=24h"
+      - "-search.maxQueueDuration=24h"
+      # Raise the per-query caps so 24 h windows over many series aren't rejected.
+      - "-search.maxSamplesPerQuery=10000000000"
+      - "-search.maxPointsPerTimeseries=1000000"
     {% if cpu_limit or memory_limit -%}
     deploy:
       resources:

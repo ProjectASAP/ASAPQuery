@@ -53,12 +53,18 @@ credentials.
 
 ## Pacing and stats
 
-Each tick's rows are split into `--batch-rows` requests and sent with up to
-`--concurrency` in flight. For remote write, a tick sends its
-`--samples-per-sec` sub-second slots in turn, and the next slot starts only
-after every request of the current one returns, so each aggregation group's
-samples reach ASAPQuery in timestamp order. ClickHouse sorts on insert, so it
-gets the whole tick at once.
+Each tick's rows are split into requests of about `--batch-rows` rows and
+sent with up to `--concurrency` in flight. A tick's rows are series-major and
+requests are cut only between series, so each series' samples of a tick go
+in one request, in timestamp order; the next tick starts only after every
+request of the current one returns. Each series' samples therefore arrive in
+order (counters never seem to reset, and Prometheus needs no out-of-order
+window), while samples of different series of a group may arrive out of
+order within a tick. A tick starting at `t` holds samples spaced evenly over
+`(t, t + 1 s]`, the same left-open interval as ASAPQuery's one-second
+windows, so a tick never spans two windows, and that reordering is safe for
+ASAPQuery as long as its allowed lateness is at least 1 s (the default is
+5 s).
 `--samples-per-sec` is at most 1000, so timestamps (in ms) never repeat. The
 default batch size is 50,000 rows for remote write, which keeps a compressed
 request under axum's 2 MB body limit in ASAPQuery's ingest, and 100,000 for

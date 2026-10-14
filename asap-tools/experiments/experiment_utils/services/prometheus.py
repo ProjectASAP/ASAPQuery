@@ -11,6 +11,8 @@ from experiment_utils.providers.base import InfrastructureProvider
 from constants import (
     PROMETHEUS_CONFIG_DIR,
     PROMETHEUS_CONFIG_FILE,
+    PROMETHEUS_QUERY_MAX_SAMPLES,
+    PROMETHEUS_QUERY_TIMEOUT,
     PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG,
 )
 
@@ -99,7 +101,11 @@ class PrometheusService(BaseService):
             time.sleep(3)
 
         # Start prometheus
-        flags = f"--config.file={PROMETHEUS_CONFIG_FILE}"
+        flags = (
+            f"--config.file={PROMETHEUS_CONFIG_FILE}"
+            f" --query.timeout={PROMETHEUS_QUERY_TIMEOUT}"
+            f" --query.max-samples={PROMETHEUS_QUERY_MAX_SAMPLES}"
+        )
         if self.remote_write_receiver:
             flags += f" {PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG}"
         cmd = f"./prometheus {flags} > /dev/null 2>&1 < /dev/null &"

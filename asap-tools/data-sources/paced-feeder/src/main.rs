@@ -16,7 +16,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
-use workload::{Row, Workload};
+use workload::{series_batches, Workload};
 
 #[derive(Debug, Clone, Copy, ValueEnum, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -71,9 +71,10 @@ struct Args {
     #[arg(long)]
     start_ms: Option<i64>,
 
-    /// Rows per HTTP request. Defaults to 50,000 for remote write, which keeps
-    /// a compressed request under axum's 2 MB body limit in ASAPQuery's ingest,
-    /// and 100,000 for ClickHouse, where each INSERT creates a part.
+    /// Rows per HTTP request, rounded down to whole series (at least one).
+    /// Defaults to 50,000 for remote write, which keeps a compressed request
+    /// under axum's 2 MB body limit in ASAPQuery's ingest, and 100,000 for
+    /// ClickHouse, where each INSERT creates a part.
     #[arg(long)]
     batch_rows: Option<usize>,
     /// Concurrent requests within one tick.
@@ -179,6 +180,15 @@ impl Sink {
     }
 }
 
+/// A tick's samples lie in one 1s window only if ticks start on whole seconds;
+/// a tick straddling a boundary can close a window before its other series arrive.
+fn validate_start_ms(start_ms: i64) -> Result<()> {
+    if start_ms % 1_000 != 0 {
+        bail!("--start-ms must be a whole second (multiple of 1000), got {start_ms}");
+    }
+    Ok(())
+}
+
 fn next_whole_second_ms() -> i64 {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -229,6 +239,9 @@ async fn main() -> Result<()> {
     if batch_rows == 0 || args.concurrency == 0 {
         bail!("--batch-rows and --concurrency must be positive");
     }
+    if let Some(start_ms) = args.start_ms {
+        validate_start_ms(start_ms)?;
+    }
 
     let workload = Workload {
         seed: args.seed,
@@ -263,43 +276,38 @@ async fn main() -> Result<()> {
         let started = Instant::now();
 
         let (mut rows, mut bytes) = (0, 0);
-        // ASAPQuery can drop samples behind a group's watermark, so remote write
-        // sends one slot at a time: a slot's requests all return before the
-        // next slot's are sent. ClickHouse sorts on insert, so it sends the
-        // whole tick at once.
-        let slots = (0..args.samples_per_sec).map(|slot| workload.slot_rows(tick, slot, start_ms));
-        let waves: Vec<Vec<Row>> = match args.sink {
-            SinkKind::RemoteWrite => slots.collect(),
-            SinkKind::Clickhouse => vec![slots.flatten().collect()],
-        };
-        for wave in waves {
-            let wave_rows = Arc::new(wave);
-            let mut tasks = tokio::task::JoinSet::new();
-            for begin in (0..wave_rows.len()).step_by(batch_rows) {
-                let end = (begin + batch_rows).min(wave_rows.len());
-                let (wave_rows, sink) = (Arc::clone(&wave_rows), Arc::clone(&sink));
-                let permit = Arc::clone(&permits).acquire_owned().await?;
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    let body = sink.encoder.encode(&wave_rows[begin..end]);
-                    let bytes = body.len();
-                    sink.send(body).await.map(|()| (end - begin, bytes))
-                });
-            }
+        // A tick's requests go out concurrently, each holding whole series
+        // (see `series_batches`): a series' samples arrive in order, but a
+        // group's samples across series may not. That is safe for ASAPQuery:
+        // the tick lies in one window (see `tick_rows`) and is under one
+        // second behind the watermark, within the allowed lateness.
+        let tick_rows = Arc::new(workload.tick_rows(tick, start_ms));
+        let per_series = args.samples_per_sec as usize;
+        let mut tasks = tokio::task::JoinSet::new();
+        for range in series_batches(tick_rows.len(), per_series, batch_rows) {
+            let (tick_rows, sink) = (Arc::clone(&tick_rows), Arc::clone(&sink));
+            let permit = Arc::clone(&permits).acquire_owned().await?;
+            tasks.spawn(async move {
+                let _permit = permit;
+                let rows = range.len();
+                let body = sink.encoder.encode(&tick_rows[range]);
+                let bytes = body.len();
+                sink.send(body).await.map(|()| (rows, bytes))
+            });
+        }
 
-            while let Some(joined) = tasks.join_next().await {
-                // A panicked task counts as a failed request, so the stats of
-                // the ticks before it are still written.
-                match joined.map_err(anyhow::Error::from).and_then(|sent| sent) {
-                    Ok((n_rows, n_bytes)) => {
-                        rows += n_rows;
-                        bytes += n_bytes;
-                    }
-                    Err(e) => {
-                        failed_requests += 1;
-                        if errors.len() < 10 {
-                            errors.push(format!("tick {tick}: {e:#}"));
-                        }
+        while let Some(joined) = tasks.join_next().await {
+            // A panicked task counts as a failed request, so the stats of
+            // the ticks before it are still written.
+            match joined.map_err(anyhow::Error::from).and_then(|sent| sent) {
+                Ok((n_rows, n_bytes)) => {
+                    rows += n_rows;
+                    bytes += n_bytes;
+                }
+                Err(e) => {
+                    failed_requests += 1;
+                    if errors.len() < 10 {
+                        errors.push(format!("tick {tick}: {e:#}"));
                     }
                 }
             }
@@ -373,4 +381,15 @@ async fn main() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_ms_must_be_whole_second() {
+        assert!(validate_start_ms(1_700_000_000_000).is_ok());
+        assert!(validate_start_ms(1_700_000_000_500).is_err());
+    }
 }
