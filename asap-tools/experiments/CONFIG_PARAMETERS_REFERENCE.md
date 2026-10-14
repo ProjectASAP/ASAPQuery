@@ -543,13 +543,13 @@ table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
 - **Usage**: Ensures data is available for lookback queries
 
 #### `experiment_params.query_groups[].client_options.align_to_interval` (boolean, optional)
-- **Description**: Evaluate repetition k at `t_k = data_start_time + (max(1, ceil(starting_delay / T)) + k) * T`, with `T = repetition_delay_ms` (whole seconds), sending it at wall-clock `t_k + data_lag_secs + query_time_offset`. `starting_delay` counts in event time from `data_start_time`, not as a wall-clock sleep
+- **Description**: Evaluate repetition k at `t_k = data_start_time + (max(1, ceil(starting_delay / T)) + k) * T`, with `T = repetition_delay_ms` (whole seconds), sending it at `t_k + query_time_offset`. `starting_delay` counts from `data_start_time`, not as a sleep from client start
 - **Default**: `false`
-- **Usage**: Every evaluation time is a multiple of `T`, and repetition k covers the same samples in every mode however late the mode started; `query_time_offset` is how long the data of the window ending at `t_k` gets to arrive. Overrides the query engine's per-aggregation alignment in sketchdb mode. Requires `data_start_time` and `data_lag_secs`
+- **Usage**: Every evaluation time is a multiple of `T`, and repetition k covers the same samples in every mode however late the mode started; `query_time_offset` (at least 5 s, ASAPQuery's allowed lateness) is how long the data of the window ending at `t_k` gets to arrive. Overrides the query engine's per-aggregation alignment in sketchdb mode. Requires `data_start_time`; the LCM of the aligned intervals must be at most 600 s
 
-#### `experiment_params.query_groups[].client_options.data_start_time` / `data_lag_secs` (int / float)
-- **Description**: Event time (epoch seconds) the paced feeder's data starts at, and how many seconds it runs behind the wall clock
-- **Usage**: Not set by hand: `experiment_run_e2e.py` writes them into each mode's client config after starting the paced feeder, which backdates its data to the last multiple of the aligned groups' intervals
+#### `experiment_params.query_groups[].client_options.data_start_time` (int)
+- **Description**: Time (epoch seconds) the paced feeder's data starts at
+- **Usage**: Not set by hand: `experiment_run_e2e.py` writes it into each mode's client config after starting the paced feeder, which waits for the next multiple of the aligned groups' intervals' LCM
 
 #### `experiment_params.query_groups[].client_options.starting_delay` (int, required)
 - **Description**: Initial delay in seconds before starting query execution

@@ -15,11 +15,12 @@ from experiment_utils.services import create_prometheus_service
 from experiment_utils.services.docker_prometheus import DockerPrometheusService
 from experiment_utils.services import paced_feeder
 from experiment_utils.services.paced_feeder import (
+    PACED_FEEDER_LAUNCH_SECS_PER_NODE,
     PACED_FEEDER_START_LEAD_SECS,
     PACED_FEEDER_STARTUP_CHECK_SECS,
     PacedFeederService,
     aligned_interval_lcm,
-    backdated_start_ms,
+    aligned_start_ms,
     paced_feeder_min_duration_secs,
     paced_feeder_command,
     paced_feeder_sinks,
@@ -107,7 +108,6 @@ class PacedFeederCommandTest(unittest.TestCase):
             "data",
             "gauge",
             1700000000000,
-            1700000005000,
             "/out/query_engine_data_stats.json",
         )
         self.assertEqual(
@@ -115,7 +115,6 @@ class PacedFeederCommandTest(unittest.TestCase):
             "./target/release/paced_feeder --sink remote-write"
             f" --url {QE_URL} --workload-table /out/table.json --metric data"
             " --seed 42 --duration-secs 600 --start-ms 1700000000000"
-            " --send-at-ms 1700000005000"
             " --stats-out /out/query_engine_data_stats.json",
         )
 
@@ -126,7 +125,6 @@ class PacedFeederCommandTest(unittest.TestCase):
             QE_URL,
             "data",
             "gauge",
-            0,
             0,
             "/s",
         )
@@ -140,7 +138,7 @@ class PacedFeederCommandTest(unittest.TestCase):
 
         def rate_flags(metric, metric_type):
             cmd = paced_feeder_command(
-                config, "/t", QE_URL, metric, metric_type, 0, 0, "/s"
+                config, "/t", QE_URL, metric, metric_type, 0, "/s"
             )
             return [f for f in cmd.split() if f.endswith("-per-sec")]
 
@@ -255,10 +253,10 @@ class CheckPacedFeederConfigTest(unittest.TestCase):
             check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 1, 601)
 
     def test_duration_covers_startup_wait_and_queries(self):
-        # 60 s steady_state_wait and 533 s of queries: the feeder's startup
+        # 60 s steady_state_wait and 538 s of queries: the feeder's startup
         # check comes on top, so 600 s is exactly enough and 599 s is not.
-        min_secs = paced_feeder_min_duration_secs(60, 533)
-        self.assertEqual(min_secs, PACED_FEEDER_STARTUP_CHECK_SECS + 60 + 533)
+        min_secs = paced_feeder_min_duration_secs(60, 538)
+        self.assertEqual(min_secs, PACED_FEEDER_STARTUP_CHECK_SECS + 60 + 538)
         self.assertEqual(min_secs, 600)
         check_paced_feeder_config(feeder_config(self.table), BOTH_MODES, 1, min_secs)
         with self.assertRaisesRegex(ValueError, "at least 600"):
@@ -280,46 +278,62 @@ class CheckPacedFeederConfigTest(unittest.TestCase):
         self.assertIn("duration_secs", reason)
 
 
-def client_config(*intervals_secs, aligned=True):
+def client_config(*intervals_ms, aligned=True, offset=10):
     return {
         "query_groups": [
             {
                 "id": i,
-                "repetition_delay_ms": t * 1000,
-                "client_options": {"repetitions": 2, "align_to_interval": aligned},
+                "repetition_delay_ms": t,
+                "client_options": {
+                    "repetitions": 2,
+                    "align_to_interval": aligned,
+                    "query_time_offset": offset,
+                },
             }
-            for i, t in enumerate(intervals_secs)
+            for i, t in enumerate(intervals_ms)
         ]
     }
 
 
 class DataStartTest(unittest.TestCase):
-    def test_backdates_to_the_last_boundary(self):
-        # Sent from 10:02:23, stamped from 10:00:00.
-        send_at = 1791885743000
-        self.assertEqual(backdated_start_ms(send_at, 300), 1791885600000)
-        self.assertEqual(backdated_start_ms(1791885600000, 300), 1791885600000)
-        self.assertEqual(backdated_start_ms(send_at, 1), send_at)
+    def test_waits_for_the_next_boundary(self):
+        # Ready at 10:02:23, starts at 10:05:00.
+        self.assertEqual(aligned_start_ms(1791885743000, 300), 1791885900000)
+        self.assertEqual(aligned_start_ms(1791885600000, 300), 1791885600000)
+        self.assertEqual(aligned_start_ms(1791885743000, 1), 1791885743000)
 
-    def test_origin_fits_every_aligned_interval(self):
-        self.assertEqual(aligned_interval_lcm(client_config(1, 60, 300)), 300)
-        self.assertEqual(aligned_interval_lcm(client_config(60, 90)), 180)
-        self.assertEqual(aligned_interval_lcm(client_config(60, aligned=False)), 1)
+    def test_start_fits_every_aligned_interval(self):
+        lcm = aligned_interval_lcm
+        self.assertEqual(lcm(client_config(1000, 60000, 300000)), 300)
+        self.assertEqual(lcm(client_config(60000, 90000)), 180)
+        self.assertEqual(lcm(client_config(60000, aligned=False)), 1)
+
+    def test_long_wait_refused(self):
+        # 420 s and 3600 s intervals would wait up to 7 h for an aligned start.
+        with self.assertRaisesRegex(ValueError, "LCM of 25200 s"):
+            aligned_interval_lcm(client_config(420000, 3600000))
+
+    def test_sub_second_interval_refused(self):
+        # Truncating to whole seconds would give an LCM of 0 (or misalign 1.5 s).
+        for interval_ms in (500, 1500):
+            with self.assertRaisesRegex(ValueError, "whole-second"):
+                aligned_interval_lcm(client_config(interval_ms))
+
+    def test_offset_below_the_allowed_lateness_refused(self):
+        # Sent sooner, a query reads an ASAPQuery window that is still open.
+        with self.assertRaisesRegex(ValueError, "query_time_offset >= 5"):
+            aligned_interval_lcm(client_config(60000, offset=0))
+        aligned_interval_lcm(client_config(60000, offset=5))
 
     def test_aligned_groups_learn_the_data_start(self):
-        config = client_config(60)
+        config = client_config(60000)
         config["query_groups"].append(
             {"id": 9, "repetition_delay_ms": 1000, "client_options": {}}
         )
-        set_data_start(config, 1791885600000, 1791885743000)
+        set_data_start(config, 1791885600000)
         self.assertEqual(
-            config["query_groups"][0]["client_options"],
-            {
-                "repetitions": 2,
-                "align_to_interval": True,
-                "data_start_time": 1791885600,
-                "data_lag_secs": 143.0,
-            },
+            config["query_groups"][0]["client_options"]["data_start_time"],
+            1791885600,
         )
         self.assertEqual(config["query_groups"][1]["client_options"], {})
 
@@ -414,30 +428,38 @@ class PacedFeederServiceStartTest(unittest.TestCase):
             if "--sink" in c
         }
 
-    def test_send_time_leads_the_launches_not_the_prep(self):
-        # The SSH prep (2 nodes x binary check + table copy) takes 40 fake
-        # seconds; the shared send time must still be the lead after it.
-        commands = self.start(running_count=2)
-        send_at_ms = (1700000000 + 4 * PREP_SECS + PACED_FEEDER_START_LEAD_SECS) * 1000
-        self.assertEqual(self.flag_values(commands, "--send-at-ms"), {send_at_ms})
-        self.assertEqual(self.flag_values(commands, "--start-ms"), {send_at_ms})
-        self.assertEqual(self.started, (send_at_ms, send_at_ms))
+    # Lead for the 2 worker nodes the tests launch on.
+    LEAD_SECS = PACED_FEEDER_START_LEAD_SECS + 2 * PACED_FEEDER_LAUNCH_SECS_PER_NODE
 
-    def test_data_is_backdated_to_the_aligned_boundary(self):
-        # Sent from 1700000045 s, stamped from the last multiple of 300 s.
+    def test_start_leads_the_launches_not_the_prep(self):
+        # The SSH prep (2 nodes x binary check + table copy) takes 40 fake
+        # seconds; the shared start must still be the lead after it.
+        commands = self.start(running_count=2)
+        start_ms = (1700000000 + 4 * PREP_SECS + self.LEAD_SECS) * 1000
+        self.assertEqual(self.flag_values(commands, "--start-ms"), {start_ms})
+        self.assertEqual(self.started, start_ms)
+
+    def test_start_waits_for_the_aligned_boundary(self):
+        # Ready at 1700000065 s; the next multiple of 300 s is 1700000100 s.
         commands = self.start(running_count=2, align_secs=300)
-        self.assertEqual(self.flag_values(commands, "--start-ms"), {1699999800000})
-        self.assertEqual(self.flag_values(commands, "--send-at-ms"), {1700000045000})
-        self.assertEqual(self.started, (1699999800000, 1700000045000))
+        self.assertEqual(self.flag_values(commands, "--start-ms"), {1700000100000})
+        self.assertEqual(self.started, 1700000100000)
 
     def test_one_launch_per_node(self):
         self.start(running_count=2)
         self.assertEqual(self.provider.launches, 2)
 
+    def test_launches_get_time_per_node(self):
+        # A retried SSH (5 s) on each node still fits.
+        self.start(running_count=2, launch_secs=PACED_FEEDER_LAUNCH_SECS_PER_NODE)
+
     def test_launch_slower_than_the_lead_fails(self):
-        # A feeder launched after its send time would trail the other sinks.
-        with self.assertRaisesRegex(RuntimeError, "longer than the 5 s lead"):
-            self.start(running_count=2, launch_secs=3)
+        # A feeder launched after the start would trail the other sinks.
+        per_node = self.LEAD_SECS // 2 + 1
+        with self.assertRaisesRegex(
+            RuntimeError, f"longer than the {self.LEAD_SECS} s lead"
+        ):
+            self.start(running_count=2, launch_secs=per_node)
         self.assertTrue(any("pkill" in c for _, c in self.provider.commands))
 
     def test_records_and_gauge_processes_get_their_rate_flags(self):
@@ -560,7 +582,7 @@ class PrometheusForwardingTest(unittest.TestCase):
     """In sketchdb mode Prometheus must not forward fed metrics to the query
     engine, which the feeder already writes to."""
 
-    def remote_write_args(self, metrics, fed=("data",)):
+    def remote_write_args(self, metrics, fed=("data",), other_exporters=()):
         cfg = OmegaConf.create(
             {
                 "streaming": {
@@ -574,7 +596,10 @@ class PrometheusForwardingTest(unittest.TestCase):
                 "experiment_params": {
                     "exporters": {
                         "only_start_if_queries_exist": False,
-                        "exporter_list": {"paced_feeder": {"metrics": list(fed)}},
+                        "exporter_list": {
+                            "paced_feeder": {"metrics": list(fed)},
+                            **{name: {} for name in other_exporters},
+                        },
                     },
                     "query_groups": [],
                     "metrics": metrics,
@@ -598,6 +623,15 @@ class PrometheusForwardingTest(unittest.TestCase):
             [{"metric": "data", "labels": ["job"], "exporter": "paced_feeder"}]
         )
         self.assertIsNone(args.remote_write_url)
+
+    def test_unlisted_exporter_next_to_the_feeder_refused(self):
+        # With nothing left to forward, remote write is off, so the other
+        # exporter's metrics would never reach ASAPQuery.
+        with self.assertRaisesRegex(ValueError, r"\['node_exporter'\]"):
+            self.remote_write_args(
+                [{"metric": "data", "labels": ["job"], "exporter": "paced_feeder"}],
+                other_exporters=["node_exporter"],
+            )
 
     def test_scraped_metrics_are_still_forwarded(self):
         args = self.remote_write_args(

@@ -93,6 +93,10 @@ def build_config(
     sql_queries_file: Optional[str] = None,
 ) -> Tuple[dict, List[str]]:
     """Return (config, notes on what was skipped)."""
+    if sql_queries_file is not None and prebuilt_output_dir is None:
+        # The planner rejects the SQL groups' `time_window_seconds` and can't
+        # plan them; they need configs from `asap-planner --planner saved`.
+        raise ValueError("--sql-queries needs --prebuilt-output-dir")
     e2e = load_e2e(table_path)
     notes: List[str] = []
 

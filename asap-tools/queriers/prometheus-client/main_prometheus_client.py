@@ -332,13 +332,11 @@ def handle_query_group(
         )
     if align_to_interval:
         data_start_time = getattr(query_group, "data_start_time", None)
-        data_lag_secs = getattr(query_group, "data_lag_secs", None)
-        if data_start_time is None or data_lag_secs is None:
+        if data_start_time is None:
             raise ValueError(
-                "align_to_interval needs client_options.data_start_time and "
-                "data_lag_secs (set by the paced feeder runner)"
+                "align_to_interval needs client_options.data_start_time "
+                "(set by the paced feeder runner)"
             )
-        lag_secs = float(data_lag_secs)
         offset_secs = getattr(query_group, "query_time_offset", 0)
         first_eval_time = first_aligned_eval_time(
             data_start_time, query_group.repetition_delay_ms, query_group.starting_delay
@@ -349,9 +347,7 @@ def handle_query_group(
             query_unix_time = aligned_eval_time(
                 first_eval_time, query_group.repetition_delay_ms, repetition_idx
             )
-            time.sleep(
-                secs_until_send(query_unix_time, lag_secs, offset_secs, time.time())
-            )
+            time.sleep(secs_until_send(query_unix_time, offset_secs, time.time()))
             logger.debug("Aligned evaluation time: {}", query_unix_time)
         else:
             if simulated_start_time is None:

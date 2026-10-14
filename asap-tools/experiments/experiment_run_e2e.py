@@ -220,9 +220,15 @@ def main(cfg: DictConfig):
             forward_unsupported_queries=args.forward_unsupported_queries,
             auto_discover_labels=args.controller_auto_discover_labels,
         )
+        # Also checks the aligned query groups before any service starts.
+        paced_feeder_align_secs = aligned_interval_lcm(
+            OmegaConf.to_container(cfg.experiment_params, resolve=True)
+        )
         paced_feeder_service = PacedFeederService(provider, args)
-        # Otherwise a failed run leaves feeders pushing into the next run's sinks.
-        atexit.register(paced_feeder_service.stop)
+        if not args.no_teardown:
+            # Otherwise a failed run leaves feeders pushing into the next
+            # run's sinks.
+            atexit.register(paced_feeder_service.stop)
 
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")
@@ -536,14 +542,14 @@ def main(cfg: DictConfig):
             )
             with open(local_client_config) as f:
                 client_config = yaml.safe_load(f)
-            start_ms, send_at_ms = paced_feeder_service.start(
+            start_ms = paced_feeder_service.start(
                 config=paced_feeder_config,
                 sinks=sinks,
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
-                align_secs=aligned_interval_lcm(client_config),
+                align_secs=paced_feeder_align_secs,
             )
-            set_data_start(client_config, start_ms, send_at_ms)
+            set_data_start(client_config, start_ms)
             with open(local_client_config, "w") as f:
                 yaml.safe_dump(client_config, f, sort_keys=False)
             sync.rsync_controller_client_configs(

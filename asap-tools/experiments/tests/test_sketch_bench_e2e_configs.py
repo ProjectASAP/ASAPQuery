@@ -72,6 +72,12 @@ class BuildConfigTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def build(self, **kwargs):
+        if "sql_queries_file" in kwargs and "prebuilt_output_dir" not in kwargs:
+            prebuilt = os.path.join(self.tmp.name, "sql_prebuilt")
+            os.makedirs(prebuilt, exist_ok=True)
+            for name in experiment_config.PLANNER_OUTPUT_FILES:
+                open(os.path.join(prebuilt, name), "w").close()
+            kwargs["prebuilt_output_dir"] = prebuilt
         return sbe.build_config(
             self.table,
             seed=7,
@@ -203,6 +209,17 @@ class BuildConfigTest(unittest.TestCase):
                 self.table, seed=7, starting_delay_secs=0, query_duration_secs=30
             )
 
+    def test_sql_queries_need_prebuilt_planner_configs(self):
+        # The planner rejects the SQL groups' time_window_seconds.
+        with self.assertRaisesRegex(ValueError, "--prebuilt-output-dir"):
+            sbe.build_config(
+                self.table,
+                seed=7,
+                starting_delay_secs=120,
+                query_duration_secs=600,
+                sql_queries_file=os.path.join(self.tmp.name, "q.sql"),
+            )
+
     def test_prebuilt_output_dir(self):
         prebuilt = os.path.join(self.tmp.name, "prebuilt")
         os.makedirs(prebuilt)
@@ -257,13 +274,13 @@ class BuildConfigTest(unittest.TestCase):
         with open(path) as f:
             client_config = yaml.safe_load(f)
         self.assertEqual(aligned_interval_lcm(client_config), 60)
-        set_data_start(client_config, 1791885600000, 1791885743000)
+        set_data_start(client_config, 1791885600000)
         self.assertEqual(
             {
-                (o["data_start_time"], o["data_lag_secs"])
-                for o in (g["client_options"] for g in client_config["query_groups"])
+                g["client_options"]["data_start_time"]
+                for g in client_config["query_groups"]
             },
-            {(1791885600, 143.0)},
+            {1791885600},
         )
 
     def test_generated_config_with_records_validates(self):

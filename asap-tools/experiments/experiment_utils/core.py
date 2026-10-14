@@ -197,7 +197,10 @@ def call_generate_prometheus_config(
     import generate_prometheus_config
     import generate_victoriametrics_config
 
-    from experiment_utils.services.paced_feeder import paced_feeder_metric_names
+    from experiment_utils.services.paced_feeder import (
+        PACED_FEEDER_EXPORTER,
+        paced_feeder_metric_names,
+    )
 
     # The paced feeder writes its metrics to the query engine itself, so
     # Prometheus forwarding them too would send them twice.
@@ -210,6 +213,14 @@ def call_generate_prometheus_config(
     # With only fed metrics there is nothing for Prometheus to forward. (An
     # empty list without the feeder keeps meaning "forward everything".)
     forward_to_query_engine = bool(metrics_to_remote_write) or not fed_metrics
+    exporter_list = cfg.experiment_params.get("exporters", {}).get("exporter_list", {})
+    other_exporters = sorted(set(exporter_list) - {PACED_FEEDER_EXPORTER})
+    if not forward_to_query_engine and other_exporters:
+        raise ValueError(
+            f"exporters {other_exporters} run next to the paced feeder but none "
+            "of their metrics are listed under experiment_params.metrics, so "
+            "Prometheus would forward nothing of theirs to the query engine"
+        )
     # Set up remote write if this is a SketchDB experiment
     if (
         experiment_mode == sketchdb_experiment_name

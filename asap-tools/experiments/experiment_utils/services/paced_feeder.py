@@ -31,12 +31,20 @@ RECORDS_METRIC_TYPE = "records"
 PACED_FEEDER_BINARY = "./target/release/paced_feeder"
 # The brackets keep pgrep/pkill from matching the shell that runs them.
 PACED_FEEDER_PROCESS_PATTERN = "[t]arget/release/paced_feeder"
-# Feeders are launched over SSH, one node after another, and all send their
-# first tick this long after the launches begin.
+# Feeders are launched over SSH, one node after another, and all start at the
+# first aligned time at least this long after the launches begin: a base plus,
+# per node, enough for one SSH retry (run_cmd_with_retry waits 5 s).
 PACED_FEEDER_START_LEAD_SECS = 5
+PACED_FEEDER_LAUNCH_SECS_PER_NODE = 10
 # A feeder stops after its first tick if every request fails (e.g. a wrong
 # URL), so check the processes one tick after the shared start.
-PACED_FEEDER_STARTUP_CHECK_SECS = PACED_FEEDER_START_LEAD_SECS + 2
+PACED_FEEDER_STARTUP_CHECK_SECS = 2
+# Feeders wait for the next multiple of the aligned intervals' LCM before
+# sending; refuse intervals that would make that wait longer than this.
+PACED_FEEDER_MAX_ALIGN_SECS = 600
+# ASAPQuery's default allowed lateness: a window closes this long after its
+# end, so an aligned query must not be sent sooner.
+QUERY_ENGINE_ALLOWED_LATENESS_SECS = 5
 
 SINK_QUERY_ENGINE = "query_engine"
 SINK_PROMETHEUS = "prometheus"
@@ -49,36 +57,55 @@ def paced_feeder_metric_names(experiment_params) -> List[str]:
     return list(feeder["metrics"]) if feeder is not None else []
 
 
-def backdated_start_ms(send_at_ms: int, align_secs: int) -> int:
-    """The last multiple of `align_secs` at or before `send_at_ms`: the feeder
-    stamps its data from there, so every mode's data starts on the same
-    boundary of each aligned query group's interval."""
+def aligned_start_ms(earliest_ms: int, align_secs: int) -> int:
+    """The first multiple of `align_secs` at or after `earliest_ms`: every
+    mode's data starts on the same boundary of each aligned query group's
+    interval."""
     align_ms = align_secs * 1000
-    return send_at_ms // align_ms * align_ms
+    return -(-earliest_ms // align_ms) * align_ms
 
 
 def aligned_interval_lcm(client_config: Dict[str, Any]) -> int:
     """LCM, in seconds, of the repeat intervals of the client config's
-    `align_to_interval` groups; 1 if there are none."""
-    intervals = [
-        g["repetition_delay_ms"] // 1000
-        for g in client_config["query_groups"]
-        if g.get("client_options", {}).get("align_to_interval")
-    ]
+    `align_to_interval` groups (1 if there are none), after checking that
+    those groups can be aligned."""
+    intervals = []
+    for group in client_config["query_groups"]:
+        options = group.get("client_options", {})
+        if not options.get("align_to_interval"):
+            continue
+        interval_ms = group["repetition_delay_ms"]
+        if interval_ms <= 0 or interval_ms % 1000 != 0:
+            raise ValueError(
+                f"query group {group['id']}: align_to_interval needs a "
+                f"whole-second repetition_delay_ms, got {interval_ms}"
+            )
+        offset = options.get("query_time_offset", 0)
+        if offset < QUERY_ENGINE_ALLOWED_LATENESS_SECS:
+            raise ValueError(
+                f"query group {group['id']}: align_to_interval needs "
+                f"query_time_offset >= {QUERY_ENGINE_ALLOWED_LATENESS_SECS} "
+                f"(ASAPQuery's allowed lateness), got {offset}"
+            )
+        intervals.append(interval_ms // 1000)
     # math.lcm needs Python 3.9.
-    return functools.reduce(lambda a, b: a * b // math.gcd(a, b), intervals, 1)
+    lcm = functools.reduce(lambda a, b: a * b // math.gcd(a, b), intervals, 1)
+    if lcm > PACED_FEEDER_MAX_ALIGN_SECS:
+        raise ValueError(
+            f"aligned repeat intervals {sorted(set(intervals))} s have an LCM of "
+            f"{lcm} s; the feeder would wait up to that long to start "
+            f"(limit {PACED_FEEDER_MAX_ALIGN_SECS} s)"
+        )
+    return lcm
 
 
-def set_data_start(
-    client_config: Dict[str, Any], start_ms: int, send_at_ms: int
-) -> None:
-    """Tell the client's aligned groups when the data starts in event time and
-    how far it runs behind the wall clock (see the client's query_time.py)."""
+def set_data_start(client_config: Dict[str, Any], start_ms: int) -> None:
+    """Tell the client's aligned groups when the data starts (see the
+    client's query_time.py)."""
     for group in client_config["query_groups"]:
         options = group.get("client_options", {})
         if options.get("align_to_interval"):
             options["data_start_time"] = start_ms // 1000
-            options["data_lag_secs"] = (send_at_ms - start_ms) / 1000
 
 
 def feeds_prometheus(mode: Dict[str, Any]) -> bool:
@@ -93,8 +120,8 @@ def paced_feeder_min_duration_secs(
 ) -> float:
     """Seconds of data that last until the final query: queries end at most
     startup check + steady_state_wait + the query groups' running time after
-    launch. Aligned groups need less (their last evaluation is at most the
-    starting delay + running time into the data), so this covers both."""
+    the data starts. Aligned groups need less (their last evaluation is at
+    most the starting delay + running time into the data)."""
     return PACED_FEEDER_STARTUP_CHECK_SECS + steady_state_wait + query_running_secs
 
 
@@ -187,15 +214,13 @@ def paced_feeder_command(
     metric: str,
     metric_type: str,
     start_ms: int,
-    send_at_ms: int,
     stats_out: str,
 ) -> str:
     cmd = (
         f"{PACED_FEEDER_BINARY} --sink remote-write --url {url}"
         f" --workload-table {workload_table} --metric {metric}"
         f" --seed {config['seed']} --duration-secs {config['duration_secs']}"
-        f" --start-ms {start_ms} --send-at-ms {send_at_ms}"
-        f" --stats-out {stats_out}"
+        f" --start-ms {start_ms} --stats-out {stats_out}"
     )
     # The feeder refuses the other kind's rate flag.
     if metric_type == RECORDS_METRIC_TYPE:
@@ -231,9 +256,9 @@ class PacedFeederService(BaseService):
         local_experiment_dir: str,
         align_secs: int = 1,
         **kwargs,
-    ) -> Tuple[int, int]:
-        """Launch the feeders; returns the data's event-time start and the
-        wall-clock time its first tick is sent, both in epoch ms."""
+    ) -> int:
+        """Launch the feeders; returns when their data starts, in epoch ms,
+        once they are running."""
         output_dir = os.path.join(experiment_output_dir, "paced_feeder_output")
         metric_types = table_metric_types(config["workload_table"])
         jobs = [(sink, metric) for sink in sinks for metric in config["metrics"]]
@@ -256,10 +281,15 @@ class PacedFeederService(BaseService):
                 self.provider, config["workload_table"], output_dir, node_idx
             )
 
-        # One shared send time for every process of this mode, taken after the
-        # SSH prep above so the lead covers only the launches.
-        send_at_ms = (math.ceil(time.time()) + PACED_FEEDER_START_LEAD_SECS) * 1000
-        start_ms = backdated_start_ms(send_at_ms, align_secs)
+        # One shared start for every process of this mode, taken after the SSH
+        # prep above so the lead covers only the launches.
+        lead_secs = (
+            PACED_FEEDER_START_LEAD_SECS
+            + PACED_FEEDER_LAUNCH_SECS_PER_NODE * len(used_nodes)
+        )
+        start_ms = aligned_start_ms(
+            (math.ceil(time.time()) + lead_secs) * 1000, align_secs
+        )
         node_cmds: List[Tuple[int, str]] = []
         for node_idx, (sink, metric) in zip(job_nodes, jobs):
             name = f"{sink}_{metric}"
@@ -270,7 +300,6 @@ class PacedFeederService(BaseService):
                 metric,
                 metric_types[metric],
                 start_ms,
-                send_at_ms,
                 os.path.join(output_dir, f"{name}_stats.json"),
             )
             node_cmds.append(
@@ -285,7 +314,6 @@ class PacedFeederService(BaseService):
         with open(os.path.join(local_config_dir, "cmds.sh"), "w") as f:
             f.write("\n".join(cmd for _, cmd in node_cmds) + "\n")
 
-        # One SSH per node, so the launches fit in the lead.
         for node_idx in used_nodes:
             self.provider.execute_command(
                 node_idx=node_idx,
@@ -295,16 +323,16 @@ class PacedFeederService(BaseService):
                 popen=False,
                 ignore_errors=False,
             )
-        if time.time() * 1000 > send_at_ms:
-            # A feeder launched after its send time starts late, so its data
+        if time.time() * 1000 > start_ms:
+            # A feeder launched after the start begins late, so its data
             # would trail the other sinks'.
             self.stop()
             raise RuntimeError(
                 f"paced_feeder: launching on {len(used_nodes)} nodes took longer "
-                f"than the {PACED_FEEDER_START_LEAD_SECS} s lead"
+                f"than the {lead_secs} s lead"
             )
 
-        time.sleep(PACED_FEEDER_STARTUP_CHECK_SECS)
+        time.sleep(start_ms / 1000 - time.time() + PACED_FEEDER_STARTUP_CHECK_SECS)
         for node_idx in used_nodes:
             expected = job_nodes.count(node_idx)
             # No $(...): the SSH command is double-quoted on this side.
@@ -321,7 +349,7 @@ class PacedFeederService(BaseService):
                     f"paced_feeder: expected {expected} processes running on "
                     f"node {node_idx}; see the .out files in {output_dir}"
                 )
-        return start_ms, send_at_ms
+        return start_ms
 
     def stop(self, **kwargs) -> None:
         self.provider.execute_command_parallel(

@@ -41,18 +41,17 @@ class ScheduleTest(unittest.TestCase):
             [START, START + 60, START + 120],
         )
 
-    def test_waits_for_the_lag_and_offset_after_the_eval_time(self) -> None:
-        # Data stamped 10:01:00 is sent at 10:03:23; queried 10 s later.
-        self.assertEqual(secs_until_send(START + 60, 143, 10, START + 60), 153)
+    def test_waits_for_the_offset_after_the_eval_time(self) -> None:
+        self.assertEqual(secs_until_send(START + 60, 10, START + 65), 5)
 
     def test_late_repetition_runs_at_once(self) -> None:
         # A slow repetition makes the next one late; it keeps its eval time
         # rather than skipping it.
-        self.assertEqual(secs_until_send(START + 60, 0, 10, START + 75), 0)
+        self.assertEqual(secs_until_send(START + 60, 10, START + 75), 0)
 
     def test_negative_offset_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "query_time_offset"):
-            secs_until_send(START, 0, -1, START)
+            secs_until_send(START, -1, START)
 
 
 if __name__ == "__main__":
