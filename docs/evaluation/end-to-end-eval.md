@@ -338,15 +338,17 @@ between rounds.
 | Workload tables with e2e blocks; templates 7/9 dropped; §6.3 rerun | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/pull/209), [#210](https://github.com/ProjectASAP/sketch-bench/pull/210), [#212](https://github.com/ProjectASAP/sketch-bench/pull/212) | merged |
 | Paced feeder: facts-driven classic data, records, per-series order | [#840](https://github.com/ProjectASAP/ASAPQuery/pull/840) → [#842](https://github.com/ProjectASAP/ASAPQuery/pull/842) → [#843](https://github.com/ProjectASAP/ASAPQuery/pull/843) | merged |
 | ClickHouse SQL and exact MV arms from the tables | [#844](https://github.com/ProjectASAP/ASAPQuery/pull/844) → [#845](https://github.com/ProjectASAP/ASAPQuery/pull/845) | merged |
-| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/pull/841) | open: add bulk-history mode with a bounded, frozen sender configuration, explicit logical evaluation times, and phase-boundary metadata |
+| Feeder + aligned query client in `experiment_run_e2e.py` | [#841](https://github.com/ProjectASAP/ASAPQuery/pull/841) | merged for paced classic workloads; bulk-history mode with a bounded, frozen sender configuration and phase-boundary metadata remains to do |
 | `--planner saved`; prebuilt configs in both runners | [#828](https://github.com/ProjectASAP/ASAPQuery/pull/828), [#860](https://github.com/ProjectASAP/ASAPQuery/pull/860) | merged |
 | Tables and plans at 10 samples/s | sketch-bench [#212](https://github.com/ProjectASAP/sketch-bench/pull/212) | merged |
 | Feeder → VictoriaMetrics (remote write into vmsingle) | `experiment_run_e2e.py` | to do |
-| Feeder → ClickHouse live ingest, tables/views before data, server CPU/memory monitoring | `experiment_run_clickhouse.py` | to do |
+| Feeder → ClickHouse live ingest, tables/views before data, server CPU/memory monitoring | [#875](https://github.com/ProjectASAP/ASAPQuery/pull/875), `experiment_run_clickhouse.py` | live feed and pre-feed tables/views merged; server CPU/memory monitoring remains to do |
 | No query timeouts on the baselines (Prometheus `--query.timeout`, VictoriaMetrics search limits, ClickHouse client) | [#861](https://github.com/ProjectASAP/ASAPQuery/pull/861) | merged |
 | Analysis: per-system CPU/memory/latency/accuracy, planner cost, scatter, table | `asap-tools/experiments/post_experiment/` | to do |
 | ASAPQuery multi-grouping (all): `--planner saved` for SQL | sketch-bench [#209](https://github.com/ProjectASAP/sketch-bench/pull/209), [#856](https://github.com/ProjectASAP/ASAPQuery/pull/856), [#844](https://github.com/ProjectASAP/ASAPQuery/pull/844) | merged: structured table entries carry the ASAPQuery SQL; the planner reads it; the ClickHouse arm substitutes only `NOW()`. |
-| Sending SQL to ASAPQuery from a runner | `experiment_run_clickhouse.py` | ready: run the multi-grouping part through sketchdb mode (one language per engine process) |
+| Sending SQL to ASAPQuery from a runner | [#874](https://github.com/ProjectASAP/ASAPQuery/issues/874) | open for a live-fed sketchdb arm: wire remote-write ingest and shared ASAPQuery/ClickHouse feed into `experiment_run_clickhouse.py` |
+| 100 ms exact ClickHouse MV arm | [#876](https://github.com/ProjectASAP/ASAPQuery/issues/876) | open; not required by the current rapid plan (instant queries repeat every second), but needed if it later adds a 100 ms query cadence |
+| Rapid randomized workload manifests and offline planner inputs | [#877](https://github.com/ProjectASAP/ASAPQuery/pull/877) | merged; executing them depends on the remaining runner work above |
 
 ## 12. Open questions (proposed answers)
 
