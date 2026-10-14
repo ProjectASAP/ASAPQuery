@@ -13,7 +13,12 @@ everything added since #138:
   (template 16, all 7 groupings), evaluated alone (**multi-grouping**) and
   added to the classic mixed set (**mixed + multi-grouping**);
 - the KLL footprint is asap_sketchlib's real allocation (#192), and the cost
-  table is re-measured.
+  table is re-measured;
+- classic templates 7 (`sum by (job) (rate(data_total[w]))`) and 9
+  (`topk(32, sum by (label_0) (rate(data_total[w])))`) are dropped, as
+  ASAPQuery's engine would need per-series counter deltas to serve them
+  (2026-10-13 rerun of the classic and all workloads; the multi-grouping
+  results are unchanged).
 
 Cost is billed by use (sketch-bench `docs/rqe_optimizer_cost_model.md`):
 `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, at two weight settings (CPU only, in
@@ -38,24 +43,24 @@ Cost of each method's cheapest plan (no latency bound), absolute:
 
 | Workload | RQEs | Weights | ASAP | ASAP (no roll-ups) | PerQuery | AutoSketch | RQEs rolled up | Deployments (with / without roll-ups) |
 |---|---|---|---|---|---|---|---|---|
-| mixed (classic) | 50 | CPU (vCPU) | 3.54 | 3.54 | 10.5 | 3,716 | 0 | 8 / 8 |
-| mixed (classic) | 50 | Fargate ($/h) | 0.230 | 0.230 | 0.752 | 176 | 0 | 8 / 8 |
-| mixed, r = 8 | 92 | CPU | 3.66 | 3.66 | 18.5 | 4,456 | 0 | 8 / 8 |
-| mixed, m = 8 | 400 | CPU | 28.3 | 28.3 | 84.1 | 29,726 | 0 | 64 / 64 |
-| mixed, m = 16 | 800 | CPU | 56.6 | 56.6 | 168 | 59,452 | 0 | 128 / 128 |
-| mixed, m = 16 | 800 | Fargate | 3.68 | 3.68 | 12.0 | 2,808 | 0 | 128 / 128 |
+| mixed (classic) | 42 | CPU (vCPU) | 2.38 | 2.38 | 7.77 | 2,739 | 0 | 6 / 6 |
+| mixed (classic) | 42 | Fargate ($/h) | 0.170 | 0.170 | 0.623 | 136 | 0 | 6 / 6 |
+| mixed, r = 8 | 76 | CPU | 2.47 | 2.47 | 13.6 | 3,284 | 0 | 6 / 6 |
+| mixed, m = 8 | 336 | CPU | 19.1 | 19.1 | 62.2 | 21,916 | 0 | 48 / 48 |
+| mixed, m = 16 | 672 | CPU | 38.1 | 38.1 | 124 | 43,831 | 0 | 96 / 96 |
+| mixed, m = 16 | 672 | Fargate | 2.73 | 2.73 | 9.97 | 2,175 | 0 | 96 / 96 |
 | multi-grouping | 62 | CPU | 0.221 | 0.551 | 1.07 | 10.2 | 52 | 5 / 26 |
 | multi-grouping | 62 | Fargate | 0.0137 | 0.0339 | 0.0597 | 0.430 | 52 | 5 / 26 |
 | multi-grouping, r = 8 | 124 | CPU | 0.242 | 0.573 | 2.04 | 12.3 | 104 | 5 / 26 |
 | multi-grouping, m = 8 | 496 | CPU | 1.77 | 4.41 | 8.55 | 81.7 | 416 | 40 / 208 |
 | multi-grouping, m = 16 | 992 | CPU | 3.53 | 8.81 | 17.1 | 163 | 832 | 80 / 416 |
 | multi-grouping, m = 16 | 992 | Fargate | 0.218 | 0.542 | 0.955 | 6.87 | 832 | 80 / 416 |
-| mixed + multi-grouping | 112 | CPU | 3.76 | 4.09 | 11.6 | 3,726 | 52 | 13 / 34 |
-| mixed + multi-grouping | 112 | Fargate | 0.243 | 0.264 | 0.812 | 176 | 52 | 13 / 34 |
-| mixed + multi-grouping, r = 8 | 216 | CPU | 3.90 | 4.23 | 20.5 | 4,468 | 104 | 13 / 34 |
-| mixed + multi-grouping, m = 8 | 896 | CPU | 30.1 | 32.7 | 92.7 | 29,808 | 416 | 104 / 272 |
-| mixed + multi-grouping, m = 16 | 1792 | CPU | 60.2 | 65.4 | 185 | 59,615 | 832 | 208 / 544 |
-| mixed + multi-grouping, m = 16 | 1792 | Fargate | 3.89 | 4.22 | 13.0 | 2,815 | 832 | 208 / 544 |
+| mixed + multi-grouping | 104 | CPU | 2.60 | 2.93 | 8.84 | 2,750 | 52 | 11 / 32 |
+| mixed + multi-grouping | 104 | Fargate | 0.184 | 0.204 | 0.683 | 136 | 52 | 11 / 32 |
+| mixed + multi-grouping, r = 8 | 200 | CPU | 2.71 | 3.04 | 15.6 | 3,296 | 104 | 11 / 32 |
+| mixed + multi-grouping, m = 8 | 832 | CPU | 20.8 | 23.5 | 70.7 | 21,997 | 416 | 88 / 256 |
+| mixed + multi-grouping, m = 16 | 1664 | CPU | 41.7 | 47.0 | 141 | 43,995 | 832 | 176 / 512 |
+| mixed + multi-grouping, m = 16 | 1664 | Fargate | 2.95 | 3.27 | 10.9 | 2,182 | 832 | 176 / 512 |
 
 Every workload: 0 RQEs dropped, 0 sanity violations (ASAP ≤ ASAP without
 roll-ups ≤ PerQuery, and ASAP ≤ AutoSketch). `summary_synthetic.md` has
@@ -66,12 +71,12 @@ plus its measured benchmark, approxbench accuracy runs at 1e8 items):
 
 | Workload | RQEs | ASAP | PerQuery | AutoSketch |
 |---|---|---|---|---|
-| mixed (classic) | 50 | 0.72 s | 0.64 s | 0.002 s + 212 s |
-| mixed, m = 16 | 800 | 13.7 s | 11.4 s | 0.035 s + 3,394 s |
+| mixed (classic) | 42 | 0.44 s | 0.49 s | 0.002 s + 212 s |
+| mixed, m = 16 | 672 | 8.1 s | 8.9 s | 0.027 s + 3,394 s |
 | multi-grouping | 62 | 0.41 s | 0.22 s | 0.002 s + 269 s |
 | multi-grouping, m = 16 | 992 | 7.0 s | 4.1 s | 0.037 s + 4,309 s |
-| mixed + multi-grouping | 112 | 1.12 s | 0.88 s | 0.004 s + 481 s |
-| mixed + multi-grouping, m = 16 | 1792 | 22.5 s | 16.7 s | 0.079 s + 7,702 s |
+| mixed + multi-grouping | 104 | 0.94 s | 0.64 s | 0.005 s + 481 s |
+| mixed + multi-grouping, m = 16 | 1664 | 15.6 s | 13.0 s | 0.137 s + 7,702 s |
 
 ### Roll-ups
 
@@ -85,11 +90,12 @@ groupings kept. A KLL or DDSketch merge summarizes the pooled data of the
 merged groups, so a roll-up answers a coarse group's p99, not a quantile of
 quantiles (KLL reads its measured merge curve).
 
-On **mixed + multi-grouping**, roll-ups save 8% (4.09 → 3.76 vCPU, 34 → 13
+On **mixed + multi-grouping**, roll-ups save 11% (2.93 → 2.60 vCPU, 32 → 11
 deployments): the classic templates, whose streams have one grouping each,
 are most of the cost. On classic alone, roll-ups never apply and the two ASAP
-lines coincide. ASAP's ~3× advantage over PerQuery on classic comes from
-sharing deployments across RQEs at the same grouping.
+lines coincide. ASAP's ~3× advantage over PerQuery on classic (7.77 vs. 2.38
+vCPU; 1.8–3.3× at every SLA) comes from sharing deployments across RQEs at
+the same grouping.
 
 ### Hydra
 
@@ -189,6 +195,16 @@ Runs: Xeon E5-2683 v3, 56 cores, `--runs 3`, runner from sketch-bench
 (clnode178, 167; the small ones serially on clnode138), 2026-10-10.
 Multigroup and all (with the cube template): serially on one idle node,
 2026-10-11.
+
+Rerun without templates 7 and 9 (2026-10-13), runner at sketch-bench
+eval/drop-group-rate-templates: all serially on idle clnode109; classic
+m = 16 on clnode167, m = 8 on clnode155, the small ones serially on
+clnode138; plans (`--runs 1`, kept) on clnode138 and clnode155. The
+multigroup tables are unchanged, so their results stand (a rerun of
+multigroup-shared1 reproduces its costs and plans exactly). AutoSketch's
+benchmark times are reused: the dropped RQEs used exact accumulators or a
+top-k config already probed on the same metric, so every probe was already
+measured and each workload's benchmark time is unchanged.
 
 ## Caveats
 

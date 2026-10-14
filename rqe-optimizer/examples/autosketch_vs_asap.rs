@@ -1250,7 +1250,7 @@ mod tests {
 
     #[test]
     fn topk_k_comes_from_the_query_id() {
-        let r = json!({"query_id": "topk32_sum_by_label0_rate"});
+        let r = json!({"query_id": "topk32_sum_by_label0_sum_over_time"});
         assert_eq!(topk_k_of(&r, Capability::TopKByValue), Some(32));
         let r = json!({"query_id": "topk100_x"});
         assert_eq!(topk_k_of(&r, Capability::TopKByValue), Some(100));
