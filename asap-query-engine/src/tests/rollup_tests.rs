@@ -342,6 +342,106 @@ mod tests {
         assert_eq!(vector.values[0].value, hll(0..2_000).estimate());
     }
 
+    /// A SQL quantile served by rolling up a DDSketch grouped by
+    /// (endpoint, service), over a lookback of several tumbling windows: the
+    /// shape `--planner saved` writes for sketch-bench's p99 CUBE.
+    #[test]
+    fn sql_quantile_by_subset_over_several_windows_equals_the_merged_sketch() {
+        const WINDOW_MS: u64 = 60_000;
+        const WINDOWS: u64 = 5;
+        // A multiple of the window, as the e2e client floors eval times.
+        const ALIGNED_QUERY_TIME_S: f64 = 960.0;
+        let sql = "SELECT service, QUANTILE(0.9, value) FROM events WHERE time BETWEEN \
+                   DATEADD(s, -300, NOW()) AND NOW() GROUP BY service";
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: HashMap::from([(
+                1,
+                AggregationConfig {
+                    aggregation_id: 1,
+                    aggregation_type: AggregationType::DDSketch,
+                    aggregation_sub_type: String::new(),
+                    parameters: HashMap::new(),
+                    grouping_labels: KeyByLabelNames::new(vec![
+                        "endpoint".to_string(),
+                        "service".to_string(),
+                    ]),
+                    aggregated_labels: KeyByLabelNames::empty(),
+                    rollup_labels: KeyByLabelNames::empty(),
+                    original_yaml: String::new(),
+                    window_size_ms: WINDOW_MS,
+                    slide_interval_ms: WINDOW_MS,
+                    window_type: WindowType::Tumbling,
+                    spatial_filter: String::new(),
+                    spatial_filter_normalized: String::new(),
+                    metric: "events".to_string(),
+                    num_aggregates_to_retain: None,
+                    read_count_threshold: None,
+                    table_name: Some("events".to_string()),
+                    value_column: Some("value".to_string()),
+                },
+            )]),
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let query_time_ms = (ALIGNED_QUERY_TIME_S * 1_000.0) as u64;
+        let mut all = Vec::new();
+        for (g, labels) in [["/x", "a"], ["/y", "a"]].iter().enumerate() {
+            for w in 0..WINDOWS {
+                let values: Vec<f64> = (1..=100)
+                    .map(|i| f64::from(i + 100 * (w as u32 * 2 + g as u32)))
+                    .collect();
+                all.extend(values.iter().copied());
+                let end = query_time_ms - w * WINDOW_MS;
+                store
+                    .insert_precomputed_output(
+                        PrecomputedOutput::new(
+                            end - WINDOW_MS,
+                            end,
+                            key(labels).map(|labels| KeyByLabelValues { labels }),
+                            1,
+                        ),
+                        Box::new(dd(values)),
+                    )
+                    .unwrap();
+            }
+        }
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(create_test_schema(
+                "events",
+                "time",
+                "value",
+                vec!["endpoint", "service"],
+            )),
+            query_configs: vec![QueryConfig::new(sql.to_string())
+                .add_aggregation(AggregationReference::new(1, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::sql,
+        );
+
+        let (_, result) = engine
+            .handle_query_sql(sql.to_string(), ALIGNED_QUERY_TIME_S)
+            .expect("the SQL roll-up should be served locally");
+        let QueryResult::Vector(vector) = result else {
+            panic!("expected an instant vector");
+        };
+        let expected = dd(all).get_quantile(0.9);
+        assert_eq!(vector.values.len(), 1);
+        assert_eq!(vector.values[0].labels.labels, vec!["a".to_string()]);
+        assert!(
+            (vector.values[0].value - expected).abs() <= expected * 1e-9,
+            "rolled-up p90 {} should equal the whole-data sketch's {expected}",
+            vector.values[0].value
+        );
+    }
+
     /// A range query rolls up at every step, and a subgroup that only
     /// appears partway through contributes from then on.
     #[test]
