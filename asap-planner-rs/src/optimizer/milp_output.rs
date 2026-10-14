@@ -33,8 +33,8 @@ pub enum MilpOutputError {
     #[error("query {0:?} uses avg, which the engine can't answer from sum and count yet")]
     AvgQuery(String),
     #[error(
-        "query groups set step_ms or range_duration_ms, whose retention MILP configs \
-         don't set yet (#800): {0:?}"
+        "query groups set step_ms or range_duration_ms, whose extra retention MILP \
+         configs don't size: {0:?}"
     )]
     RangeQueryOverrides(Vec<String>),
     #[error("sketch-bench variant {variant} ({capability:?}) has no ASAPQuery aggregation type")]
@@ -73,6 +73,16 @@ pub enum MilpOutputError {
     },
     #[error("query {0:?} is a roll-up but not an aggregation whose grouping can be rewritten")]
     UnregroupableQuery(String),
+    #[error(
+        "query {query:?} looks back {lookback_ms}ms, which isn't whole windows of its \
+         deployment (window {window_ms}ms, slide {slide_ms}ms)"
+    )]
+    PartialWindowLookback {
+        query: String,
+        lookback_ms: u64,
+        window_ms: u64,
+        slide_ms: u64,
+    },
     #[error(transparent)]
     Generator(#[from] ControllerError),
 }
@@ -119,8 +129,9 @@ pub fn reject_unwritable_queries(config: MilpConfig) -> Result<(), MilpOutputErr
 }
 
 /// Streaming and inference YAML for `solution`. Aggregation ids follow the
-/// plan's deployment order, starting at 1. No cleanup policy yet, so the
-/// retained instance counts are not emitted.
+/// plan's deployment order, starting at 1. Cleanup is CircularBuffer: each
+/// query retains the closed windows its lookback needs, and a shared
+/// aggregation keeps the largest of its queries' counts.
 pub fn plan_to_planner_output(
     config: MilpConfig,
     workload: &MilpWorkload,
@@ -227,12 +238,12 @@ pub fn deployments_to_planner_output(
             let schema = config.schema_from_hints();
             (
                 build_streaming_yaml(&aggregations, &id_map, &schema)?,
-                build_inference_yaml(CleanupPolicy::NoCleanup, &queries, &id_map, &schema)?,
+                build_inference_yaml(CleanupPolicy::CircularBuffer, &queries, &id_map, &schema)?,
             )
         }
         MilpConfig::Sql(config) => (
             build_sql_streaming_yaml(config, &aggregations, &id_map)?,
-            build_sql_inference_yaml(config, CleanupPolicy::NoCleanup, &queries, &id_map)?,
+            build_sql_inference_yaml(config, CleanupPolicy::CircularBuffer, &queries, &id_map)?,
         ),
     };
     Ok(PlannerOutput::from_output(GeneratorOutput {
@@ -277,7 +288,17 @@ fn query_plan_entry(
     aggregation_type: AggregationType,
     stage_blocker: Option<RollupBlocker>,
 ) -> Result<QueryPlanEntry, MilpOutputError> {
-    let aggregation_keys = vec![(key.to_string(), None)];
+    // The store holds closed windows only; open ones live in the precompute
+    // engine.
+    let retained = deployment
+        .closed_instance_count(raqe.lookback_ms)
+        .ok_or_else(|| MilpOutputError::PartialWindowLookback {
+            query: query.to_string(),
+            lookback_ms: raqe.lookback_ms,
+            window_ms: deployment.window_ms,
+            slide_ms: deployment.slide_ms,
+        })?;
+    let aggregation_keys = vec![(key.to_string(), Some(retained))];
     let (fine, coarse) = (&deployment.grouping_labels, &raqe.grouping_labels);
     if coarse == fine {
         return Ok(QueryPlanEntry::fully_planned(
@@ -650,9 +671,56 @@ mod tests {
         for query in [sum, count, quantile, topk_value, topk_count] {
             let a = aggregation_for(&output, query);
             assert_eq!(a.metric, "http_requests_total");
-            // No cleanup policy yet: retention is unbounded.
-            assert_eq!(a.num_aggregates_to_retain, None);
+            assert_eq!(
+                output
+                    .to_inference_config(QueryLanguage::promql)
+                    .unwrap()
+                    .cleanup_policy,
+                CleanupPolicy::CircularBuffer
+            );
+            assert!(a.num_aggregates_to_retain.is_some_and(|n| n >= 1));
         }
+    }
+
+    /// Each query retains the closed windows wholly inside its lookback,
+    /// `(L − x) / y + 1`; open windows live in the precompute engine.
+    #[test]
+    fn retention_is_the_closed_windows_in_the_lookback() {
+        let query = "quantile_over_time(0.99, http_requests_total[10m])";
+        for (window_ms, slide_ms, retained) in [
+            (60_000, 60_000, 10),
+            (600_000, 600_000, 1),
+            (300_000, 60_000, 6),
+        ] {
+            let (config, workload, mut solution) = plan(&group(query, 0.99));
+            let deployment = &mut solution.deployments[0].deployment;
+            deployment.window_ms = window_ms;
+            deployment.slide_ms = slide_ms;
+            let output =
+                plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+            assert_eq!(
+                aggregation_for(&output, query).num_aggregates_to_retain,
+                Some(retained),
+                "window {window_ms}ms, slide {slide_ms}ms"
+            );
+        }
+    }
+
+    #[test]
+    fn lookback_not_in_whole_windows_is_an_error() {
+        let query = "quantile_over_time(0.99, http_requests_total[10m])";
+        let (config, workload, mut solution) = plan(&group(query, 0.99));
+        let deployment = &mut solution.deployments[0].deployment;
+        deployment.window_ms = 420_000;
+        deployment.slide_ms = 420_000;
+        assert!(matches!(
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution),
+            Err(MilpOutputError::PartialWindowLookback {
+                lookback_ms: 600_000,
+                window_ms: 420_000,
+                ..
+            })
+        ));
     }
 
     /// What the engine builds from an aggregation, without its id, metric

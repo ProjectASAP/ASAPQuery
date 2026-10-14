@@ -7,6 +7,10 @@ use tracing::debug;
 
 pub type MetricID = u32;
 pub type EpochID = u64;
+
+/// Epochs (1 current + sealed) a key keeps. With one, the store retains
+/// exactly `num_aggregates_to_retain` windows, the count the planner sizes.
+pub const MAX_EPOCHS: usize = 1;
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
 
 /// Sorts one key's buckets into chronological (ascending start) order.

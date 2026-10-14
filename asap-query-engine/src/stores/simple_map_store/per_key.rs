@@ -3,7 +3,7 @@ use crate::data_model::{
 };
 use crate::stores::simple_map_store::common::{
     resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
-    MetricID, MutableEpoch, SealedEpoch, TimestampRange,
+    MetricID, MutableEpoch, SealedEpoch, TimestampRange, MAX_EPOCHS,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
@@ -49,7 +49,7 @@ impl StoreKeyData {
             sealed_epochs: BTreeMap::new(),
             current_epoch_id: 0,
             epoch_capacity: None,
-            max_epochs: 4,
+            max_epochs: MAX_EPOCHS,
             read_counts: Mutex::new(HashMap::new()),
         }
     }

@@ -509,22 +509,21 @@ fn test_exact_query_correct_across_interleaved_inserts_and_queries(strategy: Loc
 }
 
 fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
-    // capacity=2, max_epochs=4 (hardcoded in StoreKeyData/PerKeyState) =>
-    // retention_limit = 8. Inserting 10 windows evicts exactly the oldest 2
-    // (windows 0 and 1, both in the oldest sealed epoch), leaving windows
-    // 2..10 spread across sealed epochs and the current (still-open) epoch.
+    // capacity=2 => the store keeps the 2 newest windows. After 11 inserts,
+    // window 9 sits in the sealed epoch and window 10 in the current
+    // (still-open) one; windows 0..9 are evicted.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
         &[(1, AggregationType::Sum, Some(2), None)],
     );
-    let n = 10u64;
+    let n = 11u64;
     for i in 0..n {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
         store.insert_precomputed_output(out, acc).unwrap();
     }
 
-    for i in 0u64..2 {
+    for i in 0u64..n - 2 {
         let evicted = store
             .query_precomputed_output_exact("cpu_usage", 1, i * 60_000, (i + 1) * 60_000)
             .unwrap();
@@ -535,7 +534,7 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
         );
     }
 
-    for i in 2u64..n {
+    for i in n - 2..n {
         let result = store
             .query_precomputed_output_exact("cpu_usage", 1, i * 60_000, (i + 1) * 60_000)
             .unwrap();
@@ -886,14 +885,14 @@ fn test_earliest_timestamp_tracked_per_agg_id(strategy: LockStrategy) {
 // ── cleanup: circular buffer ──────────────────────────────────────────────────
 
 fn test_cleanup_circular_buffer_evicts_oldest_window(strategy: LockStrategy) {
-    // retention_limit = num_aggregates_to_retain * 4 = 2 * 4 = 8.
-    // Inserting a 9th window triggers eviction of the oldest 1.
+    // retention_limit = num_aggregates_to_retain = 2.
+    // Inserting a 3rd window triggers eviction of the oldest 1.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
         &[(1, AggregationType::Sum, Some(2), None)],
     );
-    for i in 0u64..9 {
+    for i in 0u64..3 {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
         store.insert_precomputed_output(out, acc).unwrap();
     }
@@ -917,13 +916,15 @@ fn test_cleanup_circular_buffer_retains_newest_windows(strategy: LockStrategy) {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
         store.insert_precomputed_output(out, acc).unwrap();
     }
+    // Retains exactly num_aggregates_to_retain windows, the count the planner
+    // sizes memory for.
     let result = store
-        .query_precomputed_output("cpu_usage", 1, 60_000, 9 * 60_000)
+        .query_precomputed_output("cpu_usage", 1, 0, 9 * 60_000)
         .unwrap();
     assert_eq!(
-        total_bucket_count(&result),
-        8,
-        "[{}] circular buffer must retain the 8 newest windows after eviction",
+        timestamps_for_none_key(&result),
+        vec![(7 * 60_000, 8 * 60_000), (8 * 60_000, 9 * 60_000)],
+        "[{}] circular buffer must retain exactly the 2 newest windows after eviction",
         label(strategy)
     );
 }
@@ -1005,7 +1006,7 @@ fn test_cleanup_read_based_unread_window_is_retained(strategy: LockStrategy) {
 
 fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
     // The store skips cleanup entirely when aggregation_type == "DeltaSetAggregator".
-    // retention_limit = 2 * 4 = 8. Inserting 10 windows must not evict any.
+    // retention_limit = 2. Inserting 10 windows must not evict any.
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
@@ -1045,10 +1046,9 @@ fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
 /// moment an order-sensitive accumulator (`DeltaSetAggregator` included, if
 /// its rotation exemption is ever relaxed) hits this path.
 ///
-/// capacity=2 with 7 inserts forces 3 epoch seals, leaving exactly 1 window
-/// in the current epoch (the newest) alongside 3 sealed epochs (the 6
-/// oldest) — the exact shape under which "current checked first" prepends a
-/// newer window ahead of older ones.
+/// capacity=2 with 7 inserts leaves window 6 in the current epoch and window
+/// 5 in the sealed one — the exact shape under which "current checked first"
+/// prepends a newer window ahead of an older one.
 ///
 /// Deliberately does NOT use `timestamps_for_none_key` — that helper sorts
 /// before returning, which would mask exactly the bug this test exists to
@@ -1076,8 +1076,8 @@ fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: L
         .collect();
     assert_eq!(
         returned_order.len(),
-        n as usize,
-        "[{}] no windows should have been evicted yet (7 <= retention_limit 8)",
+        2,
+        "[{}] the 2 newest windows should remain (retention_limit 2)",
         label(strategy)
     );
 

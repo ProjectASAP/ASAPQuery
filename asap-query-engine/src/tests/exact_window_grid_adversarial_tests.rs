@@ -353,9 +353,9 @@ mod tests {
     /// retained span in a single query rather than probing one window at a
     /// time.
     ///
-    /// capacity=2, 10 inserts => retention_limit=8, evicting windows 0 and 1
-    /// (oldest sealed epoch). Windows 2..10 remain, spread across multiple
-    /// sealed epochs plus the current (newest, still "mutable") epoch.
+    /// capacity=2, 11 inserts => retention_limit=2, evicting windows 0..9.
+    /// Window 9 remains in the sealed epoch and window 10 in the current
+    /// (newest, still "mutable") one.
     #[test]
     fn store_query_range_spans_sealed_and_mutable_epochs() {
         let store = make_store(
@@ -372,7 +372,7 @@ mod tests {
             )],
             CleanupPolicy::CircularBuffer,
         );
-        let n = 10u64;
+        let n = 11u64;
         for i in 0..n {
             let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
             store.insert_precomputed_output(out, acc).unwrap();
@@ -382,15 +382,16 @@ mod tests {
             .query_precomputed_output("cpu_usage", 1, 0, n * 60_000)
             .unwrap();
         let ts = timestamps_for_none_key(&result);
-        let expected: Vec<(u64, u64)> = (2..n).map(|i| (i * 60_000, (i + 1) * 60_000)).collect();
+        let expected: Vec<(u64, u64)> =
+            (n - 2..n).map(|i| (i * 60_000, (i + 1) * 60_000)).collect();
         assert_eq!(
             ts, expected,
-            "range query spanning sealed + mutable epochs must return exactly windows 2..10, \
-             with windows 0,1 evicted"
+            "range query spanning sealed + mutable epochs must return exactly windows 9 and 10, \
+             with windows 0..9 evicted"
         );
 
         let buckets = result.get(&None).unwrap();
-        for i in 2..n {
+        for i in n - 2..n {
             let range = (i * 60_000, (i + 1) * 60_000);
             let acc = &buckets.iter().find(|(r, _)| *r == range).unwrap().1;
             let expected_json = SumAccumulator::with_sum(i as f64)
