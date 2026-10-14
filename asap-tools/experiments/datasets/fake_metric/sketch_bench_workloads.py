@@ -584,15 +584,16 @@ def metric_labels(metrics: dict) -> Dict[str, List[str]]:
     }
 
 
-def write_statements(path: str, statements: List[str]) -> None:
-    with open(path, "w") as f:
-        f.write(";\n\n".join(statements) + ";\n")
+def statements_text(statements: List[str]) -> str:
+    return ";\n\n".join(statements) + ";\n"
 
 
 def convert(
     table_path: str, data_file: str, starting_delay_secs: int, duration_secs: int
 ) -> List[str]:
-    """Writes the SQL files and one config per arm; returns the config paths."""
+    """Writes the SQL files and one config per arm; returns the config paths.
+    Everything is rendered before anything is written, so a table that fails
+    leaves an earlier run's files intact."""
     with open(table_path) as f:
         workloads = json.load(f)["workloads"]
     if len(workloads) != 1:
@@ -602,13 +603,7 @@ def convert(
     labels = metric_labels(metrics)
     stem = os.path.splitext(os.path.basename(table_path))[0]
     sql_dir = os.path.join(OUT_CONFIG_DIR, stem)
-    # Clear files an earlier run wrote, e.g. a baseline_mv arm or an interval
-    # this table no longer has.
-    shutil.rmtree(sql_dir, ignore_errors=True)
-    mv_config = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse_mv.yaml")
-    if os.path.exists(mv_config):
-        os.remove(mv_config)
-    os.makedirs(sql_dir)
+    outputs: Dict[str, str] = {}  # path -> content
 
     entries = [(e, query_from_entry(e, metrics, labels)) for e in e2e["queries"]]
     for entry, q in entries:
@@ -635,9 +630,9 @@ def convert(
         BASELINE_MV: os.path.join(sql_dir, "init_mv.sql"),
     }
     for mode in modes:
-        path = init_paths[mode]
-        with open(path, "w") as f:
-            f.write(init_sql(metrics, list(views.values()), mode == BASELINE_MV))
+        outputs[init_paths[mode]] = init_sql(
+            metrics, list(views.values()), mode == BASELINE_MV
+        )
 
     by_interval: Dict[int, Dict[str, List[str]]] = {}
     asapquery: List[str] = []
@@ -651,7 +646,7 @@ def convert(
             asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(entry)}")
     if asapquery:
         # For the ASAPQuery arm; the runner does not read it.
-        write_statements(os.path.join(sql_dir, "asapquery.sql"), asapquery)
+        outputs[os.path.join(sql_dir, "asapquery.sql")] = statements_text(asapquery)
     max_window = max((q.window_secs for _, q in entries), default=0)
     if starting_delay_secs < QUERY_TIME_OFFSET_SECS + max_window:
         # Same data for every arm, so arms stay comparable; absolutes are biased.
@@ -667,7 +662,7 @@ def convert(
         sql_files = {}
         for mode, statements in files.items():
             sql_files[mode] = os.path.join(sql_dir, f"{name}_{mode}.sql")
-            write_statements(sql_files[mode], statements)
+            outputs[sql_files[mode]] = statements_text(statements)
         query_groups.append(
             {
                 "name": name,
@@ -704,10 +699,22 @@ def convert(
             "data_ingestion_interval_ms": SCRAPE_INTERVAL_SECONDS * 1000,
         }
         out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse{suffix}.yaml")
-        with open(out_path, "w") as f:
-            f.write(f"# @package experiment_params\n# Generated from {table_path}\n")
-            yaml.safe_dump(out, f, sort_keys=False)
+        outputs[out_path] = (
+            f"# @package experiment_params\n# Generated from {table_path}\n"
+            + yaml.safe_dump(out, sort_keys=False)
+        )
         out_paths.append(out_path)
+
+    # Clear files an earlier run wrote, e.g. a baseline_mv arm or an interval
+    # this table no longer has.
+    shutil.rmtree(sql_dir, ignore_errors=True)
+    mv_config = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse_mv.yaml")
+    if os.path.exists(mv_config):
+        os.remove(mv_config)
+    os.makedirs(sql_dir)
+    for path, content in outputs.items():
+        with open(path, "w") as f:
+            f.write(content)
     return out_paths
 
 

@@ -213,6 +213,16 @@ def mg_entry(capability: str, grouping: List[str], window_secs: int) -> dict:
     return entry
 
 
+def snapshot(root: str) -> Dict[str, str]:
+    """Every file under `root`, by path, with its content."""
+    out = {}
+    for d, _, names in os.walk(root):
+        for name in names:
+            with open(os.path.join(d, name)) as f:
+                out[os.path.join(d, name)] = f.read()
+    return out
+
+
 class PlanViewsTest(unittest.TestCase):
     def views(self, cases):
         queries = [sbw.parse_promql(p, t, LABELS) for t, p in cases]
@@ -410,6 +420,32 @@ class ConvertTest(unittest.TestCase):
                     sorted(os.listdir(sbw.OUT_CONFIG_DIR)),
                     ["instant", "instant_clickhouse.yaml"],
                 )
+            finally:
+                os.chdir(cwd)
+
+    def test_failed_reconvert_keeps_earlier_files(self):
+        # Cleared before validating, a failing re-run left the earlier config
+        # pointing at deleted SQL files.
+        good = mg_entry("quantile", ["service"], 300)
+        bad = {**good, "sql": good["sql"].replace("NOW()", "now()")}
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "t.json")
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+
+                def convert(queries):
+                    with open(table, "w") as f:
+                        e2e = {"metrics": METRICS, "queries": queries}
+                        json.dump({"workloads": [{"e2e": e2e}]}, f)
+                    return sbw.convert(table, "data.json", 310, 600)
+
+                self.assertEqual(len(convert([good])), 2)
+                before = snapshot(sbw.OUT_CONFIG_DIR)
+                # Fails while rendering, after validation and the init SQL.
+                with self.assertRaises(ValueError):
+                    convert([good, bad])
+                self.assertEqual(snapshot(sbw.OUT_CONFIG_DIR), before)
             finally:
                 os.chdir(cwd)
 
