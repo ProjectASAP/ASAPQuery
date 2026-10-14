@@ -13,6 +13,7 @@ from constants import (
     PROMETHEUS_CONFIG_FILE,
     PROMETHEUS_QUERY_MAX_SAMPLES,
     PROMETHEUS_QUERY_TIMEOUT,
+    PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG,
 )
 
 
@@ -20,7 +21,11 @@ class PrometheusService(BaseService):
     """Service for managing Prometheus operations."""
 
     def __init__(
-        self, provider: InfrastructureProvider, num_nodes: int, node_offset: int
+        self,
+        provider: InfrastructureProvider,
+        num_nodes: int,
+        node_offset: int,
+        remote_write_receiver: bool = False,
     ):
         """
         Initialize Prometheus service.
@@ -29,10 +34,12 @@ class PrometheusService(BaseService):
             provider: Infrastructure provider for node communication and management
             num_nodes: Number of nodes to manage
             node_offset: Starting node index offset
+            remote_write_receiver: Accept samples on /api/v1/write
         """
         super().__init__(provider)
         self.num_nodes = num_nodes
         self.node_offset = node_offset
+        self.remote_write_receiver = remote_write_receiver
 
     def get_query_endpoint_port(self) -> int:
         """Get the query endpoint port for Prometheus."""
@@ -94,12 +101,14 @@ class PrometheusService(BaseService):
             time.sleep(3)
 
         # Start prometheus
-        cmd = (
-            f"./prometheus --config.file={PROMETHEUS_CONFIG_FILE}"
+        flags = (
+            f"--config.file={PROMETHEUS_CONFIG_FILE}"
             f" --query.timeout={PROMETHEUS_QUERY_TIMEOUT}"
             f" --query.max-samples={PROMETHEUS_QUERY_MAX_SAMPLES}"
-            " > /dev/null 2>&1 < /dev/null &"
         )
+        if self.remote_write_receiver:
+            flags += f" {PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG}"
+        cmd = f"./prometheus {flags} > /dev/null 2>&1 < /dev/null &"
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,

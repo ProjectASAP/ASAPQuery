@@ -457,6 +457,48 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Example**: `"gauge"`
 - **Note**: Counter metrics have `_total` suffix, gauge metrics don't
 
+#### Paced Feeder Parameters
+
+`paced_feeder` runs `asap-tools/data-sources/paced-feeder` (built by
+`installation/common/setup_dependencies.sh`) bare-metal on the worker nodes,
+one process per (sink, metric). It pushes over remote write instead of being
+scraped: in `sketchdb` mode to the query engine's ingest
+(`streaming.remote_write`, which must have `parallelism: 1`), plus Prometheus
+when the mode sets `query_prometheus_too`; in every other mode to Prometheus,
+which then starts with `--web.enable-remote-write-receiver`. All processes
+share the seed and table, so every system gets the same data. Its metrics are
+listed under `metrics` with `exporter: paced_feeder`; Prometheus does not
+forward them to the query engine. Generate a whole config from a sketch-bench
+table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.workload_table` (string, required)
+- **Description**: Local path of the sketch-bench workload table; copied to each feeder node
+- **Example**: `/path/to/synthetic-templatesclassic-shared1.json`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.metrics` (list, required)
+- **Description**: Metrics of the table's `workloads[0].e2e.metrics` to send. Gauge and counter metrics go to every sink; `records` metrics (one sample per value field, `<metric>.<field>`) only to ASAPQuery, so they are refused when any mode feeds Prometheus (baseline, or `query_prometheus_too`)
+- **Example**: `[data, data_total]`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.seed` (int, required)
+- **Description**: `--seed` of every feeder process
+- **Example**: `42`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.duration_secs` (int, required)
+- **Description**: Seconds of data to send. Must be at least the feeder's startup check (7 s) plus `flow.steady_state_wait` plus the query groups' running time
+- **Example**: `4000`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.samples_per_sec` (int, optional)
+- **Description**: Overrides the table's `samples_per_sec_per_series` (gauge and counter metrics)
+- **Example**: `20`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.records_per_sec` (int, optional)
+- **Description**: Overrides the table's `records_per_sec` (records metrics)
+- **Example**: `20000`
+
+#### `experiment_params.exporters.exporter_list.paced_feeder.extra_flags` (string, optional)
+- **Description**: Appended to every feeder command line
+- **Example**: `"--concurrency 32"`
+
 ### Query Group Configuration
 
 #### `experiment_params.query_groups` (list, required)
@@ -499,6 +541,15 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Range**: 0-300 seconds
 - **Example**: `15`
 - **Usage**: Ensures data is available for lookback queries
+
+#### `experiment_params.query_groups[].client_options.align_to_interval` (boolean, optional)
+- **Description**: Evaluate repetition k at `t_k = data_start_time + (max(1, ceil(starting_delay / T)) + k) * T`, with `T = repetition_delay_ms` (whole seconds), sending it at `t_k + query_time_offset`. `starting_delay` counts from `data_start_time`, not as a sleep from client start
+- **Default**: `false`
+- **Usage**: Every evaluation time is a multiple of `T`, and repetition k covers the same samples in every mode however late the mode started; `query_time_offset` (at least 5 s, ASAPQuery's allowed lateness) is how long the data of the window ending at `t_k` gets to arrive. Overrides the query engine's per-aggregation alignment in sketchdb mode. Requires `data_start_time`; the LCM of the aligned intervals must be at most 600 s
+
+#### `experiment_params.query_groups[].client_options.data_start_time` (int)
+- **Description**: Time (epoch seconds) the paced feeder's data starts at
+- **Usage**: Not set by hand: `experiment_run_e2e.py` writes it into each mode's client config after starting the paced feeder, which waits for the next multiple of the aligned groups' intervals' LCM
 
 #### `experiment_params.query_groups[].client_options.starting_delay` (int, required)
 - **Description**: Initial delay in seconds before starting query execution

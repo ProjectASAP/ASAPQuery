@@ -1,8 +1,10 @@
 import os
+import atexit
 import json
 import time
 
 import hydra
+import yaml
 from omegaconf import DictConfig, OmegaConf
 
 import constants
@@ -25,6 +27,13 @@ from experiment_utils.services import (
     DockerPrometheusService,
     DockerVictoriaMetricsService,
     SystemExportersService,
+    PACED_FEEDER_EXPORTER,
+    PacedFeederService,
+    aligned_interval_lcm,
+    check_paced_feeder_config,
+    paced_feeder_min_duration_secs,
+    paced_feeder_sinks,
+    set_data_start,
 )
 from experiment_utils.services.misc import DiscoveryBackend
 
@@ -188,6 +197,39 @@ def main(cfg: DictConfig):
         cfg.experiment_params
     )
 
+    modes_by_name = {
+        m["mode"]: m
+        for m in OmegaConf.to_container(cfg.experiment_params.experiment, resolve=True)
+    }
+    paced_feeder_service = None
+    paced_feeder_config = exporter_config["exporter_list"].get(PACED_FEEDER_EXPORTER)
+    if paced_feeder_config is not None:
+        paced_feeder_config = OmegaConf.to_container(paced_feeder_config, resolve=True)
+        # The feeder runs from its own directory.
+        paced_feeder_config["workload_table"] = os.path.abspath(
+            paced_feeder_config["workload_table"]
+        )
+        check_paced_feeder_config(
+            paced_feeder_config,
+            modes=list(modes_by_name.values()),
+            parallelism=args.parallelism,
+            min_feed_secs=paced_feeder_min_duration_secs(
+                0 if skip_querying else args.steady_state_wait,
+                minimum_experiment_running_time,
+            ),
+            forward_unsupported_queries=args.forward_unsupported_queries,
+            auto_discover_labels=args.controller_auto_discover_labels,
+        )
+        # Also checks the aligned query groups before any service starts.
+        paced_feeder_align_secs = aligned_interval_lcm(
+            OmegaConf.to_container(cfg.experiment_params, resolve=True)
+        )
+        paced_feeder_service = PacedFeederService(provider, args)
+        if not args.no_teardown:
+            # Otherwise a failed run leaves feeders pushing into the next
+            # run's sinks.
+            atexit.register(paced_feeder_service.stop)
+
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")
         experiment_output_dir = os.path.join(
@@ -228,6 +270,8 @@ def main(cfg: DictConfig):
         exporter_service.stop()
         deathstar_service.stop()
         prometheus_service.reset()
+        if paced_feeder_service is not None:
+            paced_feeder_service.stop()
 
         # Also stop avalanche exporters if they were started
         if config.check_exporter_and_queries_exist("avalanche", cfg.experiment_params):
@@ -481,6 +525,45 @@ def main(cfg: DictConfig):
             ), f"Expected PrometheusService but got {type(prometheus_service).__name__}"
             prometheus_service.start(experiment_output_dir)
 
+        # Pushes to its sinks, so it starts once they accept writes.
+        if paced_feeder_service is not None:
+            prometheus_url = (
+                f"http://{args.remote_write_ip}:"
+                f"{prometheus_service.get_query_endpoint_port()}"
+                f"{constants.PROMETHEUS_REMOTE_WRITE_ENDPOINT}"
+            )
+            sinks = paced_feeder_sinks(
+                modes_by_name[experiment_mode],
+                query_engine_url=f"http://{args.remote_write_ip}:"
+                f"{args.remote_write_base_port}{args.remote_write_path}",
+                prometheus_url=prometheus_url,
+            )
+            if prometheus_url in sinks.values():
+                prometheus_service.wait_until_ready()
+            local_client_config = os.path.join(
+                local_experiment_root_dir,
+                "controller_client_configs",
+                f"{experiment_mode}.yaml",
+            )
+            with open(local_client_config) as f:
+                client_config = yaml.safe_load(f)
+            start_ms = paced_feeder_service.start(
+                config=paced_feeder_config,
+                sinks=sinks,
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                align_secs=paced_feeder_align_secs,
+            )
+            set_data_start(client_config, start_ms)
+            with open(local_client_config, "w") as f:
+                yaml.safe_dump(client_config, f, sort_keys=False)
+            sync.rsync_controller_client_configs(
+                provider,
+                experiment_root_output_dir,
+                local_experiment_root_dir,
+                node_offset=args.node_offset,
+            )
+
         # Start Prometheus throughput monitoring if enabled
         if args.throughput_prometheus:
             prometheus_throughput_monitor = PrometheusThroughputMonitor(
@@ -562,6 +645,9 @@ def main(cfg: DictConfig):
 
         # Skip teardown if the no_teardown flag is set
         if not args.no_teardown:
+            # Before its sinks go away, so its log shows no spurious errors.
+            if paced_feeder_service is not None:
+                paced_feeder_service.stop()
             if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
                 query_engine_service.stop()
 

@@ -11,6 +11,7 @@ from constants import (
     PROMETHEUS_CONFIG_FILE,
     PROMETHEUS_QUERY_MAX_SAMPLES,
     PROMETHEUS_QUERY_TIMEOUT,
+    PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG,
 )
 
 
@@ -18,7 +19,11 @@ class DockerPrometheusService(DockerServiceBase):
     """Docker-based Prometheus service with resource constraints."""
 
     def __init__(
-        self, provider: InfrastructureProvider, num_nodes: int, node_offset: int
+        self,
+        provider: InfrastructureProvider,
+        num_nodes: int,
+        node_offset: int,
+        remote_write_receiver: bool = False,
     ):
         """
         Initialize Docker Prometheus service.
@@ -27,9 +32,11 @@ class DockerPrometheusService(DockerServiceBase):
             provider: Infrastructure provider for node communication and management
             num_nodes: Number of nodes to manage
             node_offset: Starting node index offset
+            remote_write_receiver: Accept samples on /api/v1/write
         """
         super().__init__(provider, num_nodes, node_offset)
         self.container_name = "prometheus-container"
+        self.remote_write_receiver = remote_write_receiver
 
     def get_container_name(self) -> str:
         """Get the Docker container name."""
@@ -107,6 +114,8 @@ class DockerPrometheusService(DockerServiceBase):
                 f"--query.max-samples={PROMETHEUS_QUERY_MAX_SAMPLES}",
             ]
         )
+        if self.remote_write_receiver:
+            docker_cmd_parts.append(PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG)
 
         docker_cmd = " ".join(docker_cmd_parts)
 
