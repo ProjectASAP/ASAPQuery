@@ -243,6 +243,43 @@ ASAPQuery keeps sketch windows instead, in two tiers ([#800](https://github.com/
    and the ClickHouse client's 30 s timeout. A query still running when its
    next firing is due is reported as late, with its full latency (§12, Q3).
 
+### Rapid randomized E2E fallback (draft)
+
+This is a smaller deadline-oriented result, not a replacement for the full
+mixed/all runs. Its claim is: across randomly generated supported query mixes,
+ASAPQuery has lower resource cost and/or latency at bounded fidelity error than
+exact baselines, after the same logical history is loaded.
+
+- **Systems.** ASAPQuery, Prometheus, and raw ClickHouse are required.
+  VictoriaMetrics and ClickHouse + exact MVs are optional and do not gate this
+  result.
+- **Workloads.** Generate ten workloads from the classic PromQL query-string
+  pool, using seeds 0–9. Each workload samples ten distinct query strings
+  uniformly without replacement; different parameterizations, such as two
+  quantiles, are distinct strings and may co-occur. Windowed queries use only
+  15 m and 1 h windows. Quantile-over-time may occur more often because it has
+  more eligible parameterizations.
+- **Instant queries.** Templates 1 and 3 are included only if a planner-only
+  sensitivity run with 100 ms instant windows, using the existing saturation
+  curves at N = 1,000 values/job, meets their fidelity targets. The saved 10/s
+  plan currently models them as 1 s windows, so it cannot establish
+  Prometheus-equivalent latest-sample semantics by itself.
+- **Protocol.** For each workload, bulk-load one hour of logical history and
+  run a 15-minute paced tail. Query instances keep their source cadence: one
+  second for instant templates and one minute for windowed templates. ASAPQuery
+  receives a workload-specific saved plan and a fresh run. Each baseline may
+  bulk-load the common history once, then run the ten workloads as
+  phase-separated measurements in independently randomized, recorded order.
+- **Measures.** During each 15-minute phase, collect mean vCPU, RSS, raw
+  latencies and maxima, and fidelity. Report median latency rather than a
+  per-query p99 for minute-cadence queries. The common fidelity headline is
+  the share of ASAPQuery evaluations meeting their template target; retain
+  rank/relative error for quantiles, precision for top-k, and relative error
+  or exact match for sums, rates, and instant aggregates.
+- **Pilot.** Run one sampled workload through all three systems before the
+  ten-workload sweep, validating data acceptance, results, monitor boundaries,
+  and ClickHouse ground truth in ASAPQuery's configured window semantics.
+
 ## 9. Metrics and figures
 
 Per (system, workload), over the measurement hour:
