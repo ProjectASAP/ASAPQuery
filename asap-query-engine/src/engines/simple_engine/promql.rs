@@ -51,7 +51,7 @@ fn detect_scalar_arm<'a>(
 /// two arms don't share the same label set — mirroring DataFusion's
 /// `build_binary_vector_plan`, which fails to resolve a join column that
 /// only exists on one side.
-fn combine_vector_vector(
+pub(super) fn combine_vector_vector(
     lhs_results: Vec<InstantVectorElement>,
     lhs_labels: &[String],
     rhs_results: Vec<InstantVectorElement>,
@@ -83,7 +83,7 @@ fn combine_vector_vector(
 /// Scalar combiner for one binary-expr level (instant query): applies
 /// `op(scalar, value)` or `op(value, scalar)` per `scalar_on_left` to every
 /// element of the vector arm's results.
-fn combine_scalar(
+pub(super) fn combine_scalar(
     vector_results: Vec<InstantVectorElement>,
     scalar: f64,
     op: &promql_parser::parser::token::TokenType,
@@ -119,7 +119,7 @@ impl SimpleEngine {
     /// boundary, unconditionally — mirroring SQL's `align_end_timestamp_sql`.
     /// A no-op in the common case (already-aligned timestamps), a safety net
     /// otherwise, for every PromQL query shape, not just a subset.
-    fn align_end_timestamp_promql(&self, end_timestamp: u64) -> u64 {
+    pub(super) fn align_end_timestamp_promql(&self, end_timestamp: u64) -> u64 {
         let interval_ms = self.data_ingestion_interval_ms;
         if end_timestamp.is_multiple_of(interval_ms) {
             return end_timestamp;
@@ -286,7 +286,7 @@ impl SimpleEngine {
         let match_result = self.find_matching_controller_pattern(arm_ast, planned_subquery)?;
 
         let agg_info = self
-            .get_aggregation_id_info(query_config)
+            .get_aggregation_id_info(&query_config.aggregations)
             .map_err(|e| {
                 warn!("{}", e);
                 e
@@ -1323,7 +1323,7 @@ impl SimpleEngine {
 
         // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
         let agg_info: AggregationIdInfo = if let Some(config) = self.find_query_config(query) {
-            self.get_aggregation_id_info(&config)
+            self.get_aggregation_id_info(&config.aggregations)
                 .map_err(|e| {
                     warn!("{}", e);
                     e

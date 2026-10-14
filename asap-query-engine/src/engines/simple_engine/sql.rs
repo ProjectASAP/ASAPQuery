@@ -369,55 +369,6 @@ impl SimpleEngine {
         Some((ctx, post))
     }
 
-    /// Shared context-building tail for both SQL context builders.
-    ///
-    /// Called by `build_query_execution_context_sql` and `build_spatiotemporal_context`
-    /// after labels, statistic, metadata, timestamps, and `agg_info` are resolved.
-    /// Builds the query plan, derives grouping/aggregated labels, and returns the
-    /// final `QueryExecutionContext`.
-    #[allow(clippy::too_many_arguments)]
-    fn build_sql_execution_context_tail(
-        &self,
-        metric: &str,
-        timestamps: &QueryTimestamps,
-        metadata: QueryMetadata,
-        agg_info: AggregationIdInfo,
-        spatial_filter: String,
-        query_time: u64,
-    ) -> Option<QueryExecutionContext> {
-        let (query_plan, do_merge, value_window_type) = self
-            .create_store_query_plan(metric, timestamps, &agg_info)
-            .map_err(|e| {
-                warn!("Failed to create store query plan: {}", e);
-                e
-            })
-            .ok()?;
-
-        let sc = self.streaming_config.read().unwrap().clone();
-        let grouping_labels = sc
-            .get_aggregation_config(agg_info.aggregation_id_for_value)
-            .map(|config| config.grouping_labels.clone())
-            .unwrap_or_else(|| metadata.query_output_labels.clone());
-
-        let aggregated_labels = sc
-            .get_aggregation_config(agg_info.aggregation_id_for_key)
-            .map(|config| config.aggregated_labels.clone())
-            .unwrap_or_else(KeyByLabelNames::empty);
-
-        Some(QueryExecutionContext {
-            metric: metric.to_string(),
-            metadata,
-            store_plan: query_plan,
-            agg_info,
-            value_window_type,
-            do_merge,
-            spatial_filter,
-            query_time,
-            grouping_labels,
-            aggregated_labels,
-        })
-    }
-
     /// Build execution context for SpatioTemporal queries.
     /// These queries span multiple scrape intervals but GROUP BY a subset of labels.
     fn build_spatiotemporal_context(
@@ -492,7 +443,7 @@ impl SimpleEngine {
         let agg_info: AggregationIdInfo = if let Some(config) =
             self.find_query_config_sql(query_data)
         {
-            self.get_aggregation_id_info(&config)
+            self.get_aggregation_id_info(&config.aggregations)
                 .map_err(|e| {
                     warn!("{}", e);
                     e
@@ -512,7 +463,7 @@ impl SimpleEngine {
         };
         let metric = &match_result.outer_data()?.metric;
 
-        self.build_sql_execution_context_tail(
+        self.build_execution_context_tail(
             metric,
             &timestamps,
             metadata,
@@ -520,6 +471,8 @@ impl SimpleEngine {
             String::new(),
             query_time,
         )
+        .map_err(|e| warn!("Failed to create store query plan: {}", e))
+        .ok()
     }
 }
 
