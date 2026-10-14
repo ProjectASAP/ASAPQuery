@@ -359,6 +359,8 @@ impl Store for SimpleMapStoreGlobal {
                     .evict_beyond_window_limit();
                 let mut dropped_windows: Vec<TimestampRange> =
                     dropped.iter().map(|(window, _, _)| *window).collect();
+                // Entries come in insertion order, so a window's entries aren't adjacent.
+                dropped_windows.sort_unstable();
                 dropped_windows.dedup();
                 if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
                     for window in &dropped_windows {

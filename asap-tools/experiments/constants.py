@@ -44,6 +44,9 @@ PROMETHEUS_CONFIG_FILE = "prometheus.yml"
 PROMETHEUS_REMOTE_WRITE_ENDPOINT = "/api/v1/write"
 HTTP_READINESS_CURL_TIMEOUT_SECONDS = 5
 QUERY_ENGINE_RUNTIME_INFO_ENDPOINT = "/api/v1/status/runtimeinfo"
+# Query engine spill files live in this subdirectory of its output dir, which
+# the container mounts, so host and container paths agree. Results syncs skip it.
+QUERY_ENGINE_SPILL_SUBDIR = "spill"
 
 # VictoriaMetrics configuration files
 VMAGENT_SCRAPE_CONFIG_FILE = "vmagent_scrape.yml"

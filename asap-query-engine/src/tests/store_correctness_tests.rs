@@ -192,7 +192,7 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_exact_query_sees_window_inserted_after_a_prior_exact_query(strategy);
     test_exact_query_miss_then_hit_after_insert(strategy);
     test_exact_query_correct_across_interleaved_inserts_and_queries(strategy);
-    test_exact_query_correct_after_epoch_rotation(strategy);
+    test_exact_query_correct_after_eviction(strategy);
 
     // Batched exact-query correctness (#609)
     test_batch_exact_query_empty_windows_returns_empty(strategy);
@@ -216,7 +216,7 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_cleanup_read_based_evicts_after_threshold_reads(strategy);
     test_cleanup_read_based_unread_window_is_retained(strategy);
     test_delta_set_aggregator_bypasses_cleanup(strategy);
-    test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy);
+    test_buckets_returned_in_chronological_order_after_eviction(strategy);
 
     // Keyed (label-grouped) entries
     test_keyed_entries_grouped_by_key(strategy);
@@ -510,7 +510,7 @@ fn test_exact_query_correct_across_interleaved_inserts_and_queries(strategy: Loc
     }
 }
 
-fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
+fn test_exact_query_correct_after_eviction(strategy: LockStrategy) {
     // retain=2 => the store keeps the 2 newest windows. After 11 inserts,
     // windows 9 and 10 remain and windows 0..9 are evicted.
     let store = make_store(
@@ -542,7 +542,7 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
         assert_eq!(
             total_bucket_count(&result),
             1,
-            "[{}] window {i} must be retrievable via exact query after epoch rotation",
+            "[{}] window {i} must be retrievable via exact query after eviction",
             label(strategy)
         );
         let expected = SumAccumulator::with_sum(i as f64)
@@ -552,8 +552,8 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
         assert_eq!(
             actual,
             expected,
-            "[{}] window {i} must return its own value after epoch rotation, \
-             not a value from a sealed epoch's stale offset",
+            "[{}] window {i} must return its own value after eviction, \
+             not a value from a stale offset",
             label(strategy)
         );
     }
@@ -1161,7 +1161,7 @@ fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
 /// Deliberately does NOT use `timestamps_for_none_key` — that helper sorts
 /// before returning, which would mask exactly the bug this test exists to
 /// catch.
-fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: LockStrategy) {
+fn test_buckets_returned_in_chronological_order_after_eviction(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
@@ -1195,7 +1195,7 @@ fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: L
         returned_order,
         chronological,
         "[{}] buckets must be returned in chronological (ascending start) order \
-         even after epoch rotation has occurred",
+         even after eviction has occurred",
         label(strategy)
     );
 }

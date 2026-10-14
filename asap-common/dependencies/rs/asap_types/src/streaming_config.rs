@@ -71,9 +71,12 @@ impl StreamingConfig {
 
                     if let Some(read_count_threshold) = aggregation.read_count_threshold {
                         let threshold = read_count_threshold_map.entry(aggregation_id).or_insert(0);
-                        *threshold = threshold
-                            .checked_add(read_count_threshold)
-                            .expect("read-count threshold overflowed");
+                        *threshold =
+                            threshold.checked_add(read_count_threshold).ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "read-count threshold for aggregation {aggregation_id} overflowed"
+                                )
+                            })?;
                     }
                 }
             }
@@ -502,5 +505,22 @@ aggregations:
 
         assert_eq!(config[1].num_aggregates_to_retain, None);
         assert_eq!(config[1].read_count_threshold, Some(9));
+    }
+
+    #[test]
+    fn overflowing_read_based_threshold_is_an_error() {
+        let yaml = minmax_yaml("MinMax", "max");
+        let mut inference = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::ReadBased);
+        inference.query_configs = vec![
+            QueryConfig::new("max(metric[10m])".into()).add_aggregation(
+                AggregationReference::with_read_count_threshold(1, Some(u64::MAX)),
+            ),
+            QueryConfig::new("max(metric[1m])".into())
+                .add_aggregation(AggregationReference::with_read_count_threshold(1, Some(1))),
+        ];
+
+        let error = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+            .expect_err("an overflowing threshold must not load");
+        assert!(error.to_string().contains("overflowed"), "{error}");
     }
 }

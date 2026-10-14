@@ -11,7 +11,8 @@ pub type EpochID = u64;
 /// Windows a CircularBuffer store keeps: the planned count plus enough windows to
 /// cover `retention_slack_ms` of query delay, e.g. a query evaluated 10s in the past
 /// needs 10 more 1s windows. `None` (no planned count) stays unlimited. A slide of 0
-/// means tumbling, so windows step by `window_size_ms`.
+/// means tumbling, so windows step by `window_size_ms`; a zero-width window has no
+/// time step, so it gets no slack.
 pub fn retained_windows(
     num_aggregates_to_retain: Option<u64>,
     window_size_ms: u64,
@@ -23,7 +24,11 @@ pub fn retained_windows(
     } else {
         slide_interval_ms
     };
-    num_aggregates_to_retain.map(|n| n + retention_slack_ms.div_ceil(step_ms))
+    let slack_windows = match step_ms {
+        0 => 0,
+        step_ms => retention_slack_ms.div_ceil(step_ms),
+    };
+    num_aggregates_to_retain.map(|n| n + slack_windows)
 }
 
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
@@ -224,8 +229,7 @@ impl MutableEpoch {
     /// Consume this epoch and produce an immutable SealedEpoch by sorting in-place.
     /// Zips the three columns into tuples and sorts — moves Arcs without cloning.
     /// O(M log M) paid once at rotation time, not at query time.
-    /// Unused since CircularBuffer stopped sealing; the sealed-epoch paths remain
-    /// only until they are removed.
+    /// Unused: no cleanup policy seals epochs.
     #[allow(dead_code)]
     pub fn seal(self) -> SealedEpoch {
         let min_start = self.min_start;
@@ -526,5 +530,12 @@ mod tests {
     fn zero_slide_steps_by_window_size() {
         // Tumbling configs may leave slideIntervalMs at 0; dividing by it panicked.
         assert_eq!(retained_windows(Some(1), 1_000, 0, 11_000), Some(12));
+    }
+
+    #[test]
+    fn zero_width_window_gets_no_slack() {
+        // Window and slide both 0 divided by zero, even with the default slack of 0.
+        assert_eq!(retained_windows(Some(3), 0, 0, 0), Some(3));
+        assert_eq!(retained_windows(Some(3), 0, 0, 11_000), Some(3));
     }
 }

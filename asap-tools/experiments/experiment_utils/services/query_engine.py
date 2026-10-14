@@ -14,9 +14,7 @@ import utils
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
-# Spill files live in this subdirectory of the engine's output dir, which the
-# container mounts, so host and container paths agree.
-SPILL_SUBDIR = "spill"
+SPILL_SUBDIR = constants.QUERY_ENGINE_SPILL_SUBDIR
 SPILL_ERRORS_METRIC = "asap_store_spill_write_errors_total"
 SPILL_REPORT_FILE = "spill_report.json"
 

@@ -87,6 +87,7 @@ query_engine:
   lock_strategy: "per-key"  # Lock strategy for SimpleMapStore: "global" or "per-key" (Rust query engine only)
   # Append windows the store evicts to query_engine_output/spill instead of
   # dropping them; the run records their size and fails if any write failed.
+  # Spill files stay on the node; results syncs skip them.
   spill: false
 
 # Controller configuration

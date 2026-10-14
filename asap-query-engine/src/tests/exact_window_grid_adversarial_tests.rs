@@ -20,7 +20,7 @@
 //!
 //! - **Store-level** (`SimpleMapStore` directly): pin the `Store` trait
 //!   contract itself -- empty-range edge cases, boundary containment,
-//!   overlapping sliding windows, and sealed/mutable epoch spans. These
+//!   overlapping sliding windows, and spans after CircularBuffer eviction. These
 //!   exercise the store's own (unchanged) `query_precomputed_output`, so they
 //!   document the ground truth the rest of the pipeline must reproduce.
 //! - **Engine-level** (`SimpleEngine` + PromQL): exercise the actual query
@@ -345,9 +345,8 @@ mod tests {
         );
     }
 
-    /// Range query spanning both sealed epochs and the still-open (mutable)
-    /// current epoch, in one call. Mirrors
-    /// `store_correctness_tests::test_exact_query_correct_after_epoch_rotation`
+    /// Range query over everything CircularBuffer retained, in one call. Mirrors
+    /// `store_correctness_tests::test_exact_query_correct_after_eviction`
     /// but drives the tolerant range scan (`query_precomputed_output`)
     /// instead of the exact lookup, and checks correctness across the whole
     /// retained span in a single query rather than probing one window at a
@@ -356,7 +355,7 @@ mod tests {
     /// retain=2, 11 inserts => windows 9 and 10 remain, windows 0..9 are
     /// evicted.
     #[test]
-    fn store_query_range_spans_sealed_and_mutable_epochs() {
+    fn store_query_range_spans_retained_windows_after_eviction() {
         let store = make_store(
             vec![(
                 1,
@@ -385,7 +384,7 @@ mod tests {
             (n - 2..n).map(|i| (i * 60_000, (i + 1) * 60_000)).collect();
         assert_eq!(
             ts, expected,
-            "range query spanning sealed + mutable epochs must return exactly windows 9 and 10, \
+            "range query over the retained windows must return exactly windows 9 and 10, \
              with windows 0..9 evicted"
         );
 
@@ -399,7 +398,7 @@ mod tests {
             assert_eq!(
                 acc.serialize_to_json().unwrap(),
                 expected_json,
-                "window {i} must return its own value across the sealed/mutable epoch boundary"
+                "window {i} must return its own value after eviction"
             );
         }
     }

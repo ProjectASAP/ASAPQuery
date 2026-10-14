@@ -360,7 +360,8 @@ def main(cfg: DictConfig):
             lock_strategy=args.lock_strategy,
             backend_config=backend_config,
             http_port=http_port,
-            spill=args.spill,
+            # The demo has no end-of-run step to check spill writes, so it never spills.
+            spill=False,
             retention_slack_ms=config.get_retention_slack_ms(
                 cfg.experiment_params.get("query_groups"),
                 data_ingestion_interval_ms,
