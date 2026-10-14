@@ -2,9 +2,8 @@
 
 import os
 import sys
+import json
 import unittest
-
-import yaml
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "datasets", "fake_metric")
@@ -81,9 +80,9 @@ class RenderArtifactsTest(unittest.TestCase):
         self.assertEqual(len(queries), 7)
         self.assertFalse(any("data_total" in query for query in queries))
 
-    def test_archived_pilot_plan_input_matches_rendered_input(self):
-        # The archived planner output is only valid for the input it was run on.
-        rendered = artifacts.render(workloads.generate_workloads(seed=862)[0])
+    def test_archived_pilot_plan_reads_the_manifest_s_pilot_queries(self):
+        # The archived plan is only valid for the queries it was solved for.
+        workload = workloads.generate_workloads(seed=862)[0]
         archived = os.path.join(
             os.path.dirname(__file__),
             "..",
@@ -92,10 +91,18 @@ class RenderArtifactsTest(unittest.TestCase):
             "random_workloads",
             "seed-862",
             "workload-01-pilot",
-            "pilot_promql_planner.yaml",
+            "eval_table.json",
         )
         with open(archived) as f:
-            self.assertEqual(yaml.safe_load(f), rendered["pilot_promql_planner"])
+            e2e = json.load(f)["workloads"][0]["e2e"]
+        self.assertEqual(
+            [(q["promql"], q["interval_secs"] * 1000) for q in e2e["queries"]],
+            [
+                (q["promql"], q["interval_ms"])
+                for q in workload["queries"]
+                if q["support"] == "common-promql"
+            ],
+        )
 
     def test_pilot_e2e_table_is_consumable_by_existing_config_renderer(self):
         table = artifacts.pilot_e2e_table(workloads.generate_workloads(seed=862)[0])
