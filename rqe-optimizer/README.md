@@ -111,9 +111,12 @@ zcat plans/synthetic-templatesmultigroup-shared1.plans.json.gz | jq '.plans[]
   | select(.kind == "cheapest" and .method == "asap" and .weights == "cpu") | .chosen'
 ```
 
-To turn a plan into deployments, group `chosen` by `deployment`: each group
-is one sketch (`sketch`, `params`) over the stream, kept per group of its
-grouping, in tumbling windows of `window_secs`, serving the listed RQEs.
+To turn a plan into deployments, group `chosen` by `deployment`: each group is
+one sketch (`sketch`, `params`) over the stream, kept per group of its
+grouping, in windows of `window_secs` that start every `slide_secs`, serving
+the listed RQEs. A deployment is tumbling when the two are equal and sliding
+otherwise (the classic set's cheapest ASAP plan at CPU weights has a 300 s
+window with a 60 s slide).
 
 ## The inputs
 
