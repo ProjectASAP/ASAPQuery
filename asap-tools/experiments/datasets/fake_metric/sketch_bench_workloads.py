@@ -25,9 +25,10 @@ baseline_mv keeps exact mergeable states, no sketches: one view per (metric,
 value, statistic, T) holds per T-second bucket and group the state of sums,
 counts, exact distinct counts, exact quantiles, each series' latest sample (instant vectors) or each
 series' first/last sample, sample times and count (rate, increase). A query
-merges the W/T buckets of its window, plus for PromQL the samples at exactly
-T - W (kept apart in each bucket's `edge` rows), so W must be a multiple of
-T; instant vectors read [T - 1s, T], which is bucket-aligned only when T = 1 s.
+at eval time E merges the W/T buckets of its window, plus for PromQL the
+samples at exactly E - W (kept apart in each bucket's `edge` rows), so W must
+be a multiple of T; instant vectors read [E - 1s, E], which is bucket-aligned
+only when T = 1 s. The views live in VIEW_DATABASE.
 A table with any query the views cannot serve gets no baseline_mv arm (no
 init_mv.sql, MV SQL or _mv config) and a note on stderr naming the queries:
 dropping just those queries would shift the arm's query indices against the
@@ -35,17 +36,17 @@ baseline SQL that labels both arms' results.
 
 Semantics are those of Prometheus 2.53 (the version installation/prometheus
 installs for bare-metal runs), whose windows are closed on both ends: range
-vectors [d] at T read [T - d, T]; instant vectors read the latest sample of
-each series in [T - 1s, T] (a lookback of one scrape interval, not
+vectors [d] at E read [E - d, E]; instant vectors read the latest sample of
+each series in [E - 1s, E] (a lookback of one scrape interval, not
 Prometheus's 5m default: the feeder writes every series every scrape, so the
 two agree unless a sample is missing, where Prometheus would return the
 series' last value and this SQL drops the series); quantiles use
 quantileExactInclusive; rate and increase reproduce extrapolatedRate (counters
 never reset). Structured queries involve no Prometheus: they read ASAPQuery's
-left-open window (T - W, T], the window its SQL frontend and precompute
+left-open window (E - W, E], the window its SQL frontend and precompute
 windows use, and pool all samples of a group: cardinality is uniqExact of
-the value field, quantile is quantileExactInclusive. T is the client's
-{{ end_time }} floored to a multiple of the query's interval. Unsupported
+the value field, quantile is quantileExactInclusive. E is the client's
+{{ end_time }} floored to a multiple of the query's interval T. Unsupported
 query shapes raise.
 
 Evaluation times: each query group sets `align_to_interval` and a
@@ -62,6 +63,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import warnings
 from dataclasses import dataclass, replace
@@ -91,6 +93,9 @@ CLICKHOUSE_URL = "http://localhost:8123"
 # time has arrived.
 QUERY_TIME_OFFSET_SECS = 10
 VALUE_COLUMN = "value"
+# Every view lives here, so dropping it removes views any earlier workload
+# attached to the metric tables; they would keep firing on inserts.
+VIEW_DATABASE = "sketch_bench_views"
 # Instant vectors read the latest sample of each series in the last scrape.
 INSTANT_WINDOW_SECONDS = SCRAPE_INTERVAL_SECONDS
 
@@ -407,6 +412,11 @@ def view_stat(q: Query) -> str:
     return "last" if q.series_fn == "last" else "counter"
 
 
+def mv_servable(q: Query) -> bool:
+    """Whether the views' T-second buckets tile q's window."""
+    return q.window_secs % q.interval_secs == 0
+
+
 def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
     """One view per (table, value, statistic, interval), keyed by
     view_key(). Pooled statistics keep the union of their queries' groupings
@@ -414,7 +424,7 @@ def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
     per-series statistics keep every label."""
     grouped: Dict[tuple, List[Query]] = {}
     for q in queries:
-        if q.window_secs % q.interval_secs:
+        if not mv_servable(q):
             raise ValueError(
                 f"window {q.window_secs}s is not a multiple of the "
                 f"{q.interval_secs}s buckets: {q}"
@@ -425,6 +435,9 @@ def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
         table, value, stat, interval = key
         labels = metrics[table]["labels"]
         parent = {label["name"]: label.get("child_of") for label in labels}
+        unknown = {p for p in parent.values() if p} - set(parent)
+        if unknown:
+            raise ValueError(f"{table!r}: child_of names unknown labels {unknown}")
         keep = set(parent) if stat in PER_SERIES_STATS else set()
         for name in (n for q in qs for n in q.grouping):
             while name and name not in keep:
@@ -432,7 +445,7 @@ def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
                 name = parent[name]
         levels = {lv for q in qs for lv in (q.quantile, q.ratio_quantile) if lv}
         views[key] = View(
-            name=f"{table}_{value}_{stat}_{interval}s",
+            name=f"{VIEW_DATABASE}.{table}_{value}_{stat}_{interval}s",
             table=table,
             stat=stat,
             interval_secs=interval,
@@ -483,11 +496,14 @@ def view_ddl(view: View) -> str:
     )
     edge = f"toUnixTimestamp64Milli(ts) % {t * 1000} = 0"
     keys = ", ".join(("bucket", "edge") + view.keys)
-    states = ", ".join(f"{expr} AS {col}" for col, expr in view_states(view))
+    select = ", ".join(
+        (f"{bucket} AS bucket", f"{edge} AS edge")
+        + view.keys
+        + tuple(f"{expr} AS {col}" for col, expr in view_states(view))
+    )
     return (
         f"CREATE MATERIALIZED VIEW {view.name} ENGINE = AggregatingMergeTree "
-        f"ORDER BY ({keys}) AS SELECT {bucket} AS bucket, {edge} AS edge, "
-        f"{', '.join(view.keys)}, {states} FROM {view.table} GROUP BY {keys}"
+        f"ORDER BY ({keys}) AS SELECT {select} FROM {view.table} GROUP BY {keys}"
     )
 
 
@@ -538,9 +554,12 @@ def mv_sql(q: Query, views: Dict[tuple, View], labels: Dict[str, List[str]]) -> 
 def init_sql(metrics: dict, views: List[View], create_views: bool) -> str:
     """The metric tables, and with `create_views` their views. A view only
     aggregates rows inserted after it exists, so this must run before any
-    data arrives. The views are dropped either way, so none left by an
-    earlier baseline_mv run feeds on the recreated tables."""
-    statements = [f"DROP TABLE IF EXISTS {view.name}" for view in views]
+    data arrives. VIEW_DATABASE is dropped either way, so no view left by an
+    earlier baseline_mv run, of this or any other workload, feeds on the
+    recreated tables."""
+    statements = [f"DROP DATABASE IF EXISTS {VIEW_DATABASE}"]
+    if create_views:
+        statements.append(f"CREATE DATABASE {VIEW_DATABASE}")
     for table, desc in metrics.items():
         names = [label["name"] for label in desc["labels"]]
         if not names:
@@ -583,7 +602,13 @@ def convert(
     labels = metric_labels(metrics)
     stem = os.path.splitext(os.path.basename(table_path))[0]
     sql_dir = os.path.join(OUT_CONFIG_DIR, stem)
-    os.makedirs(sql_dir, exist_ok=True)
+    # Clear files an earlier run wrote, e.g. a baseline_mv arm or an interval
+    # this table no longer has.
+    shutil.rmtree(sql_dir, ignore_errors=True)
+    mv_config = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse_mv.yaml")
+    if os.path.exists(mv_config):
+        os.remove(mv_config)
+    os.makedirs(sql_dir)
 
     entries = [(e, query_from_entry(e, metrics, labels)) for e in e2e["queries"]]
     for entry, q in entries:
@@ -592,7 +617,7 @@ def convert(
                 f"interval {q.interval_secs}s exceeds --duration-secs "
                 f"{duration_secs}: {describe(entry)}"
             )
-    unservable = [describe(e) for e, q in entries if q.window_secs % q.interval_secs]
+    unservable = [describe(e) for e, q in entries if not mv_servable(q)]
     if unservable:
         print(
             f"{table_path}: no {BASELINE_MV} arm; its views need windows that "

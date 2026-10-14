@@ -172,6 +172,14 @@ class ParseTest(unittest.TestCase):
         entry["sql"] += "; \n"
         self.assertEqual(sbw.asapquery_sql(entry), plain)
 
+    def test_unknown_child_of_raises(self):
+        metrics = {
+            "data": {"type": "gauge", "labels": [{"name": "job", "child_of": "dc"}]}
+        }
+        q = sbw.parse_promql("sum_over_time(data[1m])", 60, {"data": ["job"]})
+        with self.assertRaises(ValueError):
+            sbw.plan_views([q], metrics)
+
     def test_metric_without_labels_raises(self):
         with self.assertRaises(ValueError):
             sbw.init_sql({"data": {"type": "gauge", "labels": []}}, [], False)
@@ -212,13 +220,14 @@ class PlanViewsTest(unittest.TestCase):
 
     def test_classic_templates(self):
         series = ("job", "label_0")
+        db = "sketch_bench_views."
         self.assertEqual(
             [(v.name, v.keys, v.levels) for v in self.views(CLASSIC)],
             [
-                ("data_total_value_counter_60s", series, ()),
-                ("data_value_last_1s", series, ()),
-                ("data_value_quantile_60s", series, ("0.5", "0.9", "0.99")),
-                ("data_value_sum_60s", series, ()),
+                (db + "data_total_value_counter_60s", series, ()),
+                (db + "data_value_last_1s", series, ()),
+                (db + "data_value_quantile_60s", series, ("0.5", "0.9", "0.99")),
+                (db + "data_value_sum_60s", series, ()),
             ],
         )
 
@@ -231,7 +240,7 @@ class PlanViewsTest(unittest.TestCase):
     def test_window_not_multiple_of_interval_raises(self):
         for case in [
             (60, "sum_over_time(data[90s])"),
-            # An instant vector reads [T - 1s, T]: bucket-aligned only when T = 1 s.
+            # An instant vector reads [E - 1s, E]: bucket-aligned only when T = 1 s.
             (60, "sum by (job) (data)"),
         ]:
             with self.subTest(case=case), self.assertRaises(ValueError):
@@ -321,12 +330,13 @@ class ConvertTest(unittest.TestCase):
                 # Baseline ingest feeds no views, and drops any an earlier
                 # baseline_mv run left attached to the tables.
                 self.assertNotIn("CREATE MATERIALIZED VIEW", init)
-                self.assertIn("DROP TABLE IF EXISTS data_total_value_counter_60s", init)
+                self.assertIn("DROP DATABASE IF EXISTS sketch_bench_views", init)
                 # Views only see rows inserted after them: tables, then views.
                 self.assertLess(
                     init_mv.index("CREATE TABLE data_total (ts DateTime64(3)"),
                     init_mv.index(
-                        "CREATE MATERIALIZED VIEW data_total_value_counter_60s"
+                        "CREATE MATERIALIZED VIEW "
+                        "sketch_bench_views.data_total_value_counter_60s"
                     ),
                 )
                 sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
@@ -343,21 +353,39 @@ class ConvertTest(unittest.TestCase):
                 os.chdir(cwd)
 
     def test_unservable_query_skips_mv_arm(self):
-        # An instant vector at T = 60 s reads [T - 1s, T], not whole buckets.
-        e2e = {
-            "metrics": METRICS,
-            "queries": [
-                {"promql": "sum by (job) (data)", "interval_secs": 60, "rqes": []},
-                {"promql": "sum_over_time(data[1m])", "interval_secs": 60, "rqes": []},
-            ],
+        # An instant vector at E with T = 60 s reads [E - 1s, E], not whole
+        # buckets.
+        servable = {
+            "promql": "sum_over_time(data[1m])",
+            "interval_secs": 60,
+            "rqes": [],
         }
+        instant = {"promql": "sum by (job) (data)", "interval_secs": 60, "rqes": []}
         with tempfile.TemporaryDirectory() as tmp:
             table = os.path.join(tmp, "instant.json")
-            with open(table, "w") as f:
-                json.dump({"workloads": [{"e2e": e2e}]}, f)
             cwd = os.getcwd()
             os.chdir(tmp)
             try:
+                # An earlier run of the same table that had a baseline_mv arm
+                # and a 1 s group; none of its files may survive.
+                with open(table, "w") as f:
+                    e2e = {
+                        "metrics": METRICS,
+                        "queries": [
+                            servable,
+                            {
+                                **servable,
+                                "interval_secs": 1,
+                                "promql": "sum_over_time(data[1s])",
+                            },
+                        ],
+                    }
+                    json.dump({"workloads": [{"e2e": e2e}]}, f)
+                with self.assertWarns(UserWarning):
+                    sbw.convert(table, "data.json", 30, 600)
+                with open(table, "w") as f:
+                    e2e = {"metrics": METRICS, "queries": [instant, servable]}
+                    json.dump({"workloads": [{"e2e": e2e}]}, f)
                 with contextlib.redirect_stderr(io.StringIO()) as err:
                     (path,) = sbw.convert(table, "data.json", 30, 600)
                 self.assertIn("no baseline_mv arm", err.getvalue())
@@ -374,7 +402,14 @@ class ConvertTest(unittest.TestCase):
                 with open(cfg["dataset"]["init_sql_file"]) as f:
                     self.assertNotIn("MATERIALIZED VIEW", f.read())
                 sql_dir = os.path.dirname(cfg["dataset"]["init_sql_file"])
-                self.assertFalse(os.path.exists(os.path.join(sql_dir, "init_mv.sql")))
+                self.assertEqual(
+                    sorted(os.listdir(sql_dir)),
+                    ["init.sql", "interval_60s_baseline.sql"],
+                )
+                self.assertEqual(
+                    sorted(os.listdir(sbw.OUT_CONFIG_DIR)),
+                    ["instant", "instant_clickhouse.yaml"],
+                )
             finally:
                 os.chdir(cwd)
 
@@ -763,6 +798,12 @@ class KeyPruningTest(unittest.TestCase):
                 sbw.parse_promql("count_over_time(data[1m])", 60, LABELS),
                 sum(start_ms <= t <= end_s * 1000 for t in times),
             ),
+            # The only query of its view and grouped by nothing, so the view
+            # has no label keys.
+            (
+                sbw.query_from_entry(mg_entry("quantile", [], 60), METRICS, LABELS),
+                1.0,
+            ),
         ]
         with tempfile.TemporaryDirectory() as tmp:
             views = sbw.plan_views([q for q, _ in cases], METRICS)
@@ -788,6 +829,24 @@ class KeyPruningTest(unittest.TestCase):
             f"{mode}/{i}": n for i, (_, n) in enumerate(cases) for mode in ("raw", "mv")
         }
         self.assertEqual(got, want)
+
+
+@unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
+class StaleViewsTest(unittest.TestCase):
+    def test_init_drops_other_workloads_views(self):
+        """A view stays attached to a dropped and recreated table, so one
+        left by another workload's baseline_mv run would keep firing."""
+        q = sbw.parse_promql("sum_over_time(data[1m])", 60, LABELS)
+        other = list(sbw.plan_views([q], METRICS).values())
+        with tempfile.TemporaryDirectory() as tmp:
+            script = (
+                sbw.init_sql(METRICS, other, True)
+                # This workload has no views of its own.
+                + load_script(tmp, {"data": [(DATA_START_MS, ("j", "l"), (1.0,))]}, [])
+                + "SELECT count() AS n FROM system.tables "
+                f"WHERE database = '{sbw.VIEW_DATABASE}' FORMAT JSONEachRow;\n"
+            )
+            self.assertEqual(run_clickhouse(script, tmp), [{"n": 0}])
 
 
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
