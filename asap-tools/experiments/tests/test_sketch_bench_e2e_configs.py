@@ -514,6 +514,19 @@ class RqeFrontendConfigTest(unittest.TestCase):
                 OmegaConf.create({"frontend": "sql", "rqe_exprs_file": "x.json"})
             )
 
+    def test_promql_only_runners_accept_promql(self):
+        experiment_config.require_promql_frontend(
+            OmegaConf.create({"frontend": "promql"}), "runner.py"
+        )
+
+    def test_promql_only_runners_refuse_rqe(self):
+        with self.assertRaisesRegex(
+            ValueError, "runner.py supports only query_engine.frontend='promql'"
+        ):
+            experiment_config.require_promql_frontend(
+                OmegaConf.create({"frontend": "rqe"}), "runner.py"
+            )
+
     def test_rqe_needs_a_sketchdb_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             side_file = os.path.join(tmp, "x.json")

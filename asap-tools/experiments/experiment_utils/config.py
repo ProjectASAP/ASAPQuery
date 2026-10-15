@@ -51,6 +51,18 @@ def rqe_exprs_file_for_frontend(query_engine_cfg: Any) -> Optional[str]:
     return str(path)
 
 
+def require_promql_frontend(query_engine_cfg: Any, script_name: str) -> None:
+    """Fail unless `query_engine.frontend` is promql, for runners that only
+    send PromQL: an rqe run would otherwise measure the PromQL frontend."""
+    frontend = query_engine_cfg.frontend
+    if frontend != QUERY_FRONTEND_PROMQL:
+        raise ValueError(
+            f"{script_name} supports only query_engine.frontend="
+            f"{QUERY_FRONTEND_PROMQL!r}, got {frontend!r}; run "
+            "experiment_run_e2e.py for the rqe frontend"
+        )
+
+
 def _copy_rqe_exprs(
     rqe_exprs_file: str, query_groups: List[Dict[str, Any]], output_dir: str
 ) -> None:

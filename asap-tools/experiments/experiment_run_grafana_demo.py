@@ -45,6 +45,7 @@ def main(cfg: DictConfig):
     config.validate_config(cfg)
     # Validate experiment configuration
     config.validate_experiment_config(cfg.experiment_params)
+    config.require_promql_frontend(cfg.query_engine, "experiment_run_grafana_demo.py")
     # Convert config to args-like object for backward compatibility
     # (also constructs the infrastructure provider, exposed as args.provider)
     args = config.Args(cfg)
