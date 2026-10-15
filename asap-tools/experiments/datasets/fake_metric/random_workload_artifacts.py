@@ -159,7 +159,6 @@ def render(workload):
     """Return planner inputs and query schedule derived from one manifest."""
     labels = [label["name"] for label in workload["labels"]]
     queries = workload["queries"]
-    pilot_queries = [query for query in queries if query["support"] == "common-promql"]
     return {
         "workload_id": workload["id"],
         "data_facts": workload["data_facts"],
@@ -172,13 +171,6 @@ def render(workload):
                 {"metric": metric, "labels": labels} for metric in PROMQL_METRICS
             ],
             "query_groups": query_groups(queries, "promql"),
-            "aggregate_cleanup": {"policy": "read_based"},
-        },
-        "pilot_promql_planner": {
-            "metrics": [
-                {"metric": metric, "labels": labels} for metric in PROMQL_METRICS
-            ],
-            "query_groups": query_groups(pilot_queries, "promql"),
             "aggregate_cleanup": {"policy": "read_based"},
         },
         "sql_planner": {
@@ -197,7 +189,7 @@ def main():
     workload = json.loads(args.manifest.read_text())
     rendered = render(workload)
     args.out.mkdir(parents=True, exist_ok=True)
-    for name in ("promql_planner", "pilot_promql_planner", "sql_planner"):
+    for name in ("promql_planner", "sql_planner"):
         path = args.out / f"{name}.yaml"
         path.write_text(yaml.safe_dump(rendered[name], sort_keys=False))
         print(path)

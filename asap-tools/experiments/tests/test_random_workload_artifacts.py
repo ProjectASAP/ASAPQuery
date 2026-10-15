@@ -72,14 +72,6 @@ class RenderArtifactsTest(unittest.TestCase):
         self.assertTrue(profile["promql_query_groups"])
         self.assertTrue(profile["clickhouse_query_groups"])
 
-    def test_pilot_planner_excludes_gated_and_sql_only_queries(self):
-        rendered = artifacts.render(workloads.generate_workloads(seed=862)[0])
-        groups = rendered["pilot_promql_planner"]["query_groups"]
-
-        queries = [query for group in groups for query in group["queries"]]
-        self.assertEqual(len(queries), 7)
-        self.assertFalse(any("data_total" in query for query in queries))
-
     def test_archived_pilot_plan_reads_the_manifest_s_pilot_queries(self):
         # The archived plan is only valid for the queries it was solved for.
         workload = workloads.generate_workloads(seed=862)[0]
