@@ -18,7 +18,8 @@ from experiment_run_clickhouse import (
     _prepare_clickhouse_controller_output,
     _start_clickhouse_controller,
     _finish_clickhouse_feed,
-    _start_clickhouse_feed,
+    _feed_sinks,
+    _start_feed,
 )
 from experiment_utils.config import validate_experiment_config
 from experiment_utils.services.paced_feeder import PACED_FEEDER_STARTUP_CHECK_SECS
@@ -123,12 +124,13 @@ class ClickHousePacedFeederCheckTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def check(self, modes, **overrides):
+    def check(self, modes, prebuilt_output_dir=None, **overrides):
         return _check_clickhouse_paced_feeder(
             feeder_config(self.table, **overrides),
             modes,
             aligned_client_config(10, 60),
             minimum_experiment_running_time=300,
+            controller_prebuilt_output_dir=prebuilt_output_dir,
         )
 
     def test_aligns_to_the_query_intervals(self):
@@ -138,10 +140,13 @@ class ClickHousePacedFeederCheckTest(unittest.TestCase):
         # Unlike Prometheus, ClickHouse keeps every record of a slot.
         self.check(["baseline"], metrics=["data", "flows"])
 
-    def test_sketchdb_mode_refused(self):
-        # sketchdb's engine ingests local_data_file, which a feed has none of.
-        with self.assertRaisesRegex(ValueError, "sketchdb"):
+    def test_sketchdb_without_a_prebuilt_plan_refused(self):
+        # The planner's input needs dataset.precompute, which a feed has none of.
+        with self.assertRaisesRegex(ValueError, "prebuilt_output_dir"):
             self.check(["baseline", "sketchdb"])
+
+    def test_sketchdb_with_a_prebuilt_plan_is_fed(self):
+        self.check(["baseline", "sketchdb"], prebuilt_output_dir="/plans/saved")
 
     def test_feed_ending_before_the_queries_refused(self):
         with self.assertRaisesRegex(ValueError, "ends before the queries"):
@@ -159,8 +164,29 @@ class ClickHousePacedFeederCheckTest(unittest.TestCase):
         )
 
 
-class StartClickHouseFeedTest(unittest.TestCase):
-    def start(self, calls, exited=True):
+CLICKHOUSE_FEED_URL = "http://10.10.1.1:8123/?database=default"
+ENGINE_FEED_URL = "http://10.10.1.1:8080/api/v1/write"
+
+
+class FeedSinksTest(unittest.TestCase):
+    def test_baseline_modes_feed_clickhouse(self):
+        for mode in ("baseline", "baseline_mv"):
+            self.assertEqual(
+                _feed_sinks(mode, CLICKHOUSE_FEED_URL, ENGINE_FEED_URL),
+                {"clickhouse": CLICKHOUSE_FEED_URL},
+            )
+
+    def test_sketchdb_feeds_only_the_engine(self):
+        # It forwards no queries, and ClickHouse ingesting a copy would load
+        # the node its CPU and latency are measured on.
+        self.assertEqual(
+            _feed_sinks("sketchdb", CLICKHOUSE_FEED_URL, ENGINE_FEED_URL),
+            {"query_engine": ENGINE_FEED_URL},
+        )
+
+
+class StartFeedTest(unittest.TestCase):
+    def start(self, calls, exited=True, mode="baseline"):
         calls.feeder.start.return_value = 1700000060000
         calls.feeder.wait_for_exit.return_value = exited
         with tempfile.TemporaryDirectory() as root, patch(
@@ -168,13 +194,13 @@ class StartClickHouseFeedTest(unittest.TestCase):
         ) as self.rsync:
             config_dir = os.path.join(root, "controller_client_configs")
             os.makedirs(config_dir)
-            config_path = os.path.join(config_dir, "baseline.yaml")
+            config_path = os.path.join(config_dir, f"{mode}.yaml")
             with open(config_path, "w") as f:
                 yaml.safe_dump(aligned_client_config(60), f)
 
             provider = Mock()
             provider.get_node_ip.return_value = "10.10.1.1"
-            start_ms = _start_clickhouse_feed(
+            start_ms = _start_feed(
                 provider=provider,
                 node_offset=0,
                 data_loader=calls.loader,
@@ -183,8 +209,8 @@ class StartClickHouseFeedTest(unittest.TestCase):
                 feeder_align_secs=60,
                 dataset_name="custom",
                 init_sql_file="init.sql",
-                clickhouse_http_port=8123,
-                experiment_mode="baseline",
+                sinks={"clickhouse": CLICKHOUSE_FEED_URL},
+                experiment_mode=mode,
                 experiment_root_output_dir="/exp",
                 local_experiment_root_dir=root,
             )
@@ -220,6 +246,16 @@ class StartClickHouseFeedTest(unittest.TestCase):
             1700000060,
         )
         self.rsync.assert_called_once()
+
+    def test_sketchdb_queries_follow_its_own_feed(self):
+        calls = Mock()
+        self.start(calls, mode="sketchdb")
+        start_kwargs = calls.feeder.start.call_args.kwargs
+        self.assertEqual(start_kwargs["experiment_output_dir"], "/exp/sketchdb")
+        self.assertEqual(
+            self.client_config["query_groups"][0]["client_options"]["data_start_time"],
+            1700000060,
+        )
 
     def test_feeders_that_outlive_pkill_stop_the_run(self):
         # With no_teardown, or an INSERT in flight, they would write into the
