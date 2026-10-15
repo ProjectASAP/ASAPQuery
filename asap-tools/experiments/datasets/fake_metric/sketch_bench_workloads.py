@@ -126,11 +126,13 @@ class Query:
 
     With `series_fn` None, `agg` runs over the raw samples of each `grouping`
     group in the window (sum_over_time, sum by (job) (sum_over_time), ...).
-    Otherwise `series_fn` (last, rate, increase) gives one value per series,
-    and `agg` combines those per group; `agg` None keeps them per series.
+    Otherwise `series_fn` (last, rate, increase, or quantile at `quantile`)
+    gives one value per series, and `agg` combines those per group (avg by
+    (job) (quantile_over_time)); `agg` None keeps them per series.
     `ratio_quantile` divides the `quantile` by a second quantile of the same
-    samples. Structured (non-PromQL) query entries map onto these fields and
-    set `left_open`: their window is (end - W, end], not PromQL's closed one.
+    samples. `topk` keeps the k largest values, per `topk_by` group when set.
+    Structured (non-PromQL) query entries map onto these fields and set
+    `left_open`: their window is (end - W, end], not PromQL's closed one.
     """
 
     table: str
@@ -142,6 +144,7 @@ class Query:
     quantile: Optional[str] = None  # level as written, e.g. "0.99"
     ratio_quantile: Optional[str] = None
     topk: Optional[int] = None
+    topk_by: Tuple[str, ...] = ()
     value: str = VALUE_COLUMN
     left_open: bool = False
 
@@ -297,10 +300,9 @@ def render(
             # The grand total: one row, none for an empty window.
             sql = f"SELECT {value} AS value {window} HAVING count() > 0"
     else:
-        if q.series_fn == "last":
-            sql = (
-                f"SELECT {cols}, {agg('last', None)} AS value {window} GROUP BY {cols}"
-            )
+        if q.series_fn in ("last", "quantile"):
+            value = agg(q.series_fn, q.quantile)
+            sql = f"SELECT {cols}, {value} AS value {window} GROUP BY {cols}"
         else:
             samples = (
                 f"SELECT {cols}, {agg('counter', None)} {window} "
@@ -313,6 +315,8 @@ def render(
             sql = f"SELECT {group}, {combine} AS value FROM ({sql}) GROUP BY {group}"
     if q.topk is not None:
         sql += f" ORDER BY value DESC, {group} LIMIT {q.topk}"
+        if q.topk_by:
+            sql += f" BY {', '.join(q.topk_by)}"
     return sql
 
 
@@ -321,6 +325,8 @@ def raw_agg(stat: str, quantile: Optional[str], value: str = VALUE_COLUMN) -> st
         return f"sum({value})"
     if stat == "count":
         return "count()"
+    if stat == "avg":
+        return f"avg({value})"
     if stat == "cardinality":
         return f"uniqExact({value})"
     if stat == "quantile":
@@ -413,7 +419,9 @@ PER_SERIES_STATS = ("last", "counter")
 def view_stat(q: Query) -> str:
     if q.series_fn is None:
         return q.agg
-    return "last" if q.series_fn == "last" else "counter"
+    if q.series_fn in ("last", "quantile"):
+        return q.series_fn
+    return "counter"
 
 
 def mv_servable(q: Query) -> bool:
@@ -425,7 +433,8 @@ def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
     """One view per (table, value, statistic, interval), keyed by
     view_key(). Pooled statistics keep the union of their queries' groupings
     plus every label's child_of parents, so coarser groupings roll up;
-    per-series statistics keep every label."""
+    per-series statistics, and any view a per-series query reads, keep every
+    label."""
     grouped: Dict[tuple, List[Query]] = {}
     for q in queries:
         if not mv_servable(q):
@@ -442,7 +451,8 @@ def plan_views(queries: List[Query], metrics: dict) -> Dict[tuple, View]:
         unknown = {p for p in parent.values() if p} - set(parent)
         if unknown:
             raise ValueError(f"{table!r}: child_of names unknown labels {unknown}")
-        keep = set(parent) if stat in PER_SERIES_STATS else set()
+        per_series = stat in PER_SERIES_STATS or any(q.series_fn for q in qs)
+        keep = set(parent) if per_series else set()
         for name in (n for q in qs for n in q.grouping):
             while name and name not in keep:
                 keep.add(name)
