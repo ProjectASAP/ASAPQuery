@@ -581,10 +581,14 @@ def init_sql(metrics: dict, views: List[View], create_views: bool) -> str:
         columns = [f"{name} String" for name in names] + [
             f"{value} Float64" for value in value_columns(desc)
         ]
+        # Raw queries read a time window across all series, so only a time
+        # order lets ClickHouse skip what's outside it. Views read their own
+        # tables; their source keeps its label order.
+        order = f"({', '.join(names)}, ts)" if create_views else "ts"
         statements += [
             f"DROP TABLE IF EXISTS {table}",
             f"CREATE TABLE {table} (ts DateTime64(3), {', '.join(columns)}) "
-            f"ENGINE = MergeTree ORDER BY ({', '.join(names)}, ts)",
+            f"ENGINE = MergeTree ORDER BY {order}",
         ]
     if create_views:
         statements += [view_ddl(view) for view in views]

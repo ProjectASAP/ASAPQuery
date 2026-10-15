@@ -1,6 +1,9 @@
 """Tests for random_workload_batch.py's job planning."""
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import random_workload_batch as batch
 
@@ -20,6 +23,32 @@ class BatchPlanningTest(unittest.TestCase):
         for attempts in (1, 2):
             names.append(batch.experiment_name({**job, "attempts": attempts}))
         self.assertEqual(names, ["s862long_w07_ch", "s862long_w07_ch_r2"])
+
+    def test_a_tagged_variant_rerun_names_and_configs_apart(self):
+        # Reruns must not reuse the original runs' names, whose outputs they
+        # would overwrite.
+        with tempfile.TemporaryDirectory() as tmp:
+            sets = Path(tmp) / "seed-862-long"
+            (sets / "workload-04").mkdir(parents=True)
+            (sets / "workload-04" / "clickhouse.yaml").write_text(
+                "query_groups: [{client_options: {starting_delay: 600}}]"
+            )
+            (sets / "workload-04-sla10").mkdir()
+            (sets / "workload-04-sla10" / "e2e.yaml").write_text("")
+            with mock.patch.object(batch, "CONFIG_DIR", Path(tmp)):
+                [job] = batch.make_jobs(
+                    [("seed-862-long", ["workload-04"])], ("asap",), "sla10", "sla10"
+                )
+        job["attempts"] = 1
+        self.assertEqual(batch.experiment_name(job), "s862long_w04_asap_sla10")
+
+        class Args:
+            username, hostname_suffix = "u", "s"
+
+        self.assertIn(
+            "experiment_type=random_workload/seed-862-long/workload-04-sla10/e2e",
+            batch.command(job, "n", 0, Args),
+        )
 
     def test_each_job_runs_on_its_slots_two_nodes(self):
         job = {"set": "seed-862", "workload": "workload-01", "arm": "prom"}

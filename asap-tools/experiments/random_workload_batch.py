@@ -19,6 +19,9 @@ Usage (from asap-tools/experiments, in tmux):
       --username milindsr --hostname-suffix <suffix> --slots 21 \\
       --set seed-862:01-10 --set seed-862-long:01-10 --set seed-862-x5:01 \\
       [--dry-run] [--stop-launching-after-hours 7]
+
+A rerun of some arms with changed configs: --arm ch --tag ts names the runs
+s862_w01_ch_ts, ...; --config-variant sla10 reads <workload>-sla10/ configs.
 """
 
 import argparse
@@ -90,12 +93,13 @@ def warmup_secs(set_name, workload):
     return min(g["client_options"]["starting_delay"] for g in groups)
 
 
-def make_jobs(sets):
+def make_jobs(sets, arms=tuple(ARMS), tag="", config_variant=""):
     jobs = []
     for set_name, workloads in sets:
         for workload in workloads:
-            for arm in ARMS:
-                config = CONFIG_DIR / set_name / workload / f"{ARMS[arm][1]}.yaml"
+            config_dir = f"{workload}-{config_variant}" if config_variant else workload
+            for arm in arms:
+                config = CONFIG_DIR / set_name / config_dir / f"{ARMS[arm][1]}.yaml"
                 if not config.exists():
                     raise SystemExit(f"missing {config}; render it first")
                 variant = set_name.count("-") > 1  # seed-862-long, not seed-862
@@ -109,6 +113,8 @@ def make_jobs(sets):
                         "set": set_name,
                         "workload": workload,
                         "arm": arm,
+                        "tag": tag,
+                        "config_dir": config_dir,
                         "estimate_secs": estimate,
                         "attempts": 0,
                         "status": "queued",
@@ -122,6 +128,8 @@ def make_jobs(sets):
 def experiment_name(job):
     tag = job["set"].replace("seed-", "s").replace("-", "")
     name = f"{tag}_{job['workload'].replace('workload-', 'w')}_{job['arm']}"
+    if job.get("tag"):
+        name += f"_{job['tag']}"
     return name if job["attempts"] == 1 else f"{name}_r{job['attempts']}"
 
 
@@ -130,7 +138,8 @@ def command(job, name, slot, args):
     cmd = [
         sys.executable,
         runner,
-        f"experiment_type=random_workload/{job['set']}/{job['workload']}/{config}",
+        "experiment_type=random_workload/"
+        f"{job['set']}/{job.get('config_dir', job['workload'])}/{config}",
         f"experiment.name={name}",
         "providers.cloudlab.num_nodes=1",
         f"providers.cloudlab.node_offset={2 * slot}",
@@ -233,6 +242,13 @@ def main():
         default=set(),
         help="slots to leave alone, e.g. 3,15,16 (their nodes are busy)",
     )
+    parser.add_argument(
+        "--arm", action="append", choices=ARMS, help="only these arms (default all)"
+    )
+    parser.add_argument("--tag", default="", help="suffix for experiment names")
+    parser.add_argument(
+        "--config-variant", default="", help="read configs from <workload>-VARIANT/"
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -254,7 +270,12 @@ def main():
                 )
                 j["status"] = "orphaned" if alive else "queued"
     else:
-        jobs = make_jobs([parse_set(s) for s in args.set])
+        jobs = make_jobs(
+            [parse_set(s) for s in args.set],
+            args.arm or tuple(ARMS),
+            args.tag,
+            args.config_variant,
+        )
     save(batch_dir, jobs)
 
     if args.dry_run:
