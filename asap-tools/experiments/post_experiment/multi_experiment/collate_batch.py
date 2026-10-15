@@ -6,7 +6,10 @@ sum of every answered query's latency, and whether the run is valid:
 - no query failed or timed out;
 - its answers agree with the reference arm (Prometheus, which keeps up, or
   else ClickHouse+MV): exact arms to EXACT_REL_ERR, ASAPQuery's sketches to
-  their bounds.
+  their bounds. In a pooled set (`*-pooled`) the quantiles are pooled, which
+  PromQL can't say: Prometheus and VictoriaMetrics run an avg-of-series
+  stand-in, unchecked, and the other arms' quantiles are checked against raw
+  ClickHouse instead.
 
 Separately, whether ingest kept up: during the query phase the feeder never
 ran more than MAX_INGEST_LAG_SECS behind (from the feeder's
@@ -38,6 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from random_workload_batch import ARMS, OUTPUTS_DIR  # noqa: E402
 
 REFERENCE = "prom"
+# Exact pooled quantiles, for a pooled set's quantile queries.
+POOLED_REFERENCE = "ch"
 # The reference of a batch without Prometheus: exact, and answers every window.
 FALLBACK_REFERENCE = "chmv"
 # The queries' freshness delay: a feed further behind leaves on-time
@@ -84,11 +89,13 @@ def max_ingest_lag(arm, mode_dir):
     return max(t["start_lag_ms"] for t in query_ticks) / 1000
 
 
-def disagreements(arm_name, arm, ref):
-    """The queries whose answers fall outside `arm_name`'s bounds against
-    the reference arm `ref`."""
+def disagreements(arm_name, arm, ref, checked=lambda name: True):
+    """The `checked` queries whose answers fall outside `arm_name`'s bounds
+    against the reference arm `ref`."""
     bad = []
     for gq, name in arm.names.items():
+        if not checked(name):
+            continue
         topk = name.startswith("topk")
         quantile = "quantile" in name
         values = []
@@ -141,8 +148,24 @@ def rows(batch_dir):
             why = []
             if len(recorded) != len(latencies):
                 why.append(f"{len(recorded) - len(latencies)} failed queries")
+            pooled = set_name.endswith("-pooled")
             if arm_name != reference:
-                why += disagreements(arm_name, arm, arms[reference])
+                why += disagreements(
+                    arm_name,
+                    arm,
+                    arms[reference],
+                    lambda name: not (pooled and "quantile" in name),
+                )
+            if pooled and arm_name not in (REFERENCE, "vm", POOLED_REFERENCE):
+                if POOLED_REFERENCE not in arms:
+                    why.append("pooled quantiles: no raw ClickHouse to check against")
+                else:
+                    why += disagreements(
+                        arm_name,
+                        arm,
+                        arms[POOLED_REFERENCE],
+                        lambda name: "quantile" in name,
+                    )
             out.append(
                 {
                     "set": set_name,
