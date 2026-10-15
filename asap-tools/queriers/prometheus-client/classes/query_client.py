@@ -35,7 +35,9 @@ class QueryClient(ABC):
             query: The query string (PromQL, SQL, etc.), templates rendered
             query_time: Optional Unix timestamp for point-in-time queries
             config_query: The query as the config lists it, before template
-                rendering; None means `query` is that text
+                rendering; None means `query` is that text. Clients that
+                look queries up by text (rqe) use it, since the rendered
+                text changes every run
 
         Returns:
             QueryResponse with normalized data

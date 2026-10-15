@@ -33,7 +33,10 @@ class RqeQueryClient(QueryClient):
     """Sends each query's RQE expression tree to ASAPQuery's RQE route.
 
     Queries keep their PromQL/SQL text in the config; the side file maps that
-    text to the tree, so results are keyed and scored as for PromQL/SQL.
+    text to the tree, so results are keyed and scored as for PromQL/SQL. The
+    key is the config's unrendered text (`config_query`), not the query sent:
+    templated SQL renders differently on every run (its `{{ end_time }}`), so
+    only the config text is stable across runs.
     """
 
     def __init__(
