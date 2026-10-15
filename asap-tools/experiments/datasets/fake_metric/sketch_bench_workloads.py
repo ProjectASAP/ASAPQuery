@@ -666,20 +666,27 @@ def convert(
     # Structured groups come first: sketchdb runs only those, and results pair
     # across modes by query index, so its queries must be baseline's first.
     groups: Dict[Tuple[bool, int], Dict[str, List[str]]] = {}
+    sketchdb_arm = prebuilt_output_dir is not None
     for entry, q in entries:
         structured = "promql" not in entry
         files = groups.setdefault(
             (not structured, q.interval_secs),
-            {m: [] for m in modes + ([SKETCHDB] if structured else [])},
+            {
+                m: []
+                for m in modes + ([SKETCHDB] if structured and sketchdb_arm else [])
+            },
         )
         comment = f"-- {describe(entry)}\n"
         files[BASELINE].append(comment + raw_sql(q, labels))
         if BASELINE_MV in files:
             files[BASELINE_MV].append(comment + mv_sql(q, views, labels))
         if structured:
-            files[SKETCHDB].append(comment + asapquery_sql(entry))
+            # Rendered either way, so a table without ASAPQuery SQL fails alike.
+            sql = asapquery_sql(entry)
+            if SKETCHDB in files:
+                files[SKETCHDB].append(comment + sql)
     has_structured = any(not promql for promql, _ in groups)
-    if prebuilt_output_dir is not None and not has_structured:
+    if sketchdb_arm and not has_structured:
         raise ValueError(
             f"{table_path}: --prebuilt-output-dir given, but no structured entry "
             "has ASAPQuery SQL for a sketchdb arm"
@@ -756,7 +763,7 @@ def convert(
             + yaml.safe_dump(experiment_params([mode], mode), sort_keys=False)
         )
         out_paths.append(out_path)
-    if prebuilt_output_dir is not None:
+    if sketchdb_arm:
         prebuilt_output_dir = os.path.abspath(prebuilt_output_dir)
         check_prebuilt_controller_output(prebuilt_output_dir)
         # With baseline in the same experiment, so its results score sketchdb's.

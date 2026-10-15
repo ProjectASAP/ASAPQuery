@@ -372,20 +372,13 @@ class ConvertTest(unittest.TestCase):
                         "sketch_bench_views.data_total_value_counter_60s"
                     ),
                 )
+                # No --prebuilt-output-dir, so no sketchdb arm or SQL.
                 structured = groups["interval_60s_structured"]
                 self.assertEqual(
-                    sorted(structured["sql_file"]),
-                    ["baseline", "baseline_mv", "sketchdb"],
+                    sorted(structured["sql_file"]), ["baseline", "baseline_mv"]
                 )
-                # The table's sql as written, with only NOW() substituted.
-                end = "'" + sbw.floored_end_datetime(60) + "'"
-                with open(structured["sql_file"]["sketchdb"]) as f:
-                    self.assertEqual(
-                        f.read(),
-                        "-- quantile(0.99, latency) by (service) over 300s\n"
-                        + e2e["queries"][-1]["sql"].replace("NOW()", end)
-                        + ";\n",
-                    )
+                sql_dir = os.path.dirname(structured["sql_file"]["baseline"])
+                self.assertFalse([n for n in os.listdir(sql_dir) if "sketchdb" in n])
             finally:
                 os.chdir(cwd)
 
@@ -530,6 +523,13 @@ class ConvertTest(unittest.TestCase):
                 self.assertEqual([g["id"] for g in client["sketchdb"]], [0])
                 self.assertEqual(len(client["baseline"][0]["queries"]), 2)
                 self.assertEqual(len(client["sketchdb"][0]["queries"]), 2)
+                # The table's sql as written, with only NOW() substituted.
+                end = "'" + sbw.floored_end_datetime(60) + "'"
+                self.assertEqual(
+                    client["sketchdb"][0]["queries"][0],
+                    "-- quantile(0.99, latency) by (service) over 300s\n"
+                    + structured[0]["sql"].replace("NOW()", end),
+                )
                 # The runner's check that the saved plan covers sketchdb's queries.
                 copy_prebuilt_controller_output(
                     plan,
