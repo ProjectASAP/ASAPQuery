@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
-from .prometheus_query_client import fetch_runtime_info, normalize_vector
+from .prometheus_query_client import normalize_vector
 from .query_client import QueryClient, QueryResponse
 
 # The `protocol` of a config server answered by RqeQueryClient.
@@ -135,6 +135,3 @@ class RqeQueryClient(QueryClient):
                 data=None,
                 error_message=f"{type(e).__name__}: {e}",
             )
-
-    def get_runtime_info(self) -> Optional[Dict[str, Any]]:
-        return fetch_runtime_info(self.server_url)

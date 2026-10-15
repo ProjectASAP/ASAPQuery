@@ -44,17 +44,6 @@ class QueryClient(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_runtime_info(self) -> Optional[Dict[str, Any]]:
-        """
-        Get runtime/status info from the backend.
-        Used for query alignment with SketchDB.
-
-        Returns:
-            Dict with backend-specific runtime info, or None if unavailable
-        """
-        pass
-
     @property
     @abstractmethod
     def protocol_name(self) -> str:

@@ -113,6 +113,3 @@ class PrometheusQueryClient(QueryClient):
                 data=None,
                 error_message=str(e),
             )
-
-    def get_runtime_info(self) -> Optional[Dict[str, Any]]:
-        return fetch_runtime_info(self.server_url)

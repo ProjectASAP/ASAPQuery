@@ -1,7 +1,6 @@
 import os
 import yaml
 import time
-import requests
 import argparse
 import datetime
 import logging
@@ -28,6 +27,7 @@ from urllib3.util.retry import Retry
 from classes.config import Config
 from classes.QueryLatencyExporter import QueryLatencyExporter
 from classes.query_client import QueryClient
+from classes.prometheus_query_client import fetch_runtime_info
 from classes.query_client_factory import QueryClientFactory
 from classes.query_template import QueryTemplate
 from classes.rqe_query_client import RQE_PROTOCOL, resolve_rqe_exprs_file
@@ -511,16 +511,12 @@ def get_query_start_times(
         # )
     logger.debug("Required aggregation IDs: {}", required_aggregation_ids)
 
-    # wait for all required aggregation IDs to be present
+    # wait for all required aggregation IDs to be present; an unreachable
+    # server or a bad response raises rather than being retried
     while True:
-        server_response = requests.get(
-            server_url + "/api/v1/status/runtimeinfo",
-            headers={"Content-Type": "application/json"},
-        )
-        server_response.raise_for_status()
-        server_response_json = server_response.json()
-        logger.debug("Server response: {}", server_response_json)
-        aggregation_id_start_time_map = server_response_json["data"][
+        runtime_info = fetch_runtime_info(server_url)
+        logger.debug("Server runtime info: {}", runtime_info)
+        aggregation_id_start_time_map = runtime_info[
             "earliest_timestamp_per_aggregation_id"
         ]
 
