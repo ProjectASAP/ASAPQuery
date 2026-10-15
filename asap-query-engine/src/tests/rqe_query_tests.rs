@@ -42,6 +42,10 @@ mod tests {
     /// One heap per `job`, keyed by `srcip`: serves `topk by (job)`.
     const TOPK_BY_JOB_AGG: u64 = 6;
     const TOPK_BY_JOB_QUERY: &str = "topk by (job) (2, sum_over_time(flows[1s]))";
+    /// A SQL table's `latency` column, as the planner names it.
+    const SQL_DDSKETCH_AGG: u64 = 7;
+    /// In `rqe_configs` but not in the streaming config.
+    const MISSING_AGG: u64 = 99;
 
     type Row = (Vec<String>, f64);
 
@@ -61,7 +65,13 @@ mod tests {
             AggregationConfig {
                 aggregation_id: id,
                 aggregation_type,
-                aggregation_sub_type: String::new(),
+                // Sums and top-k heaps weight by value.
+                aggregation_sub_type: match aggregation_type {
+                    AggregationType::MultipleSum | AggregationType::CountMinSketchWithHeap => {
+                        "sum".to_string()
+                    }
+                    _ => String::new(),
+                },
                 parameters: HashMap::new(),
                 grouping_labels: KeyByLabelNames::new(strings(grouping)),
                 aggregated_labels: KeyByLabelNames::new(strings(aggregated)),
@@ -167,6 +177,13 @@ mod tests {
                     "flows",
                     &["job"],
                     &["srcip"],
+                ),
+                aggregation(
+                    SQL_DDSKETCH_AGG,
+                    AggregationType::DDSketch,
+                    "http.latency",
+                    &["job"],
+                    &[],
                 ),
             ]),
         });
@@ -318,6 +335,10 @@ mod tests {
                     "misrolled".to_string(),
                     rqe_config(MULTI_SUM_AGG, vec![sum_by_job()]),
                 ),
+                // The keyed sums at their own labels, with no stage.
+                ("events".to_string(), rqe_config(MULTI_SUM_AGG, vec![])),
+                ("sql_p90".to_string(), rqe_config(SQL_DDSKETCH_AGG, vec![])),
+                ("dangling".to_string(), rqe_config(MISSING_AGG, vec![])),
             ]),
         };
         SimpleEngine::new(
@@ -561,7 +582,7 @@ mod tests {
         let engine = engine();
         for tree in [topk_by_job_leaf(None), topk_by_job_leaf(Some(&["srcip"]))] {
             let error = rqe_error(&engine, tree, QUERY_TIME_S);
-            assert!(matches!(&error, RqeQueryError::Execution(_)), "{error:?}");
+            assert!(matches!(&error, RqeQueryError::BadRequest(_)), "{error:?}");
             assert!(error.to_string().contains("top2_by_job"), "{error}");
             assert!(error.to_string().contains("topk_by"), "{error}");
         }
@@ -598,8 +619,122 @@ mod tests {
             leaf("misrolled", "events", "sum", TWO_WINDOWS_MS, &["instance"]),
             QUERY_TIME_S,
         );
-        assert!(matches!(&error, RqeQueryError::Execution(_)), "{error:?}");
+        assert!(matches!(&error, RqeQueryError::BadRequest(_)), "{error:?}");
         assert!(error.to_string().contains("misrolled"), "{error}");
+        assert!(error.to_string().contains("regroup to"), "{error}");
+    }
+
+    // --- leaves checked against their RQE's aggregation ---
+
+    fn assert_bad_leaf(tree: Value, reason: &str) {
+        let error = rqe_error(&engine(), tree.clone(), QUERY_TIME_S);
+        assert!(
+            matches!(&error, RqeQueryError::BadRequest(_)),
+            "{tree}: {error:?}"
+        );
+        assert!(error.to_string().contains(reason), "{tree}: {error}");
+    }
+
+    #[test]
+    fn refuses_a_leaf_on_another_metric() {
+        assert_bad_leaf(
+            leaf("sum", "other", "sum", TWO_WINDOWS_MS, &["instance", "job"]),
+            r#"reads "other", but its aggregation 1 is on "http_requests""#,
+        );
+    }
+
+    #[test]
+    fn refuses_a_capability_its_aggregation_cannot_answer() {
+        let mut quantile = series_sum();
+        quantile["rqe"]["capability"] = json!("quantile");
+        quantile["rqe"]["phi"] = json!(0.5);
+        assert_bad_leaf(quantile, "can't be answered by its aggregation 1");
+        let mut distinct = quantile_leaf();
+        distinct["rqe"]["capability"] = json!("cardinality");
+        distinct["rqe"].as_object_mut().unwrap().remove("phi");
+        assert_bad_leaf(distinct, "can't be answered by its aggregation 2");
+    }
+
+    #[test]
+    fn refuses_a_lookback_its_windows_do_not_tile() {
+        assert_bad_leaf(
+            sum_leaf("sum", WINDOW_MS + WINDOW_MS / 2, &["instance", "job"]),
+            "1500 ms lookback is not a whole number of its aggregation 1's 1000 ms windows",
+        );
+        // Any whole number of windows is served.
+        let three_windows = sum_leaf("sum", 3 * WINDOW_MS, &["instance", "job"]);
+        engine()
+            .handle_rqe_query(&expr(three_windows), QUERY_TIME_S)
+            .unwrap();
+    }
+
+    /// Without a stage, a leaf gets the aggregation's labels; a single-
+    /// population aggregation can also be merged to a subset of its groups.
+    #[test]
+    fn refuses_a_grouping_its_aggregation_does_not_serve() {
+        assert_bad_leaf(
+            sum_leaf("sum", TWO_WINDOWS_MS, &["instance", "job", "pod"]),
+            r#"groups by ["instance", "job", "pod"], but its aggregation 1 serves ["instance", "job"]"#,
+        );
+        // Keyed sums keep their keys: they can't drop `instance` without a stage.
+        assert_bad_leaf(
+            leaf("events", "events", "sum", TWO_WINDOWS_MS, &["job"]),
+            r#"but its aggregation 5 serves ["instance", "job"]"#,
+        );
+        let answer = rqe(
+            &engine(),
+            leaf(
+                "events",
+                "events",
+                "sum",
+                TWO_WINDOWS_MS,
+                &["instance", "job"],
+            ),
+        );
+        assert_eq!(
+            answer.1,
+            vec![
+                row(&["a", "api"], 5.0),
+                row(&["a", "web"], 8.0),
+                row(&["b", "api"], 2.0),
+            ]
+        );
+        // A top-k heap ranks whole series: it is never merged to its buckets.
+        assert_bad_leaf(
+            {
+                let mut top = topk_by_job_leaf(Some(&["job"]));
+                top["rqe"]["grouping"] = json!(["job"]);
+                top
+            },
+            "but its aggregation 6 serves",
+        );
+    }
+
+    /// A SQL leaf names its table and value column; the aggregation's
+    /// metric is `table.value_column`.
+    #[test]
+    fn reads_a_sql_leaf_by_table_and_value_column() {
+        let mut sql = leaf("sql_p90", "http", "quantile", TWO_WINDOWS_MS, &["job"]);
+        sql["rqe"]["phi"] = json!(0.9);
+        sql["rqe"]["value"] = json!("latency");
+        engine()
+            .handle_rqe_query(&expr(sql.clone()), QUERY_TIME_S)
+            .expect("checks pass; the window has no data");
+        sql["rqe"].as_object_mut().unwrap().remove("value");
+        assert_bad_leaf(
+            sql,
+            r#"reads "http", but its aggregation 7 is on "http.latency""#,
+        );
+    }
+
+    /// Repeated labels would mislabel series that are matched by position.
+    #[test]
+    fn refuses_duplicate_labels() {
+        assert_bad_leaf(
+            json!({"op": "+", "lhs": sum_leaf("sum", TWO_WINDOWS_MS, &["instance", "job", "job"]),
+                   "rhs": series_sum()}),
+            "more than once",
+        );
     }
 
     /// Between ingestion ticks a leaf reads what the PromQL instant path
@@ -889,6 +1024,16 @@ mod tests {
                     .to_string(),
                 "unknown RQE id",
             ),
+            (
+                json!({"expr": topk_by_job_leaf(None), "time": QUERY_TIME_S}).to_string(),
+                "topk_by",
+            ),
+            (
+                json!({"expr": leaf("misrolled", "events", "sum", TWO_WINDOWS_MS, &["instance"]),
+                       "time": QUERY_TIME_S})
+                .to_string(),
+                "regroup to",
+            ),
         ] {
             let (status, response) = post(&url, body.clone()).await;
             assert_eq!(status, 400, "{body}");
@@ -899,10 +1044,11 @@ mod tests {
         }
     }
 
+    /// The engine's own configs are broken: no fault of the request.
     #[tokio::test]
     async fn route_reports_an_execution_failure_as_500() {
         let (_server, url) = server().await;
-        let body = json!({"expr": leaf("misrolled", "events", "sum", TWO_WINDOWS_MS, &["instance"]),
+        let body = json!({"expr": leaf("dangling", "events", "sum", TWO_WINDOWS_MS, &["job"]),
                           "time": QUERY_TIME_S});
         let (status, response) = post(&url, body.to_string()).await;
         assert_eq!(status, 500);

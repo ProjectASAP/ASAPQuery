@@ -1,8 +1,8 @@
 //! `--planner saved` on real sketch-bench eval tables and their saved plans:
-//! the `all` workload of sketch-bench's `rqe-optimizer/results/e2e-rate10`
-//! (sketch-bench c1fd812), whose e2e queries carry RQE trees, and the pilot
-//! random workload `seed-862/workload-01-pilot` (sketch-bench PR #226), whose
-//! top-k queries are `topk by (region, service)`.
+//! the `all` workload of sketch-bench's `rqe-optimizer/results/e2e-rate10`,
+//! whose e2e queries carry RQE trees (all but its `rate` queries), and a
+//! pilot random workload, `seed-862/workload-01-pilot`, whose top-k queries
+//! are `topk by (region, service)`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -37,6 +37,15 @@ fn convert_with_plans(
     plans: &str,
     language: QueryLanguage,
 ) -> anyhow::Result<PlannerOutput> {
+    convert_filtered(table, plans, language, false)
+}
+
+fn convert_filtered(
+    table: &Path,
+    plans: &str,
+    language: QueryLanguage,
+    expr_only: bool,
+) -> anyhow::Result<PlannerOutput> {
     let selector = PlanSelector {
         method: "asap",
         weights: "cpu",
@@ -48,6 +57,7 @@ fn convert_with_plans(
         &selector,
         language,
         SCRAPE_INTERVAL_MS,
+        expr_only,
     )
 }
 
@@ -164,6 +174,61 @@ fn trees_add_only_rqe_configs() {
             .is_some());
         assert_eq!(with_inference, without_inference, "{language:?}");
     }
+}
+
+/// The `rate` queries have no tree: `--expr-only` deploys nothing for them
+/// (no aggregation reads `data_total`) and leaves the tree queries' configs
+/// as they are.
+#[test]
+fn expr_only_skips_the_rate_queries() {
+    let rate_queries: Vec<String> = table_queries()
+        .iter()
+        .filter(|q| q.get("expr").is_none())
+        .map(|q| q["promql"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!rate_queries.is_empty());
+    assert!(rate_queries.iter().all(|q| q.starts_with("rate(")));
+    let reads_rate_metric = |output: &PlannerOutput| {
+        output
+            .to_streaming_config(QueryLanguage::promql)
+            .unwrap()
+            .aggregation_configs
+            .values()
+            .any(|a| a.metric == "data_total")
+    };
+
+    let all = convert(&table_path(), QueryLanguage::promql);
+    assert!(reads_rate_metric(&all));
+
+    let plans = "synthetic-templatesall-shared1.plans.json.gz";
+    let expr_only = convert_filtered(&table_path(), plans, QueryLanguage::promql, true).unwrap();
+    assert!(!reads_rate_metric(&expr_only));
+    let inference = expr_only
+        .to_inference_config(QueryLanguage::promql)
+        .unwrap();
+    assert!(inference
+        .query_configs
+        .iter()
+        .all(|c| !rate_queries.contains(&c.query)));
+    assert_eq!(
+        inference.rqe_configs.len(),
+        all.to_inference_config(QueryLanguage::promql)
+            .unwrap()
+            .rqe_configs
+            .len()
+    );
+    assert_eq!(
+        inference.query_configs.len() + rate_queries.len(),
+        all.inference_query_count()
+    );
+
+    // The SQL queries all have trees: nothing changes.
+    let sql_all = convert(&table_path(), QueryLanguage::sql);
+    let sql_expr_only = convert_filtered(&table_path(), plans, QueryLanguage::sql, true).unwrap();
+    assert_eq!(
+        sql_expr_only.to_streaming_yaml_string().unwrap(),
+        sql_all.to_streaming_yaml_string().unwrap()
+    );
 }
 
 const PILOT_PLANS: &str = "random-seed862-workload01-pilot.plans.json.gz";
