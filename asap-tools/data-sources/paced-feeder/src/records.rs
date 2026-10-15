@@ -74,9 +74,17 @@ struct FieldSpec {
     zipf: Option<f64>,
     keys: Option<u64>,
     burst: Option<BurstSpec>,
+    rotating_pool: Option<RotatingPoolSpec>,
     pareto: Option<f64>,
     scaled_by: Option<String>,
     anomaly: Option<AnomalySpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RotatingPoolSpec {
+    universe_keys: u64,
+    keys_per_series: u64,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +177,10 @@ enum Field {
         zipf: Zipf,
         keys: u64,
     },
+    RotatingPool {
+        universe_keys: u64,
+        keys_per_series: u64,
+    },
     Pareto {
         shape: f64,
         /// The `scaled_by` label and each of its values' factor.
@@ -190,6 +202,8 @@ pub struct RecordMetric {
     /// Value field names, in name order.
     pub fields: Vec<String>,
     field_kinds: Vec<Field>,
+    round_robin_series: bool,
+    series_count: u64,
     pub burst: Option<Burst>,
     pub records_per_sec: u64,
     seed: u64,
@@ -258,6 +272,7 @@ impl RecordMetric {
                     zipf: Some(theta),
                     keys: Some(keys),
                     burst: field_burst,
+                    rotating_pool: None,
                     pareto: None,
                     scaled_by: None,
                     anomaly: None,
@@ -301,6 +316,33 @@ impl RecordMetric {
                     zipf: None,
                     keys: None,
                     burst: None,
+                    rotating_pool: Some(pool),
+                    pareto: None,
+                    scaled_by: None,
+                    anomaly: None,
+                } => {
+                    ensure!(
+                        pool.universe_keys > 0 && pool.keys_per_series > 0,
+                        "value `{field}`: rotating pool sizes must be positive"
+                    );
+                    ensure!(
+                        pool.keys_per_series <= pool.universe_keys,
+                        "value `{field}`: rotating pool must fit in its universe"
+                    );
+                    ensure!(
+                        pool.universe_keys <= MAX_KEY,
+                        "value `{field}`: rotating pool keys must be ≤ 2^53"
+                    );
+                    Field::RotatingPool {
+                        universe_keys: pool.universe_keys,
+                        keys_per_series: pool.keys_per_series,
+                    }
+                }
+                FieldSpec {
+                    zipf: None,
+                    keys: None,
+                    burst: None,
+                    rotating_pool: None,
                     pareto: Some(shape),
                     scaled_by,
                     anomaly,
@@ -346,6 +388,19 @@ impl RecordMetric {
         }
         let records_per_sec = records_per_sec.unwrap_or(spec.records_per_sec);
         ensure!(records_per_sec > 0, "records per second must be positive");
+        let series_count = labels
+            .iter()
+            .try_fold(1u64, |count, label| count.checked_mul(label.cardinality))
+            .context("too many record label combinations")?;
+        let round_robin_series = field_kinds
+            .iter()
+            .any(|field| matches!(field, Field::RotatingPool { .. }));
+        if round_robin_series {
+            ensure!(
+                records_per_sec % series_count == 0,
+                "records per second must be a multiple of record label combinations for rotating pools"
+            );
+        }
         Ok(Self {
             name: name.to_string(),
             labels,
@@ -354,6 +409,8 @@ impl RecordMetric {
             label_zipfs,
             fields,
             field_kinds,
+            round_robin_series,
+            series_count,
             burst,
             records_per_sec,
             seed: splitmix64(seed ^ fnv1a(name)),
@@ -369,15 +426,33 @@ impl RecordMetric {
             let stream = num_labels + self.fields.len() as u64;
             u(stream) <= b.share
         });
-        for (i, zipf) in self.label_zipfs.iter().enumerate() {
-            let child = match burst {
-                Some(b) if b.label == i => b.value,
-                _ => zipf.draw(u(i as u64)),
-            };
-            labels[i] = match self.parents[i] {
-                None => child,
-                Some(p) => u64::from(labels[p]) * self.labels[i].cardinality + child,
-            } as u32;
+        if self.round_robin_series {
+            let mut series = index % self.series_count;
+            let mut children = vec![0u64; self.labels.len()];
+            for i in (0..self.labels.len()).rev() {
+                let cardinality = self.labels[i].cardinality;
+                children[i] = series % cardinality;
+                series /= cardinality;
+            }
+            for i in 0..self.labels.len() {
+                let cardinality = self.labels[i].cardinality;
+                let child = children[i];
+                labels[i] = match self.parents[i] {
+                    None => child,
+                    Some(p) => u64::from(labels[p]) * cardinality + child,
+                } as u32;
+            }
+        } else {
+            for (i, zipf) in self.label_zipfs.iter().enumerate() {
+                let child = match burst {
+                    Some(b) if b.label == i => b.value,
+                    _ => zipf.draw(u(i as u64)),
+                };
+                labels[i] = match self.parents[i] {
+                    None => child,
+                    Some(p) => u64::from(labels[p]) * self.labels[i].cardinality + child,
+                } as u32;
+            }
         }
         for (j, kind) in self.field_kinds.iter().enumerate() {
             let u = u(num_labels + j as u64);
@@ -389,6 +464,15 @@ impl RecordMetric {
                     }
                     _ => zipf.draw(u) as f64,
                 },
+                Field::RotatingPool {
+                    universe_keys,
+                    keys_per_series,
+                } => {
+                    let series = index % self.series_count;
+                    let pool_start = splitmix64(self.seed ^ series) % universe_keys;
+                    let rotation = (index / self.series_count) % keys_per_series;
+                    ((pool_start + rotation) % universe_keys) as f64
+                }
                 Field::Pareto {
                     shape,
                     scaled_by,
@@ -635,6 +719,38 @@ pub mod tests {
 
     fn metric(name: &str, spec: &Value) -> RecordMetric {
         RecordMetric::from_table(name, spec, None, 42).unwrap()
+    }
+
+    #[test]
+    fn rotating_pool_cycles_each_leafs_overlapping_key_pool() {
+        let spec = json!({
+            "type": "records", "records_per_sec": 12,
+            "labels": [
+                {"name": "region", "cardinality": 2, "skew": 0.0},
+                {"name": "leaf", "cardinality": 3, "child_of": "region", "skew": 0.0}
+            ],
+            "values": {"user_id": {"rotating_pool": {
+                "universe_keys": 10, "keys_per_series": 4
+            }}}
+        });
+        let metric = metric("events", &spec);
+        let rows = records(&metric, 24);
+
+        for (index, (labels, _)) in rows.iter().enumerate() {
+            let series = index as u64 % 6;
+            assert_eq!(labels[0], (series / 3) as u32);
+            assert_eq!(labels[1], series as u32);
+        }
+        for series in 0..6 {
+            let values: HashSet<u64> = rows
+                .iter()
+                .skip(series)
+                .step_by(6)
+                .map(|(_, values)| values[0] as u64)
+                .collect();
+            assert_eq!(values.len(), 4);
+            assert!(values.iter().all(|&value| value < 10));
+        }
     }
 
     /// Records `0..n` as (label value indices, values).

@@ -10,7 +10,7 @@ use promql_utilities::query_logics::enums::Statistic;
 
 use crate::config::input::TableDefinition;
 use crate::planner::patterns::build_patterns;
-use crate::planner::promql::{parse_binary_arms, BinaryArm};
+use crate::planner::promql::{parse_binary_arms, strip_parens, BinaryArm};
 use crate::planner::sql::{parse_sql_query, sql_data_range_ms, sql_statistics};
 
 use super::error::OptimizerError;
@@ -261,21 +261,39 @@ pub(crate) fn decompose_to_leaves(query: &str) -> Vec<String> {
     leaves
 }
 
-/// Whether any leaf of `query` is an `avg` that `decompose_to_leaves` rewrites.
+/// Whether `query` has an `avg` the engine can't answer: one that
+/// `decompose_to_leaves` splits into sum and count, or a per-series avg in a
+/// binary arm, which runs without its query-time avg.
 pub(crate) fn contains_avg(query: &str) -> bool {
     match parse_binary_arms(query) {
-        Some((lhs, rhs)) => [lhs, rhs]
-            .into_iter()
-            .any(|arm| matches!(arm, BinaryArm::Query(q) if contains_avg(&q))),
+        Some((lhs, rhs)) => [lhs, rhs].into_iter().any(|arm| {
+            matches!(arm, BinaryArm::Query(q) if contains_avg(&q) || per_series_avg(&q).is_some())
+        }),
         None => rewrite_avg(query).len() > 1,
+    }
+}
+
+/// `avg by (l) (f(x[w]))` of a per-series function `f`: the leaf
+/// `f(x[w])`, and the avg that averages its series at query time.
+pub(crate) fn per_series_avg(query: &str) -> Option<(String, AggregateExpr)> {
+    match promql_parser::parser::parse(query).ok()? {
+        Expr::Aggregate(agg) if agg.op.id() == token::T_AVG => match strip_parens(&agg.expr) {
+            call @ Expr::Call(_) => Some((call.to_string(), agg)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
 /// Rewrite an `avg` leaf into the sum and count leaves it is computed from:
 /// `avg by (l) (x)` → `sum by (l) (x)`, `count by (l) (x)`, and
 /// `avg_over_time(x[5m])` → `sum_over_time(x[5m])`, `count_over_time(x[5m])`.
-/// Any other query is returned unchanged.
+/// A per-series avg is its leaf (see `per_series_avg`). Any other query is
+/// returned unchanged.
 fn rewrite_avg(query: &str) -> Vec<String> {
+    if let Some((leaf, _)) = per_series_avg(query) {
+        return vec![leaf];
+    }
     match promql_parser::parser::parse(query) {
         Ok(Expr::Aggregate(agg)) if agg.op.id() == token::T_AVG => [token::T_SUM, token::T_COUNT]
             .into_iter()
@@ -606,6 +624,23 @@ mod tests {
         let items = extract_aqes(&rqes, &empty_schema(), 15_000).unwrap();
         assert_eq!(items.len(), 3);
         assert!(items.iter().all(|i| i.requirements.statistics.len() == 1));
+    }
+
+    /// An avg of per-series quantiles averages the quantiles at query time;
+    /// sum and count items would ask for sums of quantiles.
+    #[test]
+    fn per_series_avg_is_its_per_series_leaf() {
+        let query = "avg by (job) (quantile_over_time(0.99, metric[5m]))";
+        assert_eq!(
+            decompose_to_leaves(query),
+            vec!["quantile_over_time(0.99, metric[5m])"]
+        );
+        let items = extract_aqes(&[rqe(query, 60_000)], &empty_schema(), 15_000).unwrap();
+        let [item] = items.as_slice() else {
+            panic!("{items:?}");
+        };
+        assert_eq!(item.requirements.statistics, vec![Statistic::Quantile]);
+        assert!(item.requirements.grouping_labels.labels.is_empty());
     }
 
     #[test]

@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 
 use asap_types::enums::{CleanupPolicy, WindowType};
+use asap_types::query_config::{
+    QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeAggregationParameter,
+    QueryTimeGrouping, QueryTimeGroupingMode,
+};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
 use sql_utilities::ast_matching::sqlhelper::{
@@ -9,6 +13,7 @@ use sql_utilities::ast_matching::sqlhelper::{
 use sql_utilities::ast_matching::sqlpattern_matcher::SQLPatternMatcher;
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;
 use sql_utilities::ast_matching::SQLSchema;
+use sqlparser::ast::{SetExpr, Statement, TableFactor};
 use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser as SqlParser;
 
@@ -16,6 +21,7 @@ use crate::config::input::{SketchParameterOverrides, TableDefinition, WindowingC
 use crate::error::ControllerError;
 use crate::planner::agg_config::{build_agg_configs_for_statistics, IntermediateAggConfig};
 use crate::planner::cleanup::get_sql_cleanup_param;
+use crate::planner::promql::NestedAggregationPlan;
 use crate::planner::sketch::build_sketch_parameters;
 use crate::planner::window::IntermediateWindowConfig;
 use crate::StreamingEngine;
@@ -157,6 +163,138 @@ impl SQLSingleQueryProcessor {
 
         Ok((configs, cleanup_param))
     }
+
+    /// For a two-layer query, its inner layer (planned like any single-level
+    /// query) and the outer layer as a query-time aggregation over it. `None`
+    /// for a single-level query.
+    pub fn nested_aggregation_plan(
+        &self,
+        query_evaluation_time: f64,
+    ) -> Result<Option<NestedAggregationPlan>, ControllerError> {
+        let schema = build_sql_schema(&self.table_definitions);
+        let (stmts, qdata) =
+            parse_sql_statements(&self.query_string, &schema, query_evaluation_time)?;
+        if qdata.subquery.is_none() {
+            return Ok(None);
+        }
+
+        let inner_pattern = sql_pattern_matcher(schema, self.data_ingestion_interval_ms)
+            .nested_query_to_pattern(&qdata);
+        if !inner_pattern.is_valid() {
+            return Err(ControllerError::SqlParse(
+                inner_pattern.msg.unwrap_or_default(),
+            ));
+        }
+
+        let planned_subquery = inner_query_sql(&stmts).ok_or_else(|| {
+            ControllerError::SqlParse(format!(
+                "nested query has no subquery in FROM: {}",
+                self.query_string
+            ))
+        })?;
+        Ok(Some(NestedAggregationPlan {
+            planned_subquery,
+            query_time_aggregations: vec![sql_query_time_aggregation(&qdata)?],
+        }))
+    }
+
+    /// A processor for `query` with this one's settings.
+    pub fn make_subquery_processor(&self, query: String) -> Self {
+        Self::new(
+            query,
+            self.t_repeat_ms,
+            self.data_ingestion_interval_ms,
+            self.table_definitions.clone(),
+            self.streaming_engine,
+            self.sketch_parameters.clone(),
+            self.cleanup_policy,
+            self.windowing.clone(),
+        )
+    }
+}
+
+/// Parses `query` into its statements and pattern-parser data.
+fn parse_sql_statements(
+    query: &str,
+    schema: &SQLSchema,
+    query_evaluation_time: f64,
+) -> Result<(Vec<Statement>, SQLQueryData), ControllerError> {
+    let stmts = SqlParser::parse_sql(&ClickHouseDialect {}, query)
+        .map_err(|e| ControllerError::SqlParse(e.to_string()))?;
+    let qdata = SQLPatternParser::new(schema, query_evaluation_time)
+        .parse_query(&stmts)
+        .ok_or_else(|| ControllerError::SqlParse(format!("Failed to parse SQL query: {query}")))?;
+    Ok((stmts, qdata))
+}
+
+/// SQLPatternMatcher.scrape_interval is in seconds (SQL timestamps are seconds-based).
+fn sql_pattern_matcher(schema: SQLSchema, data_ingestion_interval_ms: u64) -> SQLPatternMatcher {
+    SQLPatternMatcher::new(schema, data_ingestion_interval_ms as f64 / 1000.0)
+}
+
+/// The SQL text of the subquery in the outer layer's FROM.
+fn inner_query_sql(stmts: &[Statement]) -> Option<String> {
+    let [Statement::Query(query)] = stmts else {
+        return None;
+    };
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return None;
+    };
+    match &select.from.first()?.relation {
+        TableFactor::Derived { subquery, .. } => Some(subquery.to_string()),
+        _ => None,
+    }
+}
+
+/// The query-time aggregation an outer SQL layer applies to its inner
+/// layer's rows: its aggregate, grouped by its GROUP BY (all rows without one).
+fn sql_query_time_aggregation(
+    outer: &SQLQueryData,
+) -> Result<QueryTimeAggregation, ControllerError> {
+    let info = &outer.aggregation_info;
+    let operator = QueryTimeAggregationOperator::from_name(info.get_name()).ok_or_else(|| {
+        ControllerError::SqlParse(format!(
+            "unsupported outer aggregation: {}",
+            info.get_name()
+        ))
+    })?;
+    let parameter = match operator {
+        QueryTimeAggregationOperator::Quantile => {
+            let phi = info
+                .get_args()
+                .first()
+                .and_then(|arg| arg.parse::<f64>().ok())
+                .ok_or_else(|| {
+                    ControllerError::SqlParse(format!(
+                        "QUANTILE needs a numeric level, got {:?}",
+                        info.get_args()
+                    ))
+                })?;
+            Some(QueryTimeAggregationParameter::Float(phi))
+        }
+        _ => None,
+    };
+    let grouping = if outer.labels.is_empty() {
+        QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::All,
+            labels: Vec::new(),
+        }
+    } else {
+        let mut labels: Vec<String> = outer.labels.iter().cloned().collect();
+        labels.sort();
+        QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::By,
+            labels,
+        }
+    };
+
+    let aggregation = QueryTimeAggregation {
+        operator,
+        grouping,
+        parameter,
+    };
+    aggregation.validate().map_err(ControllerError::SqlParse)?;
+    Ok(aggregation)
 }
 
 /// Parses `query` and matches it against `tables`: a single-level query's
@@ -168,15 +306,9 @@ pub(crate) fn parse_sql_query(
     query_evaluation_time: f64,
 ) -> Result<(SQLQueryData, Option<SqlTopk>), ControllerError> {
     let schema = build_sql_schema(tables);
-    let stmts = SqlParser::parse_sql(&ClickHouseDialect {}, query)
-        .map_err(|e| ControllerError::SqlParse(e.to_string()))?;
-    let qdata = SQLPatternParser::new(&schema, query_evaluation_time)
-        .parse_query(&stmts)
-        .ok_or_else(|| ControllerError::SqlParse(format!("Failed to parse SQL query: {query}")))?;
-
-    // SQLPatternMatcher.scrape_interval is in seconds (SQL timestamps are seconds-based).
-    let sql_query = SQLPatternMatcher::new(schema, data_ingestion_interval_ms as f64 / 1000.0)
-        .query_info_to_pattern(&qdata);
+    let (_, qdata) = parse_sql_statements(query, &schema, query_evaluation_time)?;
+    let sql_query =
+        sql_pattern_matcher(schema, data_ingestion_interval_ms).query_info_to_pattern(&qdata);
     if !sql_query.is_valid() {
         return Err(ControllerError::SqlParse(sql_query.msg.unwrap_or_default()));
     }

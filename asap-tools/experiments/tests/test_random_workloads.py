@@ -44,6 +44,20 @@ class GenerateWorkloadsTest(unittest.TestCase):
             else:
                 self.assertIsNone(query["sql"])
                 self.assertIn(" by (", query["promql"])
+                if query["support"] == "common-promql":
+                    self.assertIsNotNone(query["clickhouse_sql"])
+
+    def test_grouped_quantiles_use_average_of_per_series_quantiles(self):
+        # The SQL each Query renders is checked against Prometheus in
+        # test_sketch_bench_workloads.
+        for query in workloads.generate_workloads(seed=4)[0]["queries"]:
+            rqe = query["rqes"][0]
+            if rqe["capability"] == "quantile":
+                self.assertIn("avg by", query["promql"])
+                q = workloads.rqe_query(rqe)
+                self.assertEqual((q.series_fn, q.agg), ("quantile", "avg"))
+                self.assertEqual(q.grouping, tuple(query["grouping"]))
+                self.assertEqual(q.window_secs, 100)
 
     def test_visible_query_outputs_stay_bounded(self):
         for workload in workloads.generate_workloads(seed=4):
@@ -52,6 +66,51 @@ class GenerateWorkloadsTest(unittest.TestCase):
                 expected = query["output_groups"] * rqe.get("k", 1)
                 self.assertEqual(query["output_series_upper_bound"], expected)
                 self.assertLessEqual(query["output_series_upper_bound"], 200)
+
+    def test_quantiles_cover_a_thousand_samples_per_series(self):
+        # sketch-bench's accuracy curves start at N = 1,000; below it no
+        # saved plan can serve the quantile.
+        for workload in workloads.generate_workloads(seed=4):
+            for query in workload["queries"]:
+                if query["rqes"][0]["capability"] == "quantile":
+                    samples = (
+                        query["lookback_ms"]
+                        // workload["data_facts"]["scrape_interval_ms"]
+                    )
+                    self.assertEqual(samples, 1_000)
+                    self.assertIn("data[100s]", query["promql"])
+                    self.assertEqual(query["interval_ms"], workloads.SECOND_MS)
+
+    def test_variants_pair_with_the_base_query_for_query(self):
+        # A variant stretches one dimension and keeps every random choice, so
+        # its results compare with the base's query for query.
+        base = workloads.generate_workloads(seed=862)
+        for variant, scale, series in (("long", 3, 10_000), ("x5", 1, 50_000)):
+            for b, v in zip(
+                base, workloads.generate_workloads(seed=862, variant=variant)
+            ):
+                with self.subTest(variant=variant, workload=b["id"]):
+                    self.assertEqual(v["variant"], variant)
+                    self.assertEqual(v["data_facts"]["series"]["leaf_count"], series)
+                    for bq, vq in zip(b["queries"], v["queries"]):
+                        self.assertEqual(vq["lookback_ms"], scale * bq["lookback_ms"])
+                        bq_rqe, vq_rqe = bq["rqes"][0], vq["rqes"][0]
+                        for key in ("capability", "grouping_labels", "interval_ms"):
+                            self.assertEqual(vq_rqe[key], bq_rqe[key])
+                        self.assertEqual(vq_rqe.get("phi"), bq_rqe.get("phi"))
+                        self.assertEqual(vq_rqe.get("k"), bq_rqe.get("k"))
+        self.assertNotIn("variant", base[0])
+
+    def test_manifest_declares_deterministic_feeder_facts(self):
+        facts = workloads.generate_workloads(seed=4)[0]["data_facts"]
+
+        self.assertEqual(facts["scrape_interval_ms"], 100)
+        self.assertEqual(facts["series"]["leaf_count"], 10_000)
+        self.assertEqual(facts["series"]["ranking"]["exponent"], 1.1)
+        self.assertEqual(facts["metrics"]["data"]["pareto_shape"], 2.0)
+        self.assertEqual(facts["metrics"]["data_total"]["resets"], "none")
+        self.assertEqual(facts["events"]["user_id_universe_size"], 10_000)
+        self.assertEqual(facts["events"]["user_ids_per_leaf"], 1_000)
 
     def test_workloads_do_not_repeat_an_atomic_rqe(self):
         for workload in workloads.generate_workloads(seed=1):

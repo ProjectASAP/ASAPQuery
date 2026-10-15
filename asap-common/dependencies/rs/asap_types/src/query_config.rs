@@ -22,6 +22,23 @@ pub enum QueryTimeAggregationOperator {
     Topk,
 }
 
+impl QueryTimeAggregationOperator {
+    /// The operator for an aggregation function name in any case, e.g.
+    /// PromQL's `sum` or SQL's `SUM`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "sum" => Some(Self::Sum),
+            "count" => Some(Self::Count),
+            "avg" => Some(Self::Avg),
+            "min" => Some(Self::Min),
+            "max" => Some(Self::Max),
+            "quantile" => Some(Self::Quantile),
+            "topk" => Some(Self::Topk),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryTimeGroupingMode {
@@ -191,6 +208,31 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn operator_names_parse_case_insensitively() {
+        assert!(matches!(
+            QueryTimeAggregationOperator::from_name("quantile"),
+            Some(QueryTimeAggregationOperator::Quantile)
+        ));
+        assert!(matches!(
+            QueryTimeAggregationOperator::from_name("QUANTILE"),
+            Some(QueryTimeAggregationOperator::Quantile)
+        ));
+        assert!(QueryTimeAggregationOperator::from_name("stddev").is_none());
+    }
+
+    /// The SQL matcher accepts these outer aggregations on its own list; the
+    /// planner turns them into operators, so every one must map.
+    #[test]
+    fn every_sql_outer_aggregation_has_an_operator() {
+        for name in sql_utilities::ast_matching::QUERY_TIME_AGGREGATIONS {
+            assert!(
+                QueryTimeAggregationOperator::from_name(name).is_some(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

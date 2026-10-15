@@ -1,0 +1,445 @@
+{
+ "inputs": {
+  "workload-05.json": "42bab8d17a1255bb1102aed686a9f05a600aac5fac79609e623545b535ac5a23"
+ },
+ "plan": "ProjectASAP/ASAPQuery#879",
+ "schema_version": 1,
+ "sketch_bench_revision": "f885d7e9a99dd435683a7dcd66516a36b3ac02ab",
+ "workloads": [
+  {
+   "dataset": "random/seed=862/workload-05",
+   "e2e": {
+    "metrics": {
+     "data": {
+      "labels": [
+       {
+        "cardinality": 4,
+        "name": "region"
+       },
+       {
+        "cardinality": 5,
+        "child_of": "region",
+        "name": "service"
+       },
+       {
+        "cardinality": 10,
+        "child_of": "service",
+        "name": "job"
+       },
+       {
+        "cardinality": 50,
+        "child_of": "job",
+        "name": "label_0"
+       }
+      ],
+      "samples_per_sec_per_series": 10,
+      "type": "gauge",
+      "values": {
+       "dist": {
+        "pareto": 2.0
+       },
+       "value": {
+        "keys": 10000,
+        "zipf": 1.1
+       }
+      }
+     }
+    },
+    "queries": [
+     {
+      "interval_secs": 10,
+      "promql": "sum by (region, service, job) (sum_over_time(data[5m]))",
+      "rqes": [
+       "random/seed=862/workload-05/q01-sum-fine/keys/300s"
+      ]
+     },
+     {
+      "interval_secs": 10,
+      "promql": "sum by (region, service) (sum_over_time(data[5m]))",
+      "rqes": [
+       "random/seed=862/workload-05/q02-sum-coarse/keys/300s"
+      ]
+     },
+     {
+      "interval_secs": 1,
+      "promql": "avg by (region, service) (quantile_over_time(0.99, data[100s]))",
+      "rqes": [
+       "random/seed=862/workload-05/q03-quantile/values/100s"
+      ]
+     },
+     {
+      "interval_secs": 1,
+      "promql": "avg by (region, service, job) (quantile_over_time(0.50, data[100s]))",
+      "rqes": [
+       "random/seed=862/workload-05/q04-quantile/values/100s"
+      ]
+     },
+     {
+      "interval_secs": 1,
+      "promql": "avg by (region) (quantile_over_time(0.90, data[100s]))",
+      "rqes": [
+       "random/seed=862/workload-05/q05-quantile/values/100s"
+      ]
+     },
+     {
+      "interval_secs": 1,
+      "promql": "topk by (region, service) (8, sum_over_time(data[1m]))",
+      "rqes": [
+       "random/seed=862/workload-05/topk8_q06-topk-sum/keys/60s"
+      ]
+     },
+     {
+      "interval_secs": 60,
+      "promql": "topk by (region) (4, sum_over_time(data[20m]))",
+      "rqes": [
+       "random/seed=862/workload-05/topk4_q07-topk-sum/keys/1200s"
+      ]
+     }
+    ]
+   },
+   "rqes": [
+    {
+     "assumptions": [],
+     "capability": "sum",
+     "covered_groups": 200,
+     "covered_max_N": 150000.0,
+     "covered_min_N": 150000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "exact-sum",
+       "grid_K": null,
+       "grid_param": null,
+       "sketch": "exact-sum",
+       "target": 0.0
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "job"
+     ],
+     "id": "random/seed=862/workload-05/q01-sum-fine/keys/300s",
+     "instant": false,
+     "interval_secs": 10,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 200,
+      "keys_per_window": null
+     },
+     "lookback_secs": 300.0,
+     "max_N": 150000.0,
+     "max_covered_share": 0.005,
+     "metric": "data",
+     "min_N": 150000.0,
+     "min_covered_share": 0.005,
+     "queries_per_instance": 1,
+     "query_id": "q01-sum-fine",
+     "range": "300s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [],
+     "capability": "sum",
+     "covered_groups": 20,
+     "covered_max_N": 1500000.0,
+     "covered_min_N": 1500000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "exact-sum",
+       "grid_K": null,
+       "grid_param": null,
+       "sketch": "exact-sum",
+       "target": 0.0
+      }
+     ],
+     "grouping": [
+      "region",
+      "service"
+     ],
+     "id": "random/seed=862/workload-05/q02-sum-coarse/keys/300s",
+     "instant": false,
+     "interval_secs": 10,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 20,
+      "keys_per_window": null
+     },
+     "lookback_secs": 300.0,
+     "max_N": 1500000.0,
+     "max_covered_share": 0.05,
+     "metric": "data",
+     "min_N": 1500000.0,
+     "min_covered_share": 0.05,
+     "queries_per_instance": 1,
+     "query_id": "q02-sum-coarse",
+     "range": "300s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 10000,
+     "covered_max_N": 1000.0,
+     "covered_min_N": 1000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "job",
+      "label_0"
+     ],
+     "id": "random/seed=862/workload-05/q03-quantile/values/100s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 10000,
+      "keys_per_window": null
+     },
+     "lookback_secs": 100.0,
+     "max_N": 1000.0,
+     "max_covered_share": 0.0001,
+     "metric": "data",
+     "min_N": 1000.0,
+     "min_covered_share": 0.0001,
+     "queries_per_instance": 1,
+     "query_id": "q03-quantile",
+     "range": "100s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 10000,
+     "covered_max_N": 1000.0,
+     "covered_min_N": 1000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "job",
+      "label_0"
+     ],
+     "id": "random/seed=862/workload-05/q04-quantile/values/100s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 10000,
+      "keys_per_window": null
+     },
+     "lookback_secs": 100.0,
+     "max_N": 1000.0,
+     "max_covered_share": 0.0001,
+     "metric": "data",
+     "min_N": 1000.0,
+     "min_covered_share": 0.0001,
+     "queries_per_instance": 1,
+     "query_id": "q04-quantile",
+     "range": "100s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 10000,
+     "covered_max_N": 1000.0,
+     "covered_min_N": 1000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "job",
+      "label_0"
+     ],
+     "id": "random/seed=862/workload-05/q05-quantile/values/100s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 10000,
+      "keys_per_window": null
+     },
+     "lookback_secs": 100.0,
+     "max_N": 1000.0,
+     "max_covered_share": 0.0001,
+     "metric": "data",
+     "min_N": 1000.0,
+     "min_covered_share": 0.0001,
+     "queries_per_instance": 1,
+     "query_id": "q05-quantile",
+     "range": "100s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [
+      "500 keys per heap read at the curves' 1000"
+     ],
+     "capability": "topk",
+     "covered_groups": 20,
+     "covered_max_N": 300000.0,
+     "covered_min_N": 300000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "topk",
+       "grid_K": 1000,
+       "grid_param": 1.1,
+       "sketch": "cms-heap-topk-fastpath-vector2d",
+       "target": 0.95
+      }
+     ],
+     "grouping": [
+      "region",
+      "service"
+     ],
+     "id": "random/seed=862/workload-05/topk8_q06-topk-sum/keys/60s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 20,
+      "keys_per_window": 1000
+     },
+     "lookback_secs": 60.0,
+     "max_N": 300000.0,
+     "max_covered_share": 0.05,
+     "metric": "data",
+     "min_N": 300000.0,
+     "min_covered_share": 0.05,
+     "queries_per_instance": 1,
+     "query_id": "topk8_q06-topk-sum",
+     "range": "60s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [],
+     "capability": "topk",
+     "covered_groups": 4,
+     "covered_max_N": 30000000.0,
+     "covered_min_N": 30000000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-05",
+     "families": [
+      {
+       "family": "topk",
+       "grid_K": 2500,
+       "grid_param": 1.1,
+       "sketch": "cms-heap-topk-fastpath-vector2d",
+       "target": 0.95
+      }
+     ],
+     "grouping": [
+      "region"
+     ],
+     "id": "random/seed=862/workload-05/topk4_q07-topk-sum/keys/1200s",
+     "instant": false,
+     "interval_secs": 60,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 4,
+      "keys_per_window": 2500
+     },
+     "lookback_secs": 1200.0,
+     "max_N": 30000000.0,
+     "max_covered_share": 0.25,
+     "metric": "data",
+     "min_N": 30000000.0,
+     "min_covered_share": 0.25,
+     "queries_per_instance": 1,
+     "query_id": "topk4_q07-topk-sum",
+     "range": "1200s",
+     "stream": "data/value"
+    }
+   ],
+   "schemas": {
+    "data": {
+     "labels": [
+      {
+       "cardinality": 4,
+       "name": "region"
+      },
+      {
+       "cardinality": 5,
+       "child_of": "region",
+       "name": "service"
+      },
+      {
+       "cardinality": 10,
+       "child_of": "service",
+       "name": "job"
+      },
+      {
+       "cardinality": 50,
+       "child_of": "job",
+       "name": "label_0"
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

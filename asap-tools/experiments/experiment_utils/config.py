@@ -558,11 +558,17 @@ def get_prometheus_data_ingestion_interval_ms(prometheus_config):
         raise ValueError(f"Invalid scrape interval string: {s}")
 
 
+# The client can send a query seconds after its scheduled time when slow
+# queries from other groups fire alongside it.
+CLIENT_SEND_LAG_SLACK_MS = 10_000
+
+
 def get_retention_slack_ms(query_groups, data_ingestion_interval_ms: int) -> int:
     """How far in the past the query client evaluates (the largest
     client_options.query_time_offset, in seconds), plus one ingestion interval
-    for windows still closing. The query engine keeps this much extra
-    CircularBuffer history so delayed queries find their windows."""
+    for windows still closing, plus CLIENT_SEND_LAG_SLACK_MS for late sends.
+    The query engine keeps this much extra CircularBuffer history so delayed
+    queries find their windows."""
     max_offset_s = max(
         (
             (group.get("client_options") or {}).get("query_time_offset", 0)
@@ -570,7 +576,9 @@ def get_retention_slack_ms(query_groups, data_ingestion_interval_ms: int) -> int
         ),
         default=0,
     )
-    return int(max_offset_s * 1000) + data_ingestion_interval_ms
+    return (
+        int(max_offset_s * 1000) + data_ingestion_interval_ms + CLIENT_SEND_LAG_SLACK_MS
+    )
 
 
 PLANNER_OUTPUT_FILES = ("streaming_config.yaml", "inference_config.yaml")

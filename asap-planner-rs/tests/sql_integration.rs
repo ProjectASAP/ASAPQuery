@@ -1215,3 +1215,108 @@ fn spatial_count_limit_zero_is_not_topk() {
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketchWithHeap"));
 }
+
+// ── two-layer nested aggregation ──────────────────────────────────────────────
+
+const NESTED_INNER: &str = "SELECT datacenter, hostname, SUM(cpu_usage) AS v FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter, hostname";
+
+/// The single inference query entry the planner wrote for `query`.
+fn planned_query_entry(query: &str) -> serde_yaml::Value {
+    let out = SQLController::from_yaml(&one_query_config(query, 300_000), sql_opts())
+        .unwrap()
+        .generate()
+        .unwrap();
+    let inference: serde_yaml::Value =
+        serde_yaml::from_str(&out.to_inference_yaml_string().unwrap()).unwrap();
+    let queries = inference["queries"].as_sequence().unwrap();
+    assert_eq!(queries.len(), 1);
+    queries[0].clone()
+}
+
+#[test]
+fn nested_query_plans_its_inner_layer_and_emits_the_outer_as_a_query_time_stage() {
+    let q = format!("SELECT datacenter, SUM(v) FROM ({NESTED_INNER}) GROUP BY datacenter");
+    let entry = planned_query_entry(&q);
+
+    assert_eq!(entry["query"].as_str(), Some(q.as_str()));
+    assert_eq!(entry["planned_subquery"].as_str(), Some(NESTED_INNER));
+    let stages = entry["query_time_aggregations"].as_sequence().unwrap();
+    assert_eq!(stages.len(), 1);
+    assert_eq!(stages[0]["operator"].as_str(), Some("sum"));
+    assert_eq!(stages[0]["grouping"]["mode"].as_str(), Some("by"));
+    assert_eq!(
+        stages[0]["grouping"]["labels"].as_sequence().unwrap(),
+        &vec![serde_yaml::Value::from("datacenter")]
+    );
+    assert!(stages[0]["parameter"].is_null());
+}
+
+/// The streaming aggregations of a nested query are exactly those of its inner
+/// layer planned on its own.
+#[test]
+fn nested_query_streaming_plan_equals_its_inner_layers() {
+    let nested = format!("SELECT datacenter, MAX(v) FROM ({NESTED_INNER}) GROUP BY datacenter");
+    let plan = |q: &str| {
+        SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
+            .unwrap()
+            .generate()
+            .unwrap()
+            .to_streaming_yaml_string()
+            .unwrap()
+    };
+    assert_eq!(plan(&nested), plan(NESTED_INNER));
+}
+
+#[test]
+fn nested_query_maps_each_outer_aggregation_to_its_operator() {
+    let cases = [
+        ("SUM(v)", "sum"),
+        ("COUNT(v)", "count"),
+        ("AVG(v)", "avg"),
+        ("MIN(v)", "min"),
+        ("MAX(v)", "max"),
+        ("QUANTILE(0.9, v)", "quantile"),
+    ];
+    for (outer, operator) in cases {
+        let q = format!("SELECT datacenter, {outer} FROM ({NESTED_INNER}) GROUP BY datacenter");
+        let entry = planned_query_entry(&q);
+        let stage = &entry["query_time_aggregations"][0];
+        assert_eq!(stage["operator"].as_str(), Some(operator), "{q}");
+        if operator == "quantile" {
+            assert_eq!(stage["parameter"].as_f64(), Some(0.9), "{q}");
+        } else {
+            assert!(stage["parameter"].is_null(), "{q}");
+        }
+    }
+}
+
+#[test]
+fn nested_query_without_outer_group_by_aggregates_all_series() {
+    let entry = planned_query_entry(&format!("SELECT SUM(v) FROM ({NESTED_INNER})"));
+    let stage = &entry["query_time_aggregations"][0];
+    assert_eq!(stage["grouping"]["mode"].as_str(), Some("all"));
+    assert!(stage["grouping"]["labels"]
+        .as_sequence()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn flat_query_has_no_query_time_stages() {
+    let entry = planned_query_entry(NESTED_INNER);
+    assert_eq!(entry["planned_subquery"].as_str(), Some(NESTED_INNER));
+    assert!(entry["query_time_aggregations"]
+        .as_sequence()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn invalid_nested_query_returns_sql_parse_error() {
+    // The outer layer groups by a column the inner layer does not output.
+    let q = format!("SELECT region, SUM(v) FROM ({NESTED_INNER}) GROUP BY region");
+    let result = SQLController::from_yaml(&one_query_config(&q, 300_000), sql_opts())
+        .unwrap()
+        .generate();
+    assert!(matches!(result, Err(ControllerError::SqlParse(_))));
+}

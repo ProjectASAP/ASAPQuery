@@ -268,8 +268,9 @@ mod tests {
 
     #[test]
     fn test_spatial_of_temporal_subquery_is_rejected() {
-        // Nested SQL (spatial-of-temporal subquery) is unsupported: the matcher rejects
-        // it with QueryError::NestedQueryUnsupported instead of mis-executing it (#499).
+        // Nested SQL (spatial-of-temporal subquery) planned without query-time
+        // aggregations for its outer layer: the engine rejects it instead of
+        // mis-executing it as the inner layer alone.
         let template = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";
         let (engine, _) = build_sql_engine(template, 1, 10_000, AggregationType::Sum, &["L1"], &[]);
 
@@ -285,8 +286,8 @@ mod tests {
 
     #[test]
     fn nested_order_by_limit_query_is_rejected() {
-        // Nested SQL with an outer ORDER BY + LIMIT is unsupported for the same reason:
-        // the matcher rejects it before topk detection ever runs.
+        // Nested SQL with an outer ORDER BY + LIMIT is unsupported: the matcher
+        // rejects it before topk detection ever runs.
         let template = "SELECT L1, SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) sub GROUP BY L1";
         let (engine, _) = build_sql_engine(template, 1, 10_000, AggregationType::Sum, &["L1"], &[]);
 
