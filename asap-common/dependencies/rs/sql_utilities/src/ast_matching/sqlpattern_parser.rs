@@ -65,8 +65,10 @@ impl SQLPatternParser {
         let order_by_items = self.parse_order_by_items(query)?;
         let limit = self.parse_limit_value(query)?;
 
-        // Convert CTE to subquery if present
-        let query = self.cte_to_subquery(query);
+        if query.with.is_some() {
+            println!("CTEs (WITH) are not supported");
+            return None;
+        }
 
         let mut data = match &query.body.as_ref() {
             SetExpr::Select(select) => self.parse_select(select)?,
@@ -161,41 +163,12 @@ impl SQLPatternParser {
         }
     }
 
-    fn cte_to_subquery(&self, query: &Query) -> Query {
-        let mut query = query.clone();
-
-        if let Some(with) = &query.with {
-            if !with.cte_tables.is_empty() {
-                let cte = &with.cte_tables[0];
-
-                // Create a subquery from the CTE
-                if let Some(new_body) = match &query.body.as_ref() {
-                    SetExpr::Select(select) => {
-                        let mut new_select = select.clone();
-                        new_select.from = vec![TableWithJoins {
-                            relation: TableFactor::Derived {
-                                lateral: false,
-                                subquery: Box::new(*(cte.query).clone()),
-                                alias: None,
-                            },
-                            joins: vec![],
-                        }];
-                        Some(SetExpr::Select(Box::new(*new_select)))
-                    }
-                    _ => None,
-                } {
-                    query.body = Box::new(new_body);
-                    query.with = None;
-                }
-            }
-        }
-
-        query
-    }
-
-    /// SELECT clauses that SQLQueryData cannot represent.
+    /// SELECT clauses that SQLQueryData cannot represent. FROM must be a
+    /// single table or subquery: joins and extra entries would be dropped.
     fn has_unsupported_clauses(select: &Select) -> bool {
-        select.distinct.is_some()
+        select.from.len() != 1
+            || !select.from[0].joins.is_empty()
+            || select.distinct.is_some()
             || select.top.is_some()
             || select.into.is_some()
             || !select.lateral_views.is_empty()
@@ -205,7 +178,10 @@ impl SQLPatternParser {
             || !select.sort_by.is_empty()
             || select.having.is_some()
             || !select.named_window.is_empty()
+            || select.qualify.is_some()
             || select.window_before_qualify
+            || select.connect_by.is_some()
+            || select.value_table_mode.is_some()
     }
 
     fn parse_select(&self, select: &Select) -> Option<SQLQueryData> {
@@ -249,10 +225,13 @@ impl SQLPatternParser {
             let subquery = match &select.from[0].relation {
                 TableFactor::Derived { subquery, .. } => match subquery.body.as_ref() {
                     SetExpr::Select(inner_select) => {
+                        if subquery.with.is_some() {
+                            println!("CTEs (WITH) are not supported");
+                            return None;
+                        }
                         // Query-level clauses of the inner layer have no place
                         // in its SQLQueryData, so they would be dropped.
-                        if subquery.with.is_some()
-                            || subquery.order_by.is_some()
+                        if subquery.order_by.is_some()
                             || subquery.limit_clause.is_some()
                             || subquery.fetch.is_some()
                         {

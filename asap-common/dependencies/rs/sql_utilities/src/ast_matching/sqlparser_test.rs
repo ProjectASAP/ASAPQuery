@@ -1540,6 +1540,59 @@ mod tests {
             format!(
                 "SELECT L1, SUM(m) FROM (SELECT L1, SUM(v) AS m FROM ({NESTED_INNER}) GROUP BY L1) GROUP BY L1"
             ),
+            // Joins and extra FROM entries on the outer layer.
+            format!(
+                "SELECT L1, SUM(v) FROM ({NESTED_INNER}) t JOIN mem_usage m ON t.L1 = m.L1 GROUP BY L1"
+            ),
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER}) t, mem_usage GROUP BY L1"),
+            // A join on the inner layer.
+            "SELECT L1, SUM(v) FROM (SELECT L1, L2, SUM(value) AS v FROM cpu_usage \
+             JOIN mem_usage ON cpu_usage.L1 = mem_usage.L1 \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2) GROUP BY L1"
+                .to_string(),
+            // Inner QUALIFY.
+            "SELECT L1, SUM(v) FROM (SELECT L1, L2, SUM(value) AS v FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2 QUALIFY v > 1) \
+             GROUP BY L1"
+                .to_string(),
+        ];
+        for sql in rejected {
+            assert!(parse_sql_query(&sql).is_none(), "should not parse: {sql}");
+        }
+    }
+
+    /// A CTE would be served from whichever CTE comes first, whatever name
+    /// FROM references, so CTEs are rejected outright.
+    #[test]
+    fn test_ctes_are_rejected() {
+        let rejected = [
+            format!("WITH t AS ({NESTED_INNER}) SELECT L1, SUM(v) FROM t GROUP BY L1"),
+            format!(
+                "WITH a AS ({NESTED_INNER}), b AS (SELECT L1, L2, MAX(value) AS v FROM cpu_usage \
+                 WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2) \
+                 SELECT L1, SUM(v) FROM b GROUP BY L1"
+            ),
+            format!(
+                "SELECT L1, SUM(v) FROM (WITH t AS ({NESTED_INNER}) SELECT * FROM t) GROUP BY L1"
+            ),
+        ];
+        for sql in rejected {
+            assert!(parse_sql_query(&sql).is_none(), "should not parse: {sql}");
+        }
+    }
+
+    /// Single-level queries reject the same unrepresentable clauses: each
+    /// would otherwise be dropped from the query's data.
+    #[test]
+    fn test_flat_query_rejects_joins_and_qualify() {
+        let window = "WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()";
+        let rejected = [
+            format!(
+                "SELECT L1, SUM(value) FROM cpu_usage JOIN mem_usage ON cpu_usage.L1 = mem_usage.L1 \
+                 {window} GROUP BY L1"
+            ),
+            format!("SELECT L1, SUM(value) FROM cpu_usage, mem_usage {window} GROUP BY L1"),
+            format!("SELECT L1, SUM(value) AS s FROM cpu_usage {window} GROUP BY L1 QUALIFY s > 1"),
         ];
         for sql in rejected {
             assert!(parse_sql_query(&sql).is_none(), "should not parse: {sql}");
