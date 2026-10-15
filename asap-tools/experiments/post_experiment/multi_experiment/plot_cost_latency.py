@@ -152,9 +152,10 @@ def main(csv_path, out_dir):
         frameon=False,
         fontsize=13,
         loc="lower center",
-        ncol=len(SYSTEMS),
+        ncol=min(len(SYSTEMS), 3 * len(sets)),
     )
-    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    # A one-panel figure fits three legend entries a row, so two rows.
+    fig.tight_layout(rect=(0, 0.07 if len(sets) > 1 else 0.12, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = Path(out_dir) / f"cost_latency_{'+'.join(sets)}_{stamp}.png"
     with open(out_path, "xb") as f:
