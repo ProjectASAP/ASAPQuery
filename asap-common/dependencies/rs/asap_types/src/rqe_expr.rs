@@ -27,7 +27,13 @@ pub struct RqeLeaf {
     pub metric: String,
     pub capability: RqeCapability,
     pub lookback_ms: u64,
+    /// Output labels: one series per value combination.
     pub grouping: Vec<String>,
+    /// Top-k buckets, as in PromQL `topk by (topk_by) (k, ...)`: the input is
+    /// ranked independently within each value combination of these labels, a
+    /// subset of `grouping`. Absent ranks the whole input as one bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topk_by: Option<Vec<String>>,
     /// Quantile rank; set iff `capability` is `quantile`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phi: Option<f64>,
@@ -159,6 +165,16 @@ pub enum RqeExprError {
     InvalidK { id: String, k: Option<u64> },
     #[error("RQE {id}: k is only allowed for topk_by_value")]
     UnexpectedK { id: String },
+    #[error("RQE {id}: topk_by is only allowed for topk_by_value")]
+    UnexpectedTopkBy { id: String },
+    #[error("RQE {id}: topk_by must name at least one label; omit it to rank as one bucket")]
+    EmptyTopkBy { id: String },
+    #[error("RQE {id}: topk_by {topk_by:?} is not a subset of grouping {grouping:?}")]
+    TopkByNotSubset {
+        id: String,
+        topk_by: Vec<String>,
+        grouping: Vec<String>,
+    },
     #[error("RQE {id}: topk_by_value is only allowed at the root")]
     TopkNotAtRoot { id: String },
     #[error("agg by {by:?} is not a subset of child labels {child:?}")]
@@ -267,6 +283,22 @@ impl RqeLeaf {
             (_, Some(_)) => return Err(RqeExprError::UnexpectedK { id: id() }),
             (_, None) => {}
         }
+        match (self.capability, &self.topk_by) {
+            (RqeCapability::TopkByValue, Some(topk_by)) if topk_by.is_empty() => {
+                return Err(RqeExprError::EmptyTopkBy { id: id() })
+            }
+            (RqeCapability::TopkByValue, Some(topk_by))
+                if !label_set(topk_by).is_subset(&label_set(&self.grouping)) =>
+            {
+                return Err(RqeExprError::TopkByNotSubset {
+                    id: id(),
+                    topk_by: topk_by.clone(),
+                    grouping: self.grouping.clone(),
+                })
+            }
+            (RqeCapability::TopkByValue, _) | (_, None) => {}
+            (_, Some(_)) => return Err(RqeExprError::UnexpectedTopkBy { id: id() }),
+        }
         if self.capability == RqeCapability::TopkByValue && !is_root {
             return Err(RqeExprError::TopkNotAtRoot { id: id() });
         }
@@ -325,6 +357,11 @@ mod tests {
         assert_round_trip(json!({"rqe": {
             "id": "q2", "metric": "events", "capability": "topk_by_value",
             "lookback_ms": 1000, "grouping": ["user_id"], "k": 10,
+        }}));
+        assert_round_trip(json!({"rqe": {
+            "id": "q4", "metric": "data", "capability": "topk_by_value",
+            "lookback_ms": 60000, "grouping": ["region", "job"], "k": 4,
+            "topk_by": ["region"],
         }}));
         assert_round_trip(leaf_json("q3", "cardinality", &["job"]));
     }
@@ -455,6 +492,67 @@ mod tests {
         assert!(matches!(
             parse(v).validate(),
             Err(RqeExprError::UnexpectedK { .. })
+        ));
+    }
+
+    // --- validation: topk_by ---
+
+    fn topk_by_leaf(grouping: &[&str], topk_by: Value) -> Value {
+        let mut v = leaf_json("t", "topk_by_value", grouping);
+        v["rqe"]["k"] = json!(4);
+        v["rqe"]["topk_by"] = topk_by;
+        v
+    }
+
+    #[test]
+    fn topk_by_rules() {
+        let leaf = parse(topk_by_leaf(&["region", "job"], json!(["region"])));
+        assert_eq!(leaf.validate(), Ok(()));
+        let RqeExpr::Rqe { rqe } = &leaf else {
+            unreachable!()
+        };
+        assert_eq!(rqe.topk_by.as_deref(), Some(&["region".to_string()][..]));
+        // The output labels stay the leaf's grouping, not its buckets.
+        assert_eq!(leaf.output_labels(), ["region", "job"]);
+        // topk_by equal to grouping keeps one series per bucket.
+        let all = topk_by_leaf(&["region", "job"], json!(["job", "region"]));
+        assert_eq!(parse(all).validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_topk_by_outside_grouping() {
+        let v = topk_by_leaf(&["region", "job"], json!(["region", "pod"]));
+        assert!(matches!(
+            parse(v).validate(),
+            Err(RqeExprError::TopkByNotSubset { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_topk_by() {
+        let v = topk_by_leaf(&["region"], json!([]));
+        assert_eq!(
+            parse(v).validate(),
+            Err(RqeExprError::EmptyTopkBy { id: "t".into() })
+        );
+    }
+
+    #[test]
+    fn rejects_topk_by_on_non_topk() {
+        for capability in ["sum", "cardinality"] {
+            let mut v = leaf_json("q", capability, &["job"]);
+            v["rqe"]["topk_by"] = json!(["job"]);
+            assert_eq!(
+                parse(v).validate(),
+                Err(RqeExprError::UnexpectedTopkBy { id: "q".into() })
+            );
+        }
+        let mut quantile = leaf_json("q", "quantile", &["job"]);
+        quantile["rqe"]["phi"] = json!(0.5);
+        quantile["rqe"]["topk_by"] = json!(["job"]);
+        assert!(matches!(
+            parse(quantile).validate(),
+            Err(RqeExprError::UnexpectedTopkBy { .. })
         ));
     }
 
