@@ -55,8 +55,19 @@ impl StreamingConfig {
         let mut read_count_threshold_map: HashMap<u64, u64> = HashMap::new();
 
         if let Some(inference_config) = inference_config {
-            for query_config in &inference_config.query_configs {
-                for aggregation in &query_config.aggregations {
+            // Every reader of an aggregation: text queries and RQE leaves.
+            let references = inference_config
+                .query_configs
+                .iter()
+                .map(|q| &q.aggregations)
+                .chain(
+                    inference_config
+                        .rqe_configs
+                        .values()
+                        .map(|r| &r.aggregations),
+                );
+            for aggregations in references {
+                for aggregation in aggregations {
                     let aggregation_id = aggregation.aggregation_id;
                     let num_aggregates = aggregation.num_aggregates_to_retain;
                     retention_map
@@ -152,7 +163,7 @@ mod tests {
     use crate::aggregation_config::AggregationConfigError;
     use crate::aggregation_reference::AggregationReference;
     use crate::enums::{CleanupPolicy, QueryLanguage};
-    use crate::inference_config::InferenceConfig;
+    use crate::inference_config::{InferenceConfig, RqeConfig};
     use crate::query_config::QueryConfig;
     use promql_utilities::query_logics::enums::AggregationType;
 
@@ -522,5 +533,68 @@ aggregations:
         let error = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
             .expect_err("an overflowing threshold must not load");
         assert!(error.to_string().contains("overflowed"), "{error}");
+    }
+
+    fn rqe_config(reference: AggregationReference) -> RqeConfig {
+        RqeConfig {
+            aggregations: vec![reference],
+            query_time_aggregations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rqe_only_reference_bounds_retention() {
+        // An aggregation only an RQE leaf reads keeps that leaf's windows,
+        // not every window ever built.
+        let yaml = minmax_yaml("MinMax", "max");
+        let mut inference =
+            InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::CircularBuffer);
+        inference.rqe_configs.insert(
+            "q0".into(),
+            rqe_config(AggregationReference::new(1, Some(4))),
+        );
+
+        let config = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+            .expect("an RQE-only aggregation should load");
+
+        assert_eq!(config[1].num_aggregates_to_retain, Some(4));
+    }
+
+    #[test]
+    fn query_and_rqe_references_keep_the_largest_retention() {
+        // A shared aggregation keeps the longer lookback, whichever reader has it.
+        let yaml = minmax_yaml("MinMax", "max");
+        for (query_retain, rqe_retain) in [(7, 2), (2, 7)] {
+            let mut inference =
+                InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::CircularBuffer);
+            inference.query_configs = vec![QueryConfig::new("max(metric[1m])".into())
+                .add_aggregation(AggregationReference::new(1, Some(query_retain)))];
+            inference.rqe_configs.insert(
+                "q0".into(),
+                rqe_config(AggregationReference::new(1, Some(rqe_retain))),
+            );
+
+            let config = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+                .expect("a shared aggregation should load");
+
+            assert_eq!(config[1].num_aggregates_to_retain, Some(7));
+        }
+    }
+
+    #[test]
+    fn query_and_rqe_references_sum_read_based_thresholds() {
+        let yaml = minmax_yaml("MinMax", "max");
+        let mut inference = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::ReadBased);
+        inference.query_configs = vec![QueryConfig::new("max(metric[1m])".into())
+            .add_aggregation(AggregationReference::with_read_count_threshold(1, Some(2)))];
+        inference.rqe_configs.insert(
+            "q0".into(),
+            rqe_config(AggregationReference::with_read_count_threshold(1, Some(3))),
+        );
+
+        let config = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+            .expect("a shared aggregation should load");
+
+        assert_eq!(config[1].read_count_threshold, Some(5));
     }
 }

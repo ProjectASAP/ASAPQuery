@@ -5,8 +5,12 @@
 //! {"agg": "avg", "by": ["job"], "of":
 //!   {"op": "/", "lhs": {"rqe": {...}}, "rhs": {"scalar": 2.0}}}
 //! ```
+//!
+//! Label lists (`grouping`, `by`, `topk_by`) are sets: their order carries no
+//! meaning and series are matched by label name, so an engine must sort or
+//! match by name rather than pair values by position.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -179,8 +183,18 @@ pub enum RqeExprError {
     TopkNotAtRoot { id: String },
     #[error("agg by {by:?} is not a subset of child labels {child:?}")]
     AggByNotSubset { by: Vec<String>, child: Vec<String> },
-    #[error("binary op needs at least one non-scalar side")]
-    BinaryBothScalar,
+    #[error("RQE id must not be empty")]
+    EmptyId,
+    #[error("RQE {id}: metric must not be empty")]
+    EmptyMetric { id: String },
+    #[error("RQE {id}: lookback_ms must be > 0")]
+    ZeroLookback { id: String },
+    #[error("RQE {id} appears more than once with different leaves")]
+    ConflictingLeafId { id: String },
+    #[error("{field} lists label {label:?} more than once")]
+    DuplicateLabel { field: &'static str, label: String },
+    #[error("{node} reads no RQE leaf")]
+    NoLeaf { node: &'static str },
     #[error("binary op sides have different labels: {lhs:?} vs {rhs:?}")]
     BinaryLabelMismatch { lhs: Vec<String>, rhs: Vec<String> },
 }
@@ -188,7 +202,20 @@ pub enum RqeExprError {
 impl RqeExpr {
     /// Checks the whole tree; call once after loading.
     pub fn validate(&self) -> Result<(), RqeExprError> {
-        self.validate_node(true)
+        self.validate_node(true)?;
+        if !self.has_leaf() {
+            return Err(RqeExprError::NoLeaf { node: "root" });
+        }
+        // A leaf may be repeated (e.g. `x - x`) but an id names one leaf.
+        let mut by_id: HashMap<&str, &RqeLeaf> = HashMap::new();
+        for leaf in self.leaves() {
+            if *by_id.entry(&leaf.id).or_insert(leaf) != leaf {
+                return Err(RqeExprError::ConflictingLeafId {
+                    id: leaf.id.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn validate_node(&self, is_root: bool) -> Result<(), RqeExprError> {
@@ -196,6 +223,10 @@ impl RqeExpr {
             RqeExpr::Rqe { rqe } => rqe.validate(is_root),
             RqeExpr::Agg { by, of, .. } => {
                 of.validate_node(false)?;
+                if !of.has_leaf() {
+                    return Err(RqeExprError::NoLeaf { node: "agg" });
+                }
+                check_unique_labels("agg by", by)?;
                 let child = label_set(of.output_labels());
                 if !label_set(by).is_subset(&child) {
                     return Err(RqeExprError::AggByNotSubset {
@@ -208,9 +239,9 @@ impl RqeExpr {
             RqeExpr::Binary { lhs, rhs, .. } => {
                 lhs.validate_node(false)?;
                 rhs.validate_node(false)?;
-                match (lhs.is_scalar(), rhs.is_scalar()) {
-                    (true, true) => Err(RqeExprError::BinaryBothScalar),
-                    (false, false)
+                match (lhs.has_leaf(), rhs.has_leaf()) {
+                    (false, false) => Err(RqeExprError::NoLeaf { node: "binary op" }),
+                    (true, true)
                         if label_set(lhs.output_labels()) != label_set(rhs.output_labels()) =>
                     {
                         Err(RqeExprError::BinaryLabelMismatch {
@@ -264,11 +295,33 @@ impl RqeExpr {
     fn is_scalar(&self) -> bool {
         matches!(self, RqeExpr::Scalar { .. })
     }
+
+    fn has_leaf(&self) -> bool {
+        match self {
+            RqeExpr::Rqe { .. } => true,
+            RqeExpr::Agg { of, .. } => of.has_leaf(),
+            RqeExpr::Binary { lhs, rhs, .. } => lhs.has_leaf() || rhs.has_leaf(),
+            RqeExpr::Scalar { .. } => false,
+        }
+    }
 }
 
 impl RqeLeaf {
     fn validate(&self, is_root: bool) -> Result<(), RqeExprError> {
         let id = || self.id.clone();
+        if self.id.is_empty() {
+            return Err(RqeExprError::EmptyId);
+        }
+        if self.metric.is_empty() {
+            return Err(RqeExprError::EmptyMetric { id: id() });
+        }
+        if self.lookback_ms == 0 {
+            return Err(RqeExprError::ZeroLookback { id: id() });
+        }
+        check_unique_labels("grouping", &self.grouping)?;
+        if let Some(topk_by) = &self.topk_by {
+            check_unique_labels("topk_by", topk_by)?;
+        }
         match (self.capability, self.phi) {
             (RqeCapability::Quantile, Some(phi)) if (0.0..=1.0).contains(&phi) => {}
             (RqeCapability::Quantile, phi) => {
@@ -308,6 +361,17 @@ impl RqeLeaf {
 
 fn label_set(labels: &[String]) -> BTreeSet<&str> {
     labels.iter().map(String::as_str).collect()
+}
+
+fn check_unique_labels(field: &'static str, labels: &[String]) -> Result<(), RqeExprError> {
+    let mut seen = BTreeSet::new();
+    match labels.iter().find(|l| !seen.insert(l.as_str())) {
+        Some(label) => Err(RqeExprError::DuplicateLabel {
+            field,
+            label: label.clone(),
+        }),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -618,7 +682,95 @@ mod tests {
         let scalar_lhs = json!({"op": "-", "lhs": {"scalar": 1.0}, "rhs": sum_leaf("a", &["job"])});
         assert_eq!(parse(scalar_lhs).validate(), Ok(()));
         let both = json!({"op": "+", "lhs": {"scalar": 1.0}, "rhs": {"scalar": 2.0}});
-        assert_eq!(parse(both).validate(), Err(RqeExprError::BinaryBothScalar));
+        let node = "binary op";
+        assert_eq!(parse(both).validate(), Err(RqeExprError::NoLeaf { node }));
+    }
+
+    // --- validation: every subtree reads a leaf ---
+
+    #[test]
+    fn rejects_subtrees_without_leaves() {
+        let scalar_agg = |x: f64| json!({"agg": "sum", "by": [], "of": {"scalar": x}});
+        // Neither side is a literal scalar, yet neither reads a leaf.
+        let binary = json!({"op": "+", "lhs": scalar_agg(1.0), "rhs": scalar_agg(2.0)});
+        let nested_binary = json!({"op": "*",
+            "lhs": {"op": "+", "lhs": {"scalar": 1.0}, "rhs": {"scalar": 2.0}},
+            "rhs": sum_leaf("a", &[])});
+        for (v, node) in [
+            (json!({"scalar": 1.0}), "root"),
+            (scalar_agg(1.0), "agg"),
+            (binary, "agg"),
+            (nested_binary, "binary op"),
+        ] {
+            assert_eq!(parse(v).validate(), Err(RqeExprError::NoLeaf { node }));
+        }
+        // A side that reads a leaf through an agg is not a scalar side.
+        let agg_side = json!({"op": "+",
+            "lhs": {"agg": "sum", "by": [], "of": sum_leaf("a", &["job"])},
+            "rhs": {"scalar": 1.0}});
+        assert_eq!(parse(agg_side).validate(), Ok(()));
+    }
+
+    // --- validation: leaf ids ---
+
+    #[test]
+    fn repeated_identical_leaf_is_allowed() {
+        let v = json!({"op": "-", "lhs": sum_leaf("x", &["job"]), "rhs": sum_leaf("x", &["job"])});
+        let expr = parse(v);
+        assert_eq!(expr.validate(), Ok(()));
+        assert_eq!(expr.leaves().len(), 2);
+    }
+
+    #[test]
+    fn rejects_one_id_for_different_leaves() {
+        let mut other = sum_leaf("x", &["job"]);
+        other["rqe"]["metric"] = json!("other_metric");
+        let v = json!({"op": "/", "lhs": sum_leaf("x", &["job"]), "rhs": other});
+        assert_eq!(
+            parse(v).validate(),
+            Err(RqeExprError::ConflictingLeafId { id: "x".into() })
+        );
+    }
+
+    // --- validation: leaf fields ---
+
+    #[test]
+    fn rejects_empty_or_zero_leaf_fields() {
+        let with = |key: &str, value: Value| {
+            let mut v = sum_leaf("q", &[]);
+            v["rqe"][key] = value;
+            parse(v).validate()
+        };
+        assert_eq!(with("id", json!("")), Err(RqeExprError::EmptyId));
+        assert_eq!(
+            with("metric", json!("")),
+            Err(RqeExprError::EmptyMetric { id: "q".into() })
+        );
+        assert_eq!(
+            with("lookback_ms", json!(0)),
+            Err(RqeExprError::ZeroLookback { id: "q".into() })
+        );
+    }
+
+    // --- validation: duplicate labels ---
+
+    #[test]
+    fn rejects_duplicate_labels() {
+        let dup = |field: &'static str| {
+            Err(RqeExprError::DuplicateLabel {
+                field,
+                label: "job".into(),
+            })
+        };
+        let grouping = sum_leaf("q", &["job", "instance", "job"]);
+        assert_eq!(parse(grouping).validate(), dup("grouping"));
+        let by = json!({"agg": "sum", "by": ["job", "job"], "of": sum_leaf("q", &["job"])});
+        assert_eq!(parse(by).validate(), dup("agg by"));
+        let topk_by = topk_by_leaf(&["job", "region"], json!(["job", "job"]));
+        assert_eq!(parse(topk_by).validate(), dup("topk_by"));
+        // A duplicated grouping no longer slips past the binary label-set check.
+        let binary = json!({"op": "+", "lhs": sum_leaf("a", &["job", "job"]), "rhs": sum_leaf("b", &["job"])});
+        assert_eq!(parse(binary).validate(), dup("grouping"));
     }
 
     #[test]
