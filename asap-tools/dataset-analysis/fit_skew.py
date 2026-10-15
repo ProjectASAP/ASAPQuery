@@ -41,6 +41,8 @@ DEFAULT_OUT = SCRIPT_DIR / "out"
 ZIPF_THETA_BOUNDS = (0.0, 5.0)
 # Each power-law fit uses a uniform subsample of at most this many values.
 MAX_FIT_SAMPLES = 100_000
+# numpy's multivariate_hypergeometric needs a total under 1e9 (merge_samples).
+HYPERGEOMETRIC_MAX_TOTAL = 1_000_000_000
 # xmin is chosen by KS distance over this many quantiles of the sample, and only
 # where at least MIN_TAIL_SAMPLES values remain in the tail.
 XMIN_GRID_SIZE = 50
@@ -64,6 +66,8 @@ PROMETHEUS_LOOKBACK_S = 300
 DURATION_UNITS_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 # Range key sums are materialized for this many evaluation times at a time.
 EVAL_CHUNK = 32
+# Steps per chunk when stitching instant samples across files (resolve_boundaries).
+BOUNDARY_CHUNK_STEPS = 60
 # Accuracy each sketch must reach on a query; a query's `targets` overrides.
 DEFAULT_TARGETS = {
     "are_top100": 0.05,  # CMS / CountSketch mean relative error of the top 100 keys
@@ -432,11 +436,18 @@ def value_sample(x: np.ndarray) -> Tuple[int, np.ndarray]:
 
 def merge_samples(parts: Sequence[Tuple[int, np.ndarray]]) -> Tuple[int, np.ndarray]:
     """Uniform sample of the union of value_sample parts: each part gives a
-    multivariate-hypergeometric share of its prefix."""
+    multivariate-hypergeometric share of its prefix. numpy draws that only
+    for totals under 1e9; above, a multinomial share (drawing 1e5 of 1e9 or
+    more, with and without replacement agree), capped at each prefix."""
     counts = np.array([n for n, _ in parts], dtype=np.int64)
     total = int(counts.sum())
     rng = np.random.default_rng(SAMPLE_SEED)
-    take = rng.multivariate_hypergeometric(counts, min(total, MAX_FIT_SAMPLES))
+    n = min(total, MAX_FIT_SAMPLES)
+    if total < HYPERGEOMETRIC_MAX_TOTAL:
+        take = rng.multivariate_hypergeometric(counts, n)
+    else:
+        lengths = np.array([len(x) for _, x in parts])
+        take = np.minimum(rng.multinomial(n, counts / total), lengths)
     merged = np.concatenate([x[:k] for (_, x), k in zip(parts, take)])
     return total, rng.permutation(merged)
 
@@ -526,22 +537,49 @@ def check_file_order(rows: pd.DataFrame) -> None:
 
 
 def resolve_boundaries(
-    boundary: Sequence[pd.DataFrame], queries: List[Dict[str, Any]], lookback: int
+    boundary: Sequence[pd.DataFrame],
+    queries: List[Dict[str, Any]],
+    lookback: int,
+    chunk_steps: int = BOUNDARY_CHUNK_STEPS,
 ) -> Dict[Tuple[str, str], Any]:
     """Instant aggregates of the per-file first/last samples: keep the latest
     sample per (series, step) over files, and take its next step as the
-    nearer of the in-file next step and the next boundary sample."""
-    rows = pd.concat(
-        [b.assign(**{FILE_COL: i}) for i, b in enumerate(boundary)], ignore_index=True
-    )
-    check_file_order(rows)
-    rows = rows.sort_values([SERIES_COL, STEP_COL, TIME_COL], kind="stable")
-    in_file_next = rows.groupby([SERIES_COL, STEP_COL])[NEXT_COL].transform("min")
-    rows = rows.assign(**{NEXT_COL: in_file_next})
-    rows = rows.drop_duplicates([SERIES_COL, STEP_COL], keep="last")
-    next_step, _ = next_step_of_series(rows)
-    rows = rows.assign(**{NEXT_COL: np.fmin(rows[NEXT_COL].to_numpy(), next_step)})
-    return instant_parts(rows, queries, lookback)
+    nearer of the in-file next step and the next boundary sample.
+
+    Short files make almost every sample a boundary one, so this runs over
+    chunks of `chunk_steps` steps. A sample counts for at most `lookback`
+    steps, so a chunk owning steps [start, end) reads the boundary samples
+    up to end + lookback and gives the same aggregates as one pass."""
+    files = [b.assign(**{FILE_COL: i}) for i, b in enumerate(boundary) if len(b)]
+    if not files:
+        return instant_parts(pd.concat(boundary, ignore_index=True), queries, lookback)
+    spans = [(int(f[STEP_COL].min()), int(f[STEP_COL].max())) for f in files]
+    first, last = min(lo for lo, _ in spans), max(hi for _, hi in spans)
+    chunks = []
+    for start in range(first, last + 1, chunk_steps):
+        end = start + chunk_steps
+        overlapping = [
+            f[(f[STEP_COL] >= start) & (f[STEP_COL] < end + lookback)]
+            for f, (lo, hi) in zip(files, spans)
+            if lo < end + lookback and hi >= start
+        ]
+        if not overlapping:
+            continue
+        rows = pd.concat(overlapping, ignore_index=True)
+        check_file_order(rows)
+        rows = rows.sort_values([SERIES_COL, STEP_COL, TIME_COL], kind="stable")
+        in_file_next = rows.groupby([SERIES_COL, STEP_COL])[NEXT_COL].transform("min")
+        rows = rows.assign(**{NEXT_COL: in_file_next})
+        rows = rows.drop_duplicates([SERIES_COL, STEP_COL], keep="last")
+        next_step, _ = next_step_of_series(rows)
+        rows = rows.assign(**{NEXT_COL: np.fmin(rows[NEXT_COL].to_numpy(), next_step)})
+        chunks.append(instant_parts(rows[rows[STEP_COL] < end], queries, lookback))
+    return {
+        query_key(q): (merge_key_parts if q["kind"] == "keys" else merge_step_samples)(
+            [c[query_key(q)] for c in chunks]
+        )
+        for q in queries
+    }
 
 
 def instant_parts(

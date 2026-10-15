@@ -27,7 +27,7 @@ queries:
   - id: cpu_by_user
     promql: sum by (user) (cpu_rate)
     promql_range: sum by (user) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [user]
@@ -37,7 +37,7 @@ queries:
   - id: cpu_by_user_priority
     promql: sum by (user, priority) (cpu_rate)
     promql_range: sum by (user, priority) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [user, priority]
@@ -47,7 +47,7 @@ queries:
   - id: cpu_by_priority
     promql: sum by (priority) (cpu_rate)
     promql_range: sum by (priority) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [priority]
@@ -57,7 +57,7 @@ queries:
   - id: cpu_by_job_id
     promql: sum by (job_id) (cpu_rate)
     promql_range: sum by (job_id) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [job_id]
@@ -67,7 +67,7 @@ queries:
   - id: cpu_by_logical_job_name
     promql: sum by (logical_job_name) (cpu_rate)
     promql_range: sum by (logical_job_name) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [logical_job_name]
@@ -77,7 +77,7 @@ queries:
   - id: cpu_by_scheduling_class
     promql: sum by (scheduling_class) (cpu_rate)
     promql_range: sum by (scheduling_class) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [scheduling_class]
@@ -88,7 +88,7 @@ queries:
   - id: cpu_by_machine_id
     promql: sum by (machine_id) (cpu_rate)
     promql_range: sum by (machine_id) (sum_over_time(cpu_rate[{range}]))
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: keys
     group_by: [machine_id]
@@ -98,7 +98,7 @@ queries:
   - id: cpu_p99
     promql: quantile(0.99, cpu_rate)
     promql_range: quantile_over_time(0.99, cpu_rate[{range}])
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: values
     group_by: []
@@ -106,7 +106,7 @@ queries:
   - id: memory_p99
     promql: quantile(0.99, canonical_memory_usage)
     promql_range: quantile_over_time(0.99, canonical_memory_usage[{range}])
-    range: [instant, 5m, 1h]
+    range: [instant, 5m, 1h, 6h, 24h]
     table: task_usage
     kind: values
     group_by: []

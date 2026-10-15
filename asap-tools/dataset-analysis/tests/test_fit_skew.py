@@ -279,6 +279,17 @@ class RangeEvaluationTest(unittest.TestCase):
         self.assertEqual(len(merged), fit_skew.MAX_FIT_SAMPLES)
         self.assertAlmostEqual(merged.mean(), 1 / 11, delta=0.01)
 
+    def test_merge_samples_over_a_billion(self):
+        # Parts standing for 9e8 and 1e8 values (over numpy's hypergeometric
+        # limit together): shares still follow the sizes, within each prefix.
+        n = fit_skew.MAX_FIT_SAMPLES
+        big = (900_000_000, np.zeros(n))
+        small = (100_000_000, np.ones(n))
+        total, merged = fit_skew.merge_samples([big, small])
+        self.assertEqual(total, 1_000_000_000)
+        self.assertEqual(len(merged), n)
+        self.assertAlmostEqual(merged.mean(), 0.1, delta=0.01)
+
     def test_summarize_values_ranges(self):
         rng = np.random.default_rng(7)
         acc = {
@@ -333,7 +344,7 @@ def instant_counts(parts):
     }
 
 
-def split_files(files, lookback):
+def split_files(files, lookback, chunk_steps=fit_skew.BOUNDARY_CHUNK_STEPS):
     """instant parts computed per file then merged via resolve_boundaries."""
     parts, boundary = [], []
     for samples in files:
@@ -342,7 +353,9 @@ def split_files(files, lookback):
         )
         parts.append(inner)
         boundary.append(edge)
-    parts.append(fit_skew.resolve_boundaries(boundary, [INSTANT_QUERY], lookback))
+    parts.append(
+        fit_skew.resolve_boundaries(boundary, [INSTANT_QUERY], lookback, chunk_steps)
+    )
     return instant_counts(parts)
 
 
@@ -376,6 +389,25 @@ class InstantEvaluationTest(unittest.TestCase):
         # Consecutive time chunks, cut inside a step so step 10 spans both files.
         cut = [s for s in samples if s[1] <= 570], [s for s in samples if s[1] > 570]
         self.assertEqual(split_files(list(cut), lookback=5), whole)
+
+    def test_boundary_chunks_match_one_pass(self):
+        # Many short files (almost every sample a boundary one), stitched in
+        # chunks of 1 and 3 steps or in one pass: the same counts.
+        rng = np.random.default_rng(9)
+        samples = [
+            (int(series), float(t))
+            for series in range(1, 6)
+            for t in np.sort(rng.choice(np.arange(1, 1200), 25, replace=False))
+        ]
+        samples.sort(key=lambda st: st[1])
+        files = [
+            [s for s in samples if lo < s[1] <= lo + 90] for lo in range(0, 1200, 90)
+        ]
+        whole = split_files(files, lookback=5, chunk_steps=1000)
+        for chunk_steps in (1, 3):
+            self.assertEqual(
+                split_files(files, lookback=5, chunk_steps=chunk_steps), whole
+            )
 
     def test_interleaved_files_fail(self):
         files = [[(1, 60), (1, 300)], [(1, 180)]]
