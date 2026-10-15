@@ -119,9 +119,16 @@ def build_config(
     e2e = load_e2e(table_path)
     notes: List[str] = []
 
-    # (entry, query text in the config)
-    promql_entries = [(q, q["promql"]) for q in e2e["queries"] if "promql" in q]
-    structured = [q for q in e2e["queries"] if "promql" not in q]
+    # (entry, query text in the config). A tree-only query's `client_promql`
+    # is what the other systems run.
+    promql_entries = [
+        (q, q.get("promql") or q["client_promql"])
+        for q in e2e["queries"]
+        if "promql" in q or "client_promql" in q
+    ]
+    structured = [
+        q for q in e2e["queries"] if "promql" not in q and "client_promql" not in q
+    ]
     sql_entries: List[Tuple[dict, str]] = []
     if structured and sql_queries_file is None:
         notes.append(
