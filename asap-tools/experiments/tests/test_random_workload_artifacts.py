@@ -157,6 +157,9 @@ class PilotConfigsTest(unittest.TestCase):
                 (feeder["workload_table"], feeder["seed"], feeder["metrics"]),
                 (str((PILOT_DIR / "eval_table.json").resolve()), 862, ["data"]),
             )
+            # Runs stop feeders when their queries are done; the duration
+            # only bounds a hung run, past a slow arm's lagging queries.
+            self.assertEqual(feeder["duration_secs"], 1210 + 10 * 600)
         # The longest lookback (20 min) plus the freshness delay, then 10 min.
         schedules = [
             (g["repetition_delay_ms"], g["client_options"])
