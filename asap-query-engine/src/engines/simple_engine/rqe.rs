@@ -168,7 +168,9 @@ impl SimpleEngine {
     /// Reads `leaf` from the aggregations `config` names, over the window
     /// ending at `query_time` aligned as a PromQL instant query aligns it.
     /// A roll-up config reads at the aggregation's own grouping, then its
-    /// query-time stages regroup to the leaf's.
+    /// query-time stages regroup to the leaf's. A top-k leaf ranks within
+    /// each bucket of its aggregation's grouping, as PromQL `topk by` does,
+    /// so that grouping must be the leaf's `topk_by`.
     fn evaluate_rqe_leaf(
         &self,
         leaf: &RqeLeaf,
@@ -189,6 +191,17 @@ impl SimpleEngine {
                     agg_info.aggregation_id_for_value
                 ))
             })?;
+
+        if leaf.capability == RqeCapability::TopkByValue {
+            let buckets = KeyByLabelNames::new(leaf.topk_by.clone().unwrap_or_default());
+            if value_config.grouping_labels != buckets {
+                return Err(failed(format!(
+                    "ranks within topk_by buckets {:?}, but its aggregation keeps a heap per {:?}",
+                    buckets.labels, value_config.grouping_labels.labels
+                ))
+                .into());
+            }
+        }
 
         let end_timestamp = self.align_end_timestamp_promql(query_time);
         let start_timestamp = end_timestamp.checked_sub(leaf.lookback_ms).ok_or_else(|| {
@@ -259,8 +272,7 @@ impl SimpleEngine {
     }
 }
 
-/// The statistic and its kwargs a leaf's capability computes. Top-k is a
-/// single global ranking: a leaf has no per-group bucketing field.
+/// The statistic and its kwargs a leaf's capability computes.
 fn leaf_statistic(leaf: &RqeLeaf) -> Result<(Statistic, HashMap<String, String>), RqeQueryError> {
     let missing =
         |field: &str| RqeQueryError::BadRequest(format!("RQE {:?}: missing {field}", leaf.id));
