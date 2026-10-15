@@ -26,8 +26,17 @@ import yaml
 
 
 def read_jsonl(path):
-    with gzip.open(path, "rt") as f:
-        return [json.loads(line) for line in f if line.strip()]
+    """The complete lines of a gzipped JSONL file. A client stopped mid-run
+    leaves the gzip stream unterminated: keep what precedes the cut."""
+    rows = []
+    try:
+        with gzip.open(path, "rt") as f:
+            for line in f:
+                if line.endswith("\n"):
+                    rows.append(json.loads(line))
+    except EOFError:
+        pass
+    return rows
 
 
 def sql_labels(sql):
