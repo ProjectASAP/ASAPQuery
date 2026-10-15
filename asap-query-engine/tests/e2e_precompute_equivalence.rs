@@ -2070,7 +2070,7 @@ async fn e2e_avg_of_per_series_quantile_over_time() {
         })
         .collect();
     let (engine, query) = NativeDagScenario {
-        port: 19429,
+        port: 19437,
         metric,
         query,
         aggregation_configs: vec![config],

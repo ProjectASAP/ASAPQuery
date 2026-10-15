@@ -27,6 +27,10 @@ from sketch_bench_e2e.sketch_bench_e2e_configs import (  # noqa: E402
 ACCURACY_SLA = 0.95
 PILOT_SUPPORT = "common-promql"
 PILOT_DURATION_MS = 10 * 60 * 1000
+# Runs stop their feeders once the queries are done, so a feed's duration
+# only bounds a run that hangs: this many times the scheduled query phase,
+# past the slowest pilot arm (raw ClickHouse, ~4x).
+FEED_BOUND_QUERY_PHASES = 10
 QUERY_FRESHNESS_DELAY_SECS = 10
 # Relative to EXPERIMENTS_DIR, where the runners read configs and SQL.
 CONFIG_DIR = "config/experiment_type/random_workload"
@@ -139,6 +143,7 @@ def pilot_configs(workload, pilot_dir):
     lookback_secs = max(q["lookback_ms"] for q in queries) // 1000
     starting_delay = lookback_secs + QUERY_FRESHNESS_DELAY_SECS
     duration = PILOT_DURATION_MS // 1000
+    feed_secs = starting_delay + FEED_BOUND_QUERY_PHASES * duration
     seed = workload["data_facts"]["feeder_seed"]
     table = pilot_dir / "eval_table.json"
     out_dir = Path(CONFIG_DIR) / workload["id"]
@@ -149,6 +154,7 @@ def pilot_configs(workload, pilot_dir):
         starting_delay,
         duration,
         QUERY_FRESHNESS_DELAY_SECS,
+        feeder_duration_secs=feed_secs,
         prebuilt_output_dir=str(pilot_dir),
     )
     # One monitoring tool per run, so VictoriaMetrics is its own baseline run.
@@ -205,7 +211,7 @@ def pilot_configs(workload, pilot_dir):
         "workload_table": str(table.resolve()),
         "metrics": list(metrics),
         "seed": seed,
-        "duration_secs": starting_delay + duration + sbw.FEEDER_SLACK_SECS,
+        "duration_secs": feed_secs,
     }
     for mode, init, name in (
         (sbw.BASELINE, "init.sql", "clickhouse.yaml"),

@@ -26,8 +26,17 @@ import yaml
 
 
 def read_jsonl(path):
-    with gzip.open(path, "rt") as f:
-        return [json.loads(line) for line in f if line.strip()]
+    """The complete lines of a gzipped JSONL file. A client stopped mid-run
+    leaves the gzip stream unterminated: keep what precedes the cut."""
+    rows = []
+    try:
+        with gzip.open(path, "rt") as f:
+            for line in f:
+                if line.endswith("\n"):
+                    rows.append(json.loads(line))
+    except EOFError:
+        pass
+    return rows
 
 
 def sql_labels(sql):
@@ -76,13 +85,17 @@ class Arm:
         client = mode_dir.parent / "controller_client_configs" / f"{mode_dir.name}.yaml"
         groups = yaml.safe_load(client.read_text())["query_groups"]
         self.interval_secs = [g["repetition_delay_ms"] / 1000 for g in groups]
+        # Queries start after this; until then the systems only ingest.
+        self.warmup_secs = min(g["client_options"]["starting_delay"] for g in groups)
         self.monitor = mode_dir / "remote_monitor_output" / "monitor_output.json"
         hydra = yaml.safe_load((mode_dir.parent / "hydra_config.yaml").read_text())
         self.monitor_interval_secs = float(hydra["flow"]["monitor_interval_seconds"])
 
     def resources(self):
-        """(total CPU-seconds, peak memory bytes), summed over monitored
-        processes at each sample."""
+        """CPU-seconds over the whole monitored run, its warm-up and the rest
+        (queries and any lag), and peak memory bytes; each sample sums the
+        monitored processes. The monitor starts with the query client, so
+        the warm-up is its first `warmup_secs`."""
         processes = json.loads(self.monitor.read_text()).values()
         n = max(len(p["cpu_percent"]) for p in processes)
         cpu, mem = [0.0] * n, [0.0] * n
@@ -91,7 +104,15 @@ class Arm:
                 cpu[t] += c
             for t, m in enumerate(p["memory_info"]):
                 mem[t] += m
-        return sum(cpu) / 100 * self.monitor_interval_secs, max(mem)
+        secs = self.monitor_interval_secs
+        warm = int(self.warmup_secs / secs)
+        return {
+            "monitored_secs": n * secs,
+            "cpu_secs": sum(cpu) / 100 * secs,
+            "warmup_cpu_secs": sum(cpu[:warm]) / 100 * secs,
+            "query_cpu_secs": sum(cpu[warm:]) / 100 * secs,
+            "peak_memory_bytes": max(mem),
+        }
 
 
 def percentile(xs, p):
@@ -155,11 +176,14 @@ def report(arms, reference):
                 f"missing series {missing}, empty reference windows {empty}"
             )
 
-    print("\n== Resources (whole monitored run)")
+    print("\n== Resources: CPU-seconds (whole run = warm-up + queries), peak memory")
     for arm_name, arm in arms.items():
-        cpu_secs, peak = arm.resources()
+        r = arm.resources()
         print(
-            f"  {arm_name:16s} CPU {cpu_secs:9.0f} s   peak memory {peak / 2**30:5.2f} GiB"
+            f"  {arm_name:16s} {r['monitored_secs']:6.0f} s monitored   CPU "
+            f"{r['cpu_secs']:7.0f} = {r['warmup_cpu_secs']:6.0f} + "
+            f"{r['query_cpu_secs']:6.0f}   peak memory "
+            f"{r['peak_memory_bytes'] / 2**30:5.2f} GiB"
         )
 
 
