@@ -527,6 +527,10 @@ table with `sketch_bench_e2e/sketch_bench_e2e_configs.py`.
 - **Validation**: Must be valid PromQL syntax
 - **SCHEMA ISSUE**: Inconsistent time ranges ([1m] vs [10m]) across configs
 
+#### `experiment_params.query_groups[].sql_file` (dict, required; `experiment_run_clickhouse.py`)
+- **Description**: Mode name -> SQL file (`;`-separated statements) the mode runs for this group, in place of `queries`. Every mode but `sketchdb` needs an entry in every group. `sketchdb` runs its own entry (the SQL ASAPQuery receives, and the planner plans) and skips groups without one, but only trailing groups: results pair across modes by global query index, so `sketchdb`'s queries must be the first of baseline's
+- **Example**: `{baseline: /path/to/q_baseline.sql, sketchdb: /path/to/q_asap.sql}`
+
 #### `experiment_params.query_groups[].repetition_delay` (int, required)
 - **Description**: Delay in seconds between query repetitions
 - **Range**: 1-3600 seconds

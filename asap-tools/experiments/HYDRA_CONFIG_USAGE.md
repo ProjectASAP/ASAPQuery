@@ -160,7 +160,7 @@ cat > config/experiment_type/clickhouse.yaml << 'EOF'
 #     providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
 #     experiment_params.dataset.name=clickbench \
 #     experiment_params.dataset.local_data_file=/path/to/hits.json \
-#     'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
+#     'experiment_params.query_groups[0].sql_file={baseline:/path/to/queries.sql}'
 
 experiment_params:
   monitoring:
@@ -199,7 +199,7 @@ python experiment_run_clickhouse.py \
   controller.punting=false \
   experiment_params.dataset.name=clickbench \
   experiment_params.dataset.local_data_file=/path/to/hits.json \
-  'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
+  'experiment_params.query_groups[0].sql_file={baseline:/path/to/queries.sql}'
 ```
 
 Optional overrides:
@@ -239,7 +239,7 @@ python experiment_run_clickhouse.py \
   experiment_type=clickhouse \
   experiment.name=frozen_plan_eval \
   controller.prebuilt_output_dir=/path/to/frozen-sql-plan \
-  'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
+  'experiment_params.query_groups[0].sql_file={baseline:/path/to/queries.sql,sketchdb:/path/to/queries.sql}'
 ```
 
 ### experiment_run_e2e.py (Full E2E Pipeline)

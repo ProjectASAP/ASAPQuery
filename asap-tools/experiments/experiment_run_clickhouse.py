@@ -73,7 +73,7 @@ Baseline only:
     providers.cloudlab.username=myuser \\
     providers.cloudlab.hostname_suffix=myexp.cloudlab.us \\
     experiment_params.dataset.local_data_file=/path/to/hits.json \\
-    'experiment_params.query_groups[0].sql_file=/path/to/clickbench.sql'
+    'experiment_params.query_groups[0].sql_file={baseline:/path/to/clickbench.sql}'
 
 Baseline + sketchdb:
   python experiment_run_clickhouse.py \\
@@ -83,7 +83,7 @@ Baseline + sketchdb:
     providers.cloudlab.username=myuser \\
     providers.cloudlab.hostname_suffix=myexp.cloudlab.us \\
     experiment_params.dataset.local_data_file=/path/to/hits.json \\
-    'experiment_params.query_groups[0].sql_file=/path/to/clickbench.sql'
+    'experiment_params.query_groups[0].sql_file={baseline:/path/to/clickbench.sql,sketchdb:/path/to/clickbench.sql}'
 
   Sketchdb mode runs when experiment_params.experiment contains an entry
   with mode: sketchdb (mirrors the Prometheus experiment config structure).
@@ -246,8 +246,8 @@ def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> 
             sql_file = group.get("sql_file")
             if not sql_file or "queries" in group:
                 continue
-            # sql_file is per-mode (issue #491 precompute arms); label with
-            # baseline's text, matching the query text sketchdb also plans against.
+            # sql_file is per-mode; label with baseline's text, since every
+            # mode's query i answers baseline's query i.
             sql_file = sql_file.get(constants.BASELINE_EXPERIMENT_NAME)
             if not sql_file:
                 continue

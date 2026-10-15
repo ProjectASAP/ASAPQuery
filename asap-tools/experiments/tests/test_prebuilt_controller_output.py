@@ -132,6 +132,63 @@ class CopyPrebuiltControllerOutputTest(unittest.TestCase):
             os.path.isfile(os.path.join(self.dest, "inference_config.yaml"))
         )
 
+    def write_sql_plan(self, query):
+        self.write(
+            os.path.join(self.src, "inference_config.yaml"),
+            {
+                "tables": [
+                    {
+                        "name": "http",
+                        "time_column": "ts",
+                        "value_columns": ["latency"],
+                        "metadata_columns": ["region"],
+                    }
+                ],
+                "queries": [{"query": query}],
+            },
+        )
+
+    def test_sql_saved_plan_on_now_plans_the_clients_templated_query(self):
+        # A saved plan keeps the workload's SQL on NOW(); the client sends it
+        # under a comment line with a time literal it fills in.
+        self.write_sql_plan(
+            "SELECT region, QUANTILE(0.99, latency) FROM http WHERE ts BETWEEN "
+            "DATEADD(s, -60, NOW()) AND NOW() GROUP BY region;\n"
+        )
+        end = '{{ end_datetime[:17] }}{{ "%02d" | format(end_time % 60 // 60 * 60) }}'
+        self.write(
+            self.client,
+            {
+                "query_groups": [
+                    {
+                        "queries": [
+                            "-- quantile 0.99 of http.latency by (region)\n"
+                            "SELECT region, QUANTILE(0.99, latency) FROM http WHERE "
+                            f"ts BETWEEN DATEADD(s, -60, '{end}') AND '{end}' "
+                            "GROUP BY region"
+                        ]
+                    }
+                ]
+            },
+        )
+
+        self.copy_sql()
+
+    def test_sql_saved_plan_refuses_another_window(self):
+        self.write_sql_plan(
+            "SELECT region, QUANTILE(0.99, latency) FROM http WHERE ts BETWEEN "
+            "DATEADD(s, -60, NOW()) AND NOW() GROUP BY region"
+        )
+        query = (
+            "SELECT region, QUANTILE(0.99, latency) FROM http WHERE ts BETWEEN "
+            "DATEADD(s, -300, '{{ end_datetime }}') AND '{{ end_datetime }}' "
+            "GROUP BY region"
+        )
+        self.write(self.client, {"query_groups": [{"queries": [query]}]})
+
+        with self.assertRaisesRegex(ValueError, "doesn't plan these queries"):
+            self.copy_sql()
+
     def test_sql_output_refuses_an_invalid_table_schema(self):
         self.write(
             os.path.join(self.src, "inference_config.yaml"),

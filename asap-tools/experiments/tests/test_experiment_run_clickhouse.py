@@ -255,11 +255,11 @@ class FedClickHouseConfigValidationTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def validate(self, feeder=None, **dataset):
+    def validate(self, feeder=None, sql_file=None, modes=("baseline",), **dataset):
         validate_experiment_config(
             OmegaConf.create(
                 {
-                    "experiment": [{"mode": "baseline", "server": "clickhouse"}],
+                    "experiment": [{"mode": m, "server": "clickhouse"} for m in modes],
                     "servers": [{"name": "clickhouse", "url": "http://localhost:8123"}],
                     "dataset": {
                         "name": "custom",
@@ -267,10 +267,18 @@ class FedClickHouseConfigValidationTest(unittest.TestCase):
                         "paced_feeder": feeder_config(self.table, **(feeder or {})),
                         **dataset,
                     },
-                    "query_groups": [{"sql_file": {"baseline": self.sql}}],
+                    "query_groups": [{"sql_file": sql_file or {"baseline": self.sql}}],
                 }
             )
         )
+
+    def test_missing_sketchdb_sql_refused(self):
+        missing = os.path.join(self.tmp.name, "missing.sql")
+        with self.assertRaisesRegex(ValueError, "mode 'sketchdb'"):
+            self.validate(
+                sql_file={"baseline": self.sql, "sketchdb": missing},
+                modes=("baseline", "sketchdb"),
+            )
 
     def test_fed_config_needs_no_data_file(self):
         self.validate()
