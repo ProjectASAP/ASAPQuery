@@ -322,6 +322,7 @@ mod tests {
             query_configs: vec![QueryConfig::new(sql.to_string())
                 .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -417,6 +418,7 @@ mod tests {
             query_configs: vec![QueryConfig::new(sql.to_string())
                 .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,

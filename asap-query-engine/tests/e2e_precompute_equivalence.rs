@@ -334,6 +334,7 @@ impl NativeDagScenario<'_> {
             )),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let query_engine = SimpleEngine::new(
             store,
@@ -929,6 +930,7 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
             )
             .add_aggregation(AggregationReference::new(18, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         });
         let Some((_, instant)) = engine
             .handle_query_promql(query.clone(), 1.0)
@@ -1320,6 +1322,7 @@ async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
         query_configs: vec![QueryConfig::new(query.to_string())
             .add_aggregation(AggregationReference::new(agg_id, None))],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
     let query_engine = SimpleEngine::new(
         store,

@@ -106,6 +106,7 @@ mod tests {
             )),
             query_configs: vec![config.add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         SimpleEngine::new(
             store,

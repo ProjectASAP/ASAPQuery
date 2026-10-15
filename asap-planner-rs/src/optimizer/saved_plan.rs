@@ -1,14 +1,21 @@
 //! Writes a plan solved elsewhere, sketch-bench `autosketch_vs_asap`'s plan
 //! file, as the planner's streaming and inference YAML, without re-solving.
 //! The workload comes from the eval table's `e2e` block: its PromQL or SQL
-//! queries, the plan RQEs each reads, and the metrics' labels.
+//! queries, the plan RQEs each reads, and the metrics' labels. A query's RQE
+//! expression tree (`expr`) also gets each of its leaves an `rqe_configs`
+//! entry, so the engine can answer the tree without parsing PromQL or SQL.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context};
 use asap_types::enums::QueryLanguage;
+use asap_types::query_requirements::QueryRequirements;
+use asap_types::rqe_expr::{RqeCapability, RqeExpr, RqeLeaf};
+use asap_types::utils::normalize_spatial_filter;
+use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::Statistic;
 use rqe_optimizer::{heap_capacity, AtomicCostEntry, Deployment, LabelSet, Raqe};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -18,9 +25,10 @@ use crate::config::input::{
 };
 use crate::planner_output::PlannerOutput;
 
-use super::aqe_extractor::decompose_to_leaves;
+use super::aqe_extractor::{decompose_to_leaves, sql_metric};
 use super::milp::{workload_from_config, MilpConfig};
 use super::milp_output::{deployments_to_planner_output, reject_unwritable_queries};
+use super::solution::OptimizerItem;
 
 #[derive(Deserialize)]
 struct Table {
@@ -44,28 +52,128 @@ const SQL_TIME_COLUMN: &str = "ts";
 /// The metric type whose metrics are SQL tables.
 const RECORDS_METRIC_TYPE: &str = "records";
 
-/// One query, written in exactly one of PromQL and SQL.
+/// One query: written in at most one of PromQL and SQL, and with an RQE
+/// expression tree, `expr`, or not. It needs text or a tree.
 #[derive(Deserialize)]
 struct E2eQuery {
     promql: Option<String>,
     sql: Option<String>,
     interval_secs: u64,
     /// Plan RQE ids: for `promql`, one per leaf in order; for `sql`, a single
-    /// leaf, every RQE it reads.
+    /// leaf, every RQE it reads. Required with text; a query with only `expr`
+    /// may omit them, and then reads its leaves' ids.
+    #[serde(default)]
     rqes: Vec<String>,
+    /// Leaves name plan RQE ids.
+    expr: Option<RqeExpr>,
 }
 
 impl E2eQuery {
-    /// The query if it is written in SQL (`sql`) or PromQL (otherwise).
-    fn text(&self, sql: bool) -> anyhow::Result<Option<&str>> {
-        match (&self.promql, &self.sql) {
-            (Some(_), Some(_)) | (None, None) => bail!(
-                "e2e query reading {:?} needs exactly one of `promql` and `sql`",
-                self.rqes
-            ),
-            (promql, sql_text) => Ok(if sql { sql_text } else { promql }.as_deref()),
+    /// How errors name the query: its text, else its tree's RQEs.
+    fn name(&self) -> String {
+        match (self.promql.as_ref().or(self.sql.as_ref()), &self.expr) {
+            (Some(text), _) => format!("{text:?}"),
+            (None, Some(expr)) => format!("with RQEs {:?}", leaf_ids(expr)),
+            (None, None) if self.rqes.is_empty() => "with no text, `expr` or RQEs".to_string(),
+            (None, None) => format!("reading {:?}", self.rqes),
         }
     }
+
+    /// The query's PromQL or SQL text, if any.
+    fn text(&self) -> anyhow::Result<Option<&str>> {
+        match (&self.promql, &self.sql) {
+            (Some(_), Some(_)) => bail!(
+                "e2e query {} needs exactly one of `promql` and `sql`",
+                self.name()
+            ),
+            (promql, sql) => Ok(promql.as_deref().or(sql.as_deref())),
+        }
+    }
+
+    /// Whether the query is SQL: written in `sql`, or, with no text, a tree
+    /// whose leaves read `records` metrics (SQL tables). Its tree, if any,
+    /// must be valid.
+    fn is_sql(&self, metrics: &BTreeMap<String, E2eMetric>) -> anyhow::Result<bool> {
+        let text_sql = self.text()?.map(|_| self.sql.is_some());
+        let tree_sql = match &self.expr {
+            None => None,
+            Some(expr) => {
+                let reads_records = |leaf: &RqeLeaf| {
+                    anyhow::Ok(leaf_metric(leaf, metrics)?.kind == RECORDS_METRIC_TYPE)
+                };
+                let leaves = expr.leaves();
+                let (first, rest) = leaves.split_first().expect("a valid tree reads a leaf");
+                let sql = reads_records(first)?;
+                for leaf in rest {
+                    ensure!(
+                        reads_records(leaf)? == sql,
+                        "e2e query {}: its `expr` mixes records and non-records metrics",
+                        self.name()
+                    );
+                }
+                Some(sql)
+            }
+        };
+        match (text_sql, tree_sql) {
+            (Some(text), Some(tree)) if text != tree => bail!(
+                "e2e query {} is written in {} but its `expr` reads {} metrics",
+                self.name(),
+                if text { "SQL" } else { "PromQL" },
+                if tree { "records" } else { "non-records" }
+            ),
+            (Some(sql), _) | (None, Some(sql)) => Ok(sql),
+            (None, None) => bail!("e2e query {} needs `promql`, `sql` or `expr`", self.name()),
+        }
+    }
+
+    /// The plan RQEs the query reads: `rqes`, or, for a query with only a
+    /// tree that omits them, its leaves. With both, they must name the same
+    /// RQEs, in any order and however often each appears.
+    fn rqe_ids(&self) -> anyhow::Result<Vec<&str>> {
+        let rqes: Vec<&str> = self.rqes.iter().map(String::as_str).collect();
+        // A text query's `rqes` map its text leaves to plan RQEs, which a
+        // tree's leaf order can't.
+        ensure!(
+            self.text()?.is_none() || !rqes.is_empty(),
+            "e2e query {} has text but no `rqes`",
+            self.name()
+        );
+        let Some(expr) = &self.expr else {
+            return Ok(rqes);
+        };
+        let leaves = leaf_ids(expr);
+        if rqes.is_empty() {
+            return Ok(leaves);
+        }
+        ensure!(
+            rqes.iter().collect::<BTreeSet<_>>() == leaves.iter().collect(),
+            "e2e query {} names RQEs {rqes:?} but its `expr` reads {leaves:?}",
+            self.name()
+        );
+        Ok(rqes)
+    }
+}
+
+/// The ids of a tree's leaves, left to right.
+fn leaf_ids(expr: &RqeExpr) -> Vec<&str> {
+    expr.leaves().iter().map(|l| l.id.as_str()).collect()
+}
+
+/// The table metric an RQE leaf reads.
+fn leaf_metric<'a>(
+    leaf: &RqeLeaf,
+    metrics: &'a BTreeMap<String, E2eMetric>,
+) -> anyhow::Result<&'a E2eMetric> {
+    metrics
+        .get(&leaf.metric)
+        .with_context(|| format!("RQE {:?} reads unknown metric {:?}", leaf.id, leaf.metric))
+}
+
+/// A query planned from its text, and the plan RQEs it reads.
+struct TextQuery<'a> {
+    query: &'a E2eQuery,
+    text: &'a str,
+    rqes: Vec<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -122,13 +230,13 @@ pub struct PlanSelector<'a> {
 
 /// The selected queries' texts by repeat interval in seconds: one query group
 /// each.
-fn by_interval(selected: &[(&E2eQuery, &str)]) -> BTreeMap<u64, Vec<String>> {
+fn by_interval(selected: &[TextQuery]) -> BTreeMap<u64, Vec<String>> {
     let mut groups: BTreeMap<u64, Vec<String>> = BTreeMap::new();
-    for (q, text) in selected {
+    for q in selected {
         groups
-            .entry(q.interval_secs)
+            .entry(q.query.interval_secs)
             .or_default()
-            .push(text.to_string());
+            .push(q.text.to_string());
     }
     groups
 }
@@ -136,7 +244,7 @@ fn by_interval(selected: &[(&E2eQuery, &str)]) -> BTreeMap<u64, Vec<String>> {
 /// The PromQL controller config of the selected queries, with every
 /// non-`records` metric's labels as hints.
 fn e2e_promql_config(
-    selected: &[(&E2eQuery, &str)],
+    selected: &[TextQuery],
     metrics: &BTreeMap<String, E2eMetric>,
 ) -> anyhow::Result<ControllerConfig> {
     let config = json!({
@@ -157,7 +265,7 @@ fn e2e_promql_config(
 /// is a table, its labels the metadata columns and its values the value
 /// columns.
 fn e2e_sql_config(
-    selected: &[(&E2eQuery, &str)],
+    selected: &[TextQuery],
     metrics: &BTreeMap<String, E2eMetric>,
 ) -> anyhow::Result<SQLControllerConfig> {
     let mut tables = Vec::new();
@@ -207,13 +315,15 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
 
 /// Streaming and inference YAML for the selected plan of `plan_path` (JSON,
 /// gzipped or not) over the workload of `table_path`: its queries written in
-/// `language`.
+/// `language`. With `expr_only`, only the queries with an RQE tree, planned
+/// from their tree leaves alone: no text items and no `query_configs`.
 pub fn saved_plan_output(
     table_path: &Path,
     plan_path: &Path,
     selector: &PlanSelector,
     language: QueryLanguage,
     scrape_interval_ms: u64,
+    expr_only: bool,
 ) -> anyhow::Result<PlannerOutput> {
     let sql = match language {
         QueryLanguage::sql => true,
@@ -263,16 +373,38 @@ pub fn saved_plan_output(
             c.rqe
         );
     }
-    let mut selected: Vec<(&E2eQuery, &str)> = Vec::new();
+    // Queries in `language`: those with text (unless `expr_only`), and those
+    // with a tree.
+    let mut selected: Vec<TextQuery> = Vec::new();
+    let mut trees: Vec<(&E2eQuery, &RqeExpr)> = Vec::new();
     for q in &e2e.queries {
-        if let Some(text) = q.text(sql)? {
-            selected.push((q, text));
+        if expr_only && q.expr.is_none() {
+            continue;
+        }
+        if let Some(expr) = &q.expr {
+            expr.validate()
+                .with_context(|| format!("e2e query {}: invalid `expr`", q.name()))?;
+        }
+        if q.is_sql(&e2e.metrics)? != sql {
+            continue;
+        }
+        let rqes = q.rqe_ids()?;
+        if let (Some(text), false) = (q.text()?, expr_only) {
+            selected.push(TextQuery {
+                query: q,
+                text,
+                rqes,
+            });
+        }
+        if let Some(expr) = &q.expr {
+            trees.push((q, expr));
         }
     }
     ensure!(
-        !selected.is_empty(),
-        "{}: no e2e query is written in {language:?}",
-        table_path.display()
+        !selected.is_empty() || !trees.is_empty(),
+        "{}: no e2e query{} is written in {language:?}",
+        table_path.display(),
+        if expr_only { " with an `expr`" } else { "" }
     );
     let (promql_config, sql_config);
     let config = if sql {
@@ -289,25 +421,32 @@ pub fn saved_plan_output(
 
     // Leaf query string and repeat interval -> the plan RQEs it reads.
     let mut rqes_of: HashMap<(String, u64), Vec<&str>> = HashMap::new();
-    for &(q, text) in &selected {
-        let rqes = q.rqes.iter().map(String::as_str);
+    for TextQuery {
+        query: q,
+        text,
+        rqes: rqe_ids,
+    } in &selected
+    {
+        let rqe_ids = rqe_ids.clone();
         let leaves: Vec<(String, Vec<&str>)> = match config {
             // A SQL query is one leaf, and its RQEs a set.
             MilpConfig::Sql(_) => {
-                ensure!(!q.rqes.is_empty(), "query {text:?} names no RQEs");
-                let mut rqes: Vec<&str> = rqes.collect();
+                let mut rqes = rqe_ids;
                 rqes.sort_unstable();
                 vec![(text.to_string(), rqes)]
             }
             MilpConfig::Promql(_) => {
                 let leaves = decompose_to_leaves(text);
                 ensure!(
-                    leaves.len() == q.rqes.len(),
+                    leaves.len() == rqe_ids.len(),
                     "query {text:?} has {} leaves but names {} RQEs",
                     leaves.len(),
-                    q.rqes.len()
+                    rqe_ids.len()
                 );
-                leaves.into_iter().zip(rqes.map(|r| vec![r])).collect()
+                leaves
+                    .into_iter()
+                    .zip(rqe_ids.into_iter().map(|r| vec![r]))
+                    .collect()
             }
         };
         for (leaf, rqes) in leaves {
@@ -323,27 +462,65 @@ pub fn saved_plan_output(
         }
     }
 
-    let workload = workload_from_config(config, scrape_interval_ms)?;
+    // Every tree leaf, by RQE id, and the repeat intervals of its queries.
+    let mut tree_leaves: BTreeMap<&str, (&RqeLeaf, BTreeSet<u64>)> = BTreeMap::new();
+    for (q, expr) in &trees {
+        for leaf in expr.leaves() {
+            let (other, intervals_ms) = tree_leaves
+                .entry(&leaf.id)
+                .or_insert_with(|| (leaf, BTreeSet::new()));
+            ensure!(
+                *other == leaf,
+                "RQE {:?} is two different leaves: {other:?} and {leaf:?}",
+                leaf.id
+            );
+            intervals_ms.insert(q.interval_secs * 1000);
+        }
+    }
+
+    let mut workload = workload_from_config(config, scrape_interval_ms)?;
+    let text_items = workload.items.len();
+    // Each tree leaf at each repeat interval is one more item and Raqe,
+    // read directly by its RQE id; `leaf_rqes[i]` is item `text_items + i`'s.
+    let mut rqe_raqes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut leaf_rqes: Vec<&str> = Vec::new();
+    for (&id, (leaf, intervals_ms)) in &tree_leaves {
+        for &interval_ms in intervals_ms {
+            let item = leaf_item(leaf, interval_ms, &e2e.metrics)?;
+            let raqe = workload.push_item(item, id)?;
+            // One pick serves every interval, and the interval doesn't reach
+            // the `rqe_configs` entry: any interval's Raqe writes it.
+            rqe_raqes.entry(id.to_string()).or_insert(raqe);
+            leaf_rqes.push(id);
+        }
+    }
 
     // Plan deployment index -> its position in `deployments`, in order of
     // the first Raqe each serves.
     let mut position: HashMap<usize, usize> = HashMap::new();
     let mut deployments: Vec<Deployment> = Vec::new();
     let mut served_by = Vec::with_capacity(workload.raqes.len());
-    for (raqe, &item) in workload.raqes.iter().zip(&workload.raqe_items) {
-        let item = &workload.items[item];
+    for (raqe, &item_index) in workload.raqes.iter().zip(&workload.raqe_items) {
+        let item = &workload.items[item_index];
         // An item's leaves (say p90 and p50 over one window), and every RQE
         // a SQL leaf reads, read one deployment, so their picks must name the
-        // same sketch.
-        let mut index = None;
-        let mut reads: Vec<(&String, &str)> = Vec::new();
-        for leaf in &item.query_strings {
-            let rqes = rqes_of
-                .get(&(leaf.clone(), item.t_repeat_ms))
-                .with_context(|| format!("leaf {leaf:?} has no RQE in the table's e2e block"))?;
-            reads.extend(rqes.iter().map(|&rqe| (leaf, rqe)));
+        // same sketch. Each (reader, RQE): a leaf query, or a tree leaf's id.
+        let mut reads: Vec<(&str, &str)> = Vec::new();
+        if item_index < text_items {
+            for leaf in &item.query_strings {
+                let rqes = rqes_of
+                    .get(&(leaf.clone(), item.t_repeat_ms))
+                    .with_context(|| {
+                        format!("leaf {leaf:?} has no RQE in the table's e2e block")
+                    })?;
+                reads.extend(rqes.iter().map(|&rqe| (leaf.as_str(), rqe)));
+            }
+        } else {
+            let id = leaf_rqes[item_index - text_items];
+            reads.push((id, id));
         }
-        for (leaf, rqe) in reads {
+        let mut index = None;
+        for &(reader, rqe) in &reads {
             let pick = chosen
                 .get(rqe)
                 .with_context(|| format!("the plan doesn't serve RQE {rqe:?}"))?;
@@ -364,7 +541,7 @@ pub fn saved_plan_output(
             };
             ensure!(
                 can_serve(raqe, &deployment),
-                "RQE {rqe:?}'s {} {}s window sliding every {}s can't serve {leaf:?} \
+                "RQE {rqe:?}'s {} {}s window sliding every {}s can't serve {reader:?} \
                  ({} ms lookback every {} ms); does --plan match --workload-table?",
                 pick.sketch,
                 pick.window_secs,
@@ -386,11 +563,11 @@ pub fn saved_plan_output(
             ensure!(
                 index.is_none_or(|index| index == at),
                 "query {:?} is served by two deployments",
-                item.query_strings
+                reads.iter().map(|&(reader, _)| reader).collect::<Vec<_>>()
             );
             index = Some(at);
         }
-        let index = index.expect("an item has a query string");
+        let index = index.expect("an item reads an RQE");
         served_by.push(index);
     }
     Ok(deployments_to_planner_output(
@@ -398,7 +575,76 @@ pub fn saved_plan_output(
         &workload,
         &deployments,
         &served_by,
+        &rqe_raqes,
     )?)
+}
+
+/// The optimizer item of an RQE leaf, read every `interval_ms`: what a
+/// PromQL or SQL leaf with the same capability, metric, lookback, grouping
+/// and top-k buckets needs. It has no query string, so it gets no `query_configs` entry.
+fn leaf_item(
+    leaf: &RqeLeaf,
+    interval_ms: u64,
+    metrics: &BTreeMap<String, E2eMetric>,
+) -> anyhow::Result<OptimizerItem> {
+    let id = &leaf.id;
+    let m = leaf_metric(leaf, metrics)?;
+    let metric = match (m.kind == RECORDS_METRIC_TYPE, &leaf.value) {
+        (true, Some(value)) => {
+            ensure!(
+                m.values.contains_key(value),
+                "RQE {id:?} reads {value:?}, which is not a value of {:?}",
+                leaf.metric
+            );
+            sql_metric(&leaf.metric, value)
+        }
+        (true, None) => bail!(
+            "RQE {id:?} reads records metric {:?} without a `value`",
+            leaf.metric
+        ),
+        (false, Some(_)) => bail!(
+            "RQE {id:?} has a `value`, but {:?} is not a records metric",
+            leaf.metric
+        ),
+        (false, None) => leaf.metric.clone(),
+    };
+    for label in &leaf.grouping {
+        ensure!(
+            m.labels.iter().any(|l| &l.name == label),
+            "RQE {id:?} groups by {label:?}, which is not a label of {:?}",
+            leaf.metric
+        );
+    }
+    ensure!(interval_ms > 0, "RQE {id:?} repeats every 0 s");
+    let (statistic, topk_count_events) = match leaf.capability {
+        RqeCapability::Sum => (Statistic::Sum, None),
+        RqeCapability::Quantile => (Statistic::Quantile, None),
+        RqeCapability::Cardinality => (Statistic::Cardinality, None),
+        // Value-ranked, as `topk(k, sum_over_time(...))` is.
+        RqeCapability::TopkByValue => (Statistic::Topk, Some(false)),
+    };
+    // A text query of a saved plan's table has the default options too.
+    let options = ControllerOptions::default();
+    Ok(OptimizerItem {
+        requirements: QueryRequirements {
+            metric,
+            statistics: vec![statistic],
+            data_range_ms: leaf.lookback_ms,
+            grouping_labels: KeyByLabelNames::new(leaf.grouping.clone()),
+            spatial_filter_normalized: normalize_spatial_filter(""),
+            topk_count_events,
+            // As a PromQL `topk by`: the Raqe is grouped by these buckets,
+            // as the plan's top-k RQE is.
+            topk_by_labels: leaf.topk_by.clone().map(KeyByLabelNames::new),
+        },
+        query_strings: Vec::new(),
+        query_frequency_hz: 1000.0 / interval_ms as f64,
+        occurrences: 1,
+        t_repeat_ms: interval_ms,
+        accuracy_sla: options.accuracy_sla,
+        latency_sla_ms: options.latency_sla_ms,
+        topk_k: leaf.k,
+    })
 }
 
 /// Largest gap between `secs` in ms and the nearest whole ms that is still
@@ -509,6 +755,16 @@ mod tests {
         sla_ms: Option<f64>,
         language: QueryLanguage,
     ) -> anyhow::Result<PlannerOutput> {
+        run_filtered(table, plan, sla_ms, language, false)
+    }
+
+    fn run_filtered(
+        table: &str,
+        plan: &[u8],
+        sla_ms: Option<f64>,
+        language: QueryLanguage,
+        expr_only: bool,
+    ) -> anyhow::Result<PlannerOutput> {
         let dir = tempfile::tempdir().unwrap();
         let (table_path, plan_path) = (dir.path().join("table.json"), dir.path().join("plan.json"));
         std::fs::write(&table_path, table).unwrap();
@@ -518,7 +774,14 @@ mod tests {
             weights: "cpu",
             sla_ms,
         };
-        saved_plan_output(&table_path, &plan_path, &selector, language, 1000)
+        saved_plan_output(
+            &table_path,
+            &plan_path,
+            &selector,
+            language,
+            1000,
+            expr_only,
+        )
     }
 
     fn refusal(plan: Value, sla_ms: Option<f64>) -> String {
@@ -981,7 +1244,12 @@ mod tests {
         .err()
         .expect("refused")
         .to_string();
-        assert!(err.contains("exactly one of `promql` and `sql`"), "{err}");
+        assert!(
+            err.contains(
+                r#"e2e query "sum by (job) (data)" needs exactly one of `promql` and `sql`"#
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -990,5 +1258,613 @@ mod tests {
         plan["plans"][0]["chosen"].as_array_mut().unwrap().pop();
         let err = refusal(plan, None);
         assert!(err.contains(r#"doesn't serve RQE "p50""#), "{err}");
+    }
+
+    fn leaf(id: &str, capability: &str, lookback_ms: u64, grouping: &[&str]) -> Value {
+        json!({"rqe": {"id": id, "metric": "data", "capability": capability,
+                       "lookback_ms": lookback_ms, "grouping": grouping}})
+    }
+
+    fn quantile_leaf(id: &str, phi: f64, lookback_ms: u64, grouping: &[&str]) -> Value {
+        let mut l = leaf(id, "quantile", lookback_ms, grouping);
+        l["rqe"]["phi"] = json!(phi);
+        l
+    }
+
+    /// `TABLE` with each query's RQE tree.
+    fn tree_table() -> Value {
+        let mut table: Value = serde_json::from_str(TABLE).unwrap();
+        let series = ["job", "label_0"];
+        let p90 = quantile_leaf("p90", 0.9, 300_000, &series);
+        let p50 = quantile_leaf("p50", 0.5, 300_000, &series);
+        let exprs = [
+            leaf("sum", "sum", 1000, &["job"]),
+            json!({"op": "/", "lhs": p90, "rhs": p50.clone()}),
+            p50,
+        ];
+        for (q, expr) in queries(&mut table).iter_mut().zip(exprs) {
+            q["expr"] = expr;
+        }
+        table
+    }
+
+    fn queries(table: &mut Value) -> &mut Vec<Value> {
+        table["workloads"][0]["e2e"]["queries"]
+            .as_array_mut()
+            .unwrap()
+    }
+
+    fn run_table(
+        table: &Value,
+        plan: &Value,
+        language: QueryLanguage,
+    ) -> anyhow::Result<PlannerOutput> {
+        run_in(
+            &table.to_string(),
+            plan.to_string().as_bytes(),
+            None,
+            language,
+        )
+    }
+
+    fn inference_of(
+        output: &PlannerOutput,
+        language: QueryLanguage,
+    ) -> asap_types::InferenceConfig {
+        output.to_inference_config(language).unwrap()
+    }
+
+    fn query_aggregation_ids(inference: &asap_types::InferenceConfig, query: &str) -> Vec<u64> {
+        let config = inference
+            .query_configs
+            .iter()
+            .find(|q| q.query == query)
+            .unwrap_or_else(|| panic!("no query_config for {query:?}"));
+        config
+            .aggregations
+            .iter()
+            .map(|a| a.aggregation_id)
+            .collect()
+    }
+
+    /// (aggregation id, retained windows) per aggregation the RQE reads.
+    fn rqe_aggregations(
+        inference: &asap_types::InferenceConfig,
+        rqe: &str,
+    ) -> Vec<(u64, Option<u64>)> {
+        inference.rqe_configs[rqe]
+            .aggregations
+            .iter()
+            .map(|a| (a.aggregation_id, a.num_aggregates_to_retain))
+            .collect()
+    }
+
+    fn stages(inference: &asap_types::InferenceConfig, rqe: &str) -> Value {
+        serde_json::to_value(&inference.rqe_configs[rqe].query_time_aggregations).unwrap()
+    }
+
+    /// Each tree leaf reads the aggregation its text query reads. The
+    /// ratio's two leaves are two entries on one aggregation.
+    #[test]
+    fn writes_an_rqe_config_per_tree_leaf() {
+        let output = run_table(&tree_table(), &plans(shared_p50()), QueryLanguage::promql).unwrap();
+        let inference = inference_of(&output, QueryLanguage::promql);
+
+        let mut ids: Vec<&str> = inference.rqe_configs.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["p50", "p90", "sum"]);
+        let [sum_id] = query_aggregation_ids(&inference, "sum by (job) (data)")[..] else {
+            panic!("one aggregation");
+        };
+        assert_eq!(rqe_aggregations(&inference, "sum"), [(sum_id, Some(1))]);
+        let [dd_id] = query_aggregation_ids(&inference, "quantile_over_time(0.5, data[5m])")[..]
+        else {
+            panic!("one aggregation");
+        };
+        assert_ne!(dd_id, sum_id);
+        // 5m of a 5m window sliding every minute: the newest closed window.
+        for rqe in ["p90", "p50"] {
+            assert_eq!(
+                rqe_aggregations(&inference, rqe),
+                [(dd_id, Some(1))],
+                "{rqe}"
+            );
+            assert_eq!(stages(&inference, rqe), json!([]), "{rqe}");
+        }
+        assert_eq!(stages(&inference, "sum"), json!([]));
+    }
+
+    /// Trees only add `rqe_configs`: the deployments and `query_configs`
+    /// are those of the same table without trees, which has no `rqe_configs`.
+    #[test]
+    fn trees_leave_the_text_queries_configs_unchanged() {
+        let plan = plans(shared_p50());
+        let without = run_on(TABLE, plan.to_string().as_bytes(), None).unwrap();
+        let with = run_table(&tree_table(), &plan, QueryLanguage::promql).unwrap();
+
+        assert_eq!(
+            with.to_streaming_yaml_string().unwrap(),
+            without.to_streaming_yaml_string().unwrap()
+        );
+        let without_yaml = without.to_inference_yaml_string().unwrap();
+        assert!(!without_yaml.contains("rqe_configs"), "{without_yaml}");
+        let mut with_inference: serde_yaml::Value =
+            serde_yaml::from_str(&with.to_inference_yaml_string().unwrap()).unwrap();
+        assert!(with_inference
+            .as_mapping_mut()
+            .unwrap()
+            .remove("rqe_configs")
+            .is_some());
+        assert_eq!(
+            serde_yaml::to_string(&with_inference).unwrap(),
+            without_yaml
+        );
+    }
+
+    #[test]
+    fn writes_an_exact_sum_roll_up_as_an_rqe_query_time_sum() {
+        let mut plan = plans(shared_p50());
+        plan["plans"][0]["chosen"][0]["deployment_grouping"] = json!(["job", "label_0"]);
+        let output = run_table(&tree_table(), &plan, QueryLanguage::promql).unwrap();
+        let inference = inference_of(&output, QueryLanguage::promql);
+
+        assert_eq!(
+            stages(&inference, "sum"),
+            json!([{
+                "operator": "sum",
+                "grouping": {"mode": "by", "labels": ["job"]},
+                "parameter": null,
+            }])
+        );
+        assert_eq!(
+            rqe_aggregations(&inference, "sum")[0].0,
+            query_aggregation_ids(&inference, "sum by (job) (data)")[0]
+        );
+    }
+
+    /// The engine merges a sketch across the deployment's groups itself, so
+    /// the RQE reads the deployment's aggregation with no stage.
+    #[test]
+    fn writes_a_sketch_roll_up_rqe_without_a_stage() {
+        let table = json!({"workloads": [{"e2e": {
+            "queries": [{"promql": "quantile by (job) (0.5, data)", "interval_secs": 1, "rqes": ["p50"],
+                         "expr": quantile_leaf("p50", 0.5, 1000, &["job"])}],
+            "metrics": {"data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}}
+        }}]});
+        let mut p50 = pick("p50", 0, "dd", json!({"alpha": 0.02}), 1);
+        p50["deployment_grouping"] = json!(["job", "label_0"]);
+        let plan = json!({"plans": [
+            {"method": "asap", "weights": "cpu", "kind": "cheapest", "chosen": [p50]},
+        ]});
+
+        let output = run_table(&table, &plan, QueryLanguage::promql).unwrap();
+
+        assert_eq!(output.streaming_aggregation_count(), 1);
+        let inference = inference_of(&output, QueryLanguage::promql);
+        assert_eq!(rqe_aggregations(&inference, "p50"), [(1, Some(1))]);
+        assert_eq!(stages(&inference, "p50"), json!([]));
+    }
+
+    /// A query with only a tree is planned in the language of the metrics
+    /// its leaves read: it gets a deployment and an `rqe_configs` entry, but
+    /// no `query_configs` entry.
+    #[test]
+    fn plans_a_tree_only_query() {
+        let mut table = tree_table();
+        let tree_only =
+            json!({"interval_secs": 1, "expr": quantile_leaf("p50_by_job", 0.5, 1000, &["job"])});
+        queries(&mut table).push(tree_only.clone());
+        let mut plan = plans(shared_p50());
+        plan["plans"][0]["chosen"]
+            .as_array_mut()
+            .unwrap()
+            .push(pick("p50_by_job", 5, "dd", json!({"alpha": 0.05}), 1));
+
+        let output = run_table(&table, &plan, QueryLanguage::promql).unwrap();
+
+        assert_eq!(output.streaming_aggregation_count(), 3);
+        assert_eq!(output.inference_query_count(), 3);
+        let inference = inference_of(&output, QueryLanguage::promql);
+        assert_eq!(rqe_aggregations(&inference, "p50_by_job"), [(3, Some(1))]);
+        let streaming = output.to_streaming_config(QueryLanguage::promql).unwrap();
+        let dd = &streaming.aggregation_configs[&3];
+        assert_eq!(
+            dd.aggregation_type,
+            promql_utilities::query_logics::enums::AggregationType::DDSketch
+        );
+        assert_eq!(dd.grouping_labels.labels, ["job"]);
+
+        // A table of tree-only queries converts too.
+        let table = json!({"workloads": [{"e2e": {
+            "queries": [tree_only],
+            "metrics": {"data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}}
+        }}]});
+        let output = run_table(&table, &plan, QueryLanguage::promql).unwrap();
+        assert_eq!(output.streaming_aggregation_count(), 1);
+        assert_eq!(output.inference_query_count(), 0);
+        let inference = inference_of(&output, QueryLanguage::promql);
+        assert_eq!(rqe_aggregations(&inference, "p50_by_job"), [(1, Some(1))]);
+        let err = run_table(&table, &plan, QueryLanguage::sql)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("no e2e query is written in sql"), "{err}");
+    }
+
+    fn http_leaf(id: &str, capability: &str, grouping: &[&str], value: &str) -> Value {
+        json!({"rqe": {"id": id, "metric": "http", "capability": capability,
+                       "lookback_ms": 300_000, "grouping": grouping, "value": value}})
+    }
+
+    /// `MIXED_TABLE`'s p99 query with its tree, and a tree-only SQL sum.
+    fn mixed_tree_table() -> Value {
+        let mut table: Value = serde_json::from_str(MIXED_TABLE).unwrap();
+        let mut p99 = http_leaf("p99", "quantile", &["region"], "latency");
+        p99["rqe"]["phi"] = json!(0.99);
+        queries(&mut table)[2]["expr"] = p99;
+        queries(&mut table).push(json!({"interval_secs": 60,
+            "expr": http_leaf("latency_sum", "sum", &["region"], "latency")}));
+        table
+    }
+
+    /// A SQL query can't run a query-time stage, but its RQE can: an exact
+    /// roll-up of a tree-only SQL sum is written.
+    #[test]
+    fn writes_sql_rqe_configs_with_an_exact_roll_up() {
+        let mut plan = mixed_plan(1);
+        let mut sum = pick("latency_sum", 4, "exact-sum", json!({}), 60);
+        sum["deployment_grouping"] = json!(["region", "service"]);
+        plan["plans"][0]["chosen"].as_array_mut().unwrap().push(sum);
+
+        let output = run_table(&mixed_tree_table(), &plan, QueryLanguage::sql).unwrap();
+
+        let inference = inference_of(&output, QueryLanguage::sql);
+        let mut ids: Vec<&str> = inference.rqe_configs.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["latency_sum", "p99"]);
+        let p99_query = "SELECT region, QUANTILE(0.99, latency) FROM http WHERE ts BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY region";
+        // 5m of 5m windows sliding every minute: the newest closed window.
+        assert_eq!(
+            rqe_aggregations(&inference, "p99"),
+            [(query_aggregation_ids(&inference, p99_query)[0], Some(1))]
+        );
+        assert_eq!(
+            stages(&inference, "latency_sum"),
+            json!([{
+                "operator": "sum",
+                "grouping": {"mode": "by", "labels": ["region"]},
+                "parameter": null,
+            }])
+        );
+        let streaming = output.to_streaming_config(QueryLanguage::sql).unwrap();
+        let (sum_id, _) = rqe_aggregations(&inference, "latency_sum")[0];
+        let sum = &streaming.aggregation_configs[&sum_id];
+        assert_eq!(sum.table_name.as_deref(), Some("http"));
+        assert_eq!(sum.value_column.as_deref(), Some("latency"));
+        // A keyed accumulator keeps its groups as keys.
+        assert_eq!(sum.aggregated_labels.labels, ["region", "service"]);
+
+        // The PromQL run skips the SQL trees.
+        let output = run_table(&mixed_tree_table(), &plan, QueryLanguage::promql).unwrap();
+        assert!(inference_rqe_configs_absent(&output));
+    }
+
+    fn inference_rqe_configs_absent(output: &PlannerOutput) -> bool {
+        !output
+            .to_inference_yaml_string()
+            .unwrap()
+            .contains("rqe_configs")
+    }
+
+    fn tree_refusal(table: &Value) -> String {
+        format!(
+            "{:#}",
+            run_table(table, &plans(shared_p50()), QueryLanguage::promql)
+                .err()
+                .expect("refused")
+        )
+    }
+
+    #[test]
+    fn refuses_a_tree_disagreeing_with_its_rqes() {
+        let mut table = tree_table();
+        queries(&mut table)[1]["rqes"] = json!(["p90", "sum"]);
+        let err = tree_refusal(&table);
+        assert!(
+            err.contains(r#"names RQEs ["p90", "sum"] but its `expr` reads ["p90", "p50"]"#),
+            "{err}"
+        );
+    }
+
+    /// `rqes` and the tree's leaves are compared as sets: a SQL query's
+    /// `rqes` in another order, or a tree reading one leaf twice, agree.
+    #[test]
+    fn reads_a_tree_whose_rqes_are_reordered_or_repeated() {
+        let users = |id: &str| http_leaf(id, "cardinality", &["service"], "user_id");
+        let mut table: Value = serde_json::from_str(MIXED_TABLE).unwrap();
+        // `rqes` is ["users_1pct", "users_5pct"].
+        queries(&mut table)[1]["expr"] =
+            json!({"op": "-", "lhs": users("users_5pct"), "rhs": users("users_1pct")});
+        let output = run_table(&table, &mixed_plan(1), QueryLanguage::sql).unwrap();
+        assert_eq!(
+            inference_of(&output, QueryLanguage::sql).rqe_configs.len(),
+            2
+        );
+
+        let mut table = tree_table();
+        let p50 = quantile_leaf("p50", 0.5, 300_000, &["job", "label_0"]);
+        queries(&mut table)[2]["expr"] = json!({"op": "-", "lhs": p50.clone(), "rhs": p50});
+        assert_eq!(queries(&mut table)[2]["rqes"], json!(["p50"]));
+        run_table(&table, &plans(shared_p50()), QueryLanguage::promql).unwrap();
+    }
+
+    /// The `rqe_configs` entry doesn't depend on the interval, so one leaf
+    /// run at two intervals is one entry on one aggregation.
+    #[test]
+    fn plans_one_rqe_read_at_two_intervals() {
+        let plan = plans(shared_p50());
+        let once = run_table(&tree_table(), &plan, QueryLanguage::promql).unwrap();
+        let mut table = tree_table();
+        queries(&mut table)
+            .push(json!({"interval_secs": 10, "expr": leaf("sum", "sum", 1000, &["job"])}));
+        let twice = run_table(&table, &plan, QueryLanguage::promql).unwrap();
+
+        assert_eq!(
+            twice.to_streaming_yaml_string().unwrap(),
+            once.to_streaming_yaml_string().unwrap()
+        );
+        assert_eq!(
+            rqe_aggregations(&inference_of(&twice, QueryLanguage::promql), "sum"),
+            rqe_aggregations(&inference_of(&once, QueryLanguage::promql), "sum")
+        );
+    }
+
+    /// `--expr-only` skips the queries without a tree, and plans the others
+    /// from their tree leaves alone: only deployments and `rqe_configs`, no
+    /// `query_configs`.
+    #[test]
+    fn expr_only_plans_only_the_queries_with_a_tree() {
+        let mut table = tree_table();
+        queries(&mut table)[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("expr");
+        let plan = plans(shared_p50()).to_string();
+        let run = |expr_only| {
+            run_filtered(
+                &table.to_string(),
+                plan.as_bytes(),
+                None,
+                QueryLanguage::promql,
+                expr_only,
+            )
+            .unwrap()
+        };
+
+        let all = run(false);
+        assert_eq!(all.streaming_aggregation_count(), 2);
+        assert_eq!(all.inference_query_count(), 3);
+
+        let expr_only = run(true);
+        // Only the DDSketch the quantile trees read; no sum.
+        assert_eq!(expr_only.streaming_aggregation_count(), 1);
+        assert_eq!(expr_only.inference_query_count(), 0);
+        let inference = inference_of(&expr_only, QueryLanguage::promql);
+        assert!(inference.query_configs.is_empty());
+        let mut ids: Vec<&str> = inference.rqe_configs.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["p50", "p90"]);
+
+        // A table with no tree in the language has nothing to plan.
+        let err = run_filtered(TABLE, plan.as_bytes(), None, QueryLanguage::promql, true)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("no e2e query with an `expr`"), "{err}");
+    }
+
+    /// A query with text needs `rqes`, even with a tree: its text leaves
+    /// map to RQEs by `rqes`, not by the tree's leaf order. Only a query
+    /// with just a tree may omit them (`plans_a_tree_only_query`).
+    #[test]
+    fn refuses_a_query_with_text_but_no_rqes() {
+        let mut table = tree_table();
+        queries(&mut table)[1]
+            .as_object_mut()
+            .unwrap()
+            .remove("rqes");
+        let err = tree_refusal(&table);
+        assert!(
+            err.contains(
+                r#"e2e query "quantile_over_time(0.9, data[5m]) / quantile_over_time(0.5, data[5m])" has text but no `rqes`"#
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn refuses_an_invalid_tree() {
+        let mut table = tree_table();
+        queries(&mut table)[0]["expr"] =
+            json!({"agg": "sum", "by": ["region"], "of": leaf("sum", "sum", 1000, &["job"])});
+        let err = tree_refusal(&table);
+        assert!(
+            err.contains(r#"e2e query "sum by (job) (data)": invalid `expr`"#),
+            "{err}"
+        );
+        assert!(err.contains("not a subset"), "{err}");
+        // A tree-only query is named by its leaves.
+        let mut table = tree_table();
+        queries(&mut table).push(json!({"interval_secs": 1, "expr":
+            {"agg": "sum", "by": ["region"], "of": leaf("sum", "sum", 1000, &["job"])}}));
+        let err = tree_refusal(&table);
+        assert!(
+            err.contains(r#"e2e query with RQEs ["sum"]: invalid `expr`"#),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn refuses_one_rqe_as_two_different_leaves() {
+        let mut table = tree_table();
+        queries(&mut table)[2]["expr"] = quantile_leaf("p50", 0.5, 300_000, &["job"]);
+        let err = tree_refusal(&table);
+        assert!(
+            err.contains(r#"RQE "p50" is two different leaves"#),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_query_without_text_or_tree_or_with_mismatched_languages() {
+        let mut mixed: Value = serde_json::from_str(MIXED_TABLE).unwrap();
+        let cases = [
+            (
+                json!({"interval_secs": 1, "rqes": ["sum"]}),
+                r#"e2e query reading ["sum"] needs `promql`, `sql` or `expr`"#,
+            ),
+            (
+                json!({"interval_secs": 1}),
+                "e2e query with no text, `expr` or RQEs needs `promql`, `sql` or `expr`",
+            ),
+            (
+                json!({"promql": "sum by (job) (data)", "interval_secs": 1,
+                       "expr": http_leaf("sum", "sum", &[], "latency")}),
+                r#"e2e query "sum by (job) (data)" is written in PromQL but its `expr` reads records metrics"#,
+            ),
+            (
+                json!({"interval_secs": 1, "expr": {"op": "+",
+                       "lhs": leaf("sum", "sum", 1000, &[]),
+                       "rhs": http_leaf("sum2", "sum", &[], "latency")}}),
+                r#"e2e query with RQEs ["sum", "sum2"]: its `expr` mixes records and non-records metrics"#,
+            ),
+            (
+                json!({"interval_secs": 1, "expr": {"scalar": 1.0}}),
+                "root reads no RQE leaf",
+            ),
+        ];
+        for (query, reason) in cases {
+            queries(&mut mixed).push(query);
+            let err = format!(
+                "{:#}",
+                run_table(&mixed, &mixed_plan(1), QueryLanguage::sql)
+                    .err()
+                    .expect("refused")
+            );
+            assert!(err.contains(reason), "{err}");
+            queries(&mut mixed).pop();
+        }
+    }
+
+    #[test]
+    fn refuses_a_leaf_the_table_cannot_describe() {
+        let records_leaf = |value: Option<&str>, grouping: &[&str]| {
+            let mut l = http_leaf("p99", "quantile", grouping, "latency");
+            l["rqe"]["phi"] = json!(0.99);
+            match value {
+                Some(value) => l["rqe"]["value"] = json!(value),
+                None => {
+                    l["rqe"].as_object_mut().unwrap().remove("value");
+                }
+            }
+            l
+        };
+        let mut unknown = records_leaf(Some("latency"), &["region"]);
+        unknown["rqe"]["metric"] = json!("nope");
+        for (expr, reason) in [
+            (unknown, r#"reads unknown metric "nope""#),
+            (records_leaf(None, &["region"]), "without a `value`"),
+            (
+                records_leaf(Some("bytes"), &["region"]),
+                r#"which is not a value of "http""#,
+            ),
+            (
+                records_leaf(Some("latency"), &["zone"]),
+                r#"groups by "zone""#,
+            ),
+        ] {
+            let mut table: Value = serde_json::from_str(MIXED_TABLE).unwrap();
+            queries(&mut table)[2]["expr"] = expr;
+            let err = format!(
+                "{:#}",
+                run_table(&table, &mixed_plan(1), QueryLanguage::sql)
+                    .err()
+                    .expect("refused")
+            );
+            assert!(err.contains(reason), "{err}");
+        }
+        let mut table = tree_table();
+        queries(&mut table)[0]["expr"]["rqe"]["value"] = json!("v");
+        let err = tree_refusal(&table);
+        assert!(err.contains("is not a records metric"), "{err}");
+    }
+
+    #[test]
+    fn refuses_a_tree_leaf_the_plan_does_not_serve() {
+        let mut table = tree_table();
+        queries(&mut table).push(json!({"interval_secs": 1,
+            "expr": quantile_leaf("unplanned", 0.5, 1000, &["job"])}));
+        let err = tree_refusal(&table);
+        assert!(err.contains(r#"doesn't serve RQE "unplanned""#), "{err}");
+    }
+
+    /// A `topk_by` leaf is a Raqe grouped by its buckets: one heap per `job`,
+    /// keyed by the remaining series label.
+    #[test]
+    fn writes_a_tree_only_topk_by_leaf_as_one_heap_per_bucket() {
+        let table = json!({"workloads": [{"e2e": {
+            "queries": [{"interval_secs": 60, "expr": {"rqe": {"id": "top", "metric": "data",
+                "capability": "topk_by_value", "k": 5, "lookback_ms": 300_000,
+                "grouping": ["job", "label_0"], "topk_by": ["job"]}}}],
+            "metrics": {"data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}}
+        }}]});
+        let top = pick(
+            "top",
+            0,
+            "cms-heap-topk-fastpath-vector2d",
+            json!({"rows": 3, "cols": 1024, "heap": 50}),
+            300,
+        );
+        let plan = json!({"plans": [
+            {"method": "asap", "weights": "cpu", "kind": "cheapest", "chosen": [top]},
+        ]});
+        let output = run_table(&table, &plan, QueryLanguage::promql).unwrap();
+        let inference = inference_of(&output, QueryLanguage::promql);
+        let [(id, _)] = rqe_aggregations(&inference, "top")[..] else {
+            panic!("{:?}", inference.rqe_configs);
+        };
+        assert_eq!(stages(&inference, "top"), json!([]));
+        let streaming = output.to_streaming_config(QueryLanguage::promql).unwrap();
+        let heap = streaming.get_aggregation_config(id).unwrap();
+        assert_eq!(heap.grouping_labels.labels, ["job"]);
+        assert_eq!(heap.aggregated_labels.labels, ["label_0"]);
+    }
+
+    /// A topk deployment can't roll up, for an RQE as for a query.
+    #[test]
+    fn refuses_a_tree_only_topk_roll_up() {
+        let table = json!({"workloads": [{"e2e": {
+            "queries": [{"interval_secs": 60, "expr": {"rqe": {"id": "top", "metric": "data",
+                "capability": "topk_by_value", "k": 5, "lookback_ms": 300_000,
+                "grouping": ["job", "label_0"]}}}],
+            "metrics": {"data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}}
+        }}]});
+        let mut top = pick(
+            "top",
+            0,
+            "cms-heap-topk-fastpath-vector2d",
+            json!({"rows": 3, "cols": 1024, "heap": 50}),
+            300,
+        );
+        top["deployment_grouping"] = json!(["job"]);
+        let plan = json!({"plans": [
+            {"method": "asap", "weights": "cpu", "kind": "cheapest", "chosen": [top]},
+        ]});
+        let err = run_table(&table, &plan, QueryLanguage::promql)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains(r#"query "top""#), "{err}");
+        assert!(err.contains("roll-ups need an aggregation"), "{err}");
     }
 }

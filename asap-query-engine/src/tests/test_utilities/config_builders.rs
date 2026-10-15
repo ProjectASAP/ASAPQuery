@@ -206,6 +206,7 @@ impl TestConfigBuilder {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: self.query_configs,
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         // Create StreamingConfig
@@ -231,6 +232,7 @@ impl TestConfigBuilder {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: self.query_configs.clone(),
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         // Create SQL InferenceConfig
@@ -247,6 +249,7 @@ impl TestConfigBuilder {
             schema: SchemaConfig::SQL(sql_schema),
             query_configs: self.query_configs,
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         // Create StreamingConfig

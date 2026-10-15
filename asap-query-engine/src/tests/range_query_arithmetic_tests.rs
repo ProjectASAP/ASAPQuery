@@ -108,6 +108,7 @@ mod tests {
                     .add_aggregation(AggregationReference::new(2, None)),
             ],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(
@@ -408,6 +409,7 @@ mod tests {
                     .add_aggregation(AggregationReference::new(2, None)),
             ],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(
@@ -531,6 +533,7 @@ mod tests {
                     .add_aggregation(AggregationReference::new(2, None)),
             ],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(

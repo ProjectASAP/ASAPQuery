@@ -1,9 +1,11 @@
 //! Turns a solved MILP plan into the planner's streaming and inference YAML.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use asap_types::enums::{CleanupPolicy, WindowType};
-use asap_types::query_config::QueryTimeAggregationOperator;
+use asap_types::query_config::{
+    QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+};
 use indexmap::map::Entry;
 use indexmap::IndexMap;
 use promql_parser::label::Labels;
@@ -16,7 +18,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::error::ControllerError;
-use crate::generator::{GeneratorOutput, QueryPlanEntry};
+use crate::generator::{
+    build_rqe_configs_yaml, GeneratorOutput, QueryPlanEntry, RqePlanEntry, KEY_RQE_CONFIGS,
+};
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::labels::set_subpopulation_labels;
 use crate::planner::promql::{aggregation_stage, parse_binary_arms, strip_parens};
@@ -146,16 +150,19 @@ pub fn plan_to_planner_output(
         .map(|planned| planned.deployment.clone())
         .collect();
     let served_by: Vec<usize> = solution.raqes.iter().map(|r| r.deployment).collect();
-    deployments_to_planner_output(config, workload, &deployments, &served_by)
+    deployments_to_planner_output(config, workload, &deployments, &served_by, &BTreeMap::new())
 }
 
 /// [`plan_to_planner_output`] for a plan given as its deployments and, per
-/// Raqe of `workload`, the index of the deployment serving it.
+/// Raqe of `workload`, the index of the deployment serving it. Each
+/// `rqe_raqes` entry (RQE id -> index of the Raqe that is that RQE leaf) gets
+/// an `rqe_configs` entry, written only when there are any.
 pub fn deployments_to_planner_output(
     config: MilpConfig,
     workload: &MilpWorkload,
     deployments: &[Deployment],
     served_by: &[usize],
+    rqe_raqes: &BTreeMap<String, usize>,
 ) -> Result<PlannerOutput, MilpOutputError> {
     assert_eq!(
         served_by.len(),
@@ -232,12 +239,27 @@ pub fn deployments_to_planner_output(
     }
     plan_per_series_avgs(config, &binary_leaves, &mut queries)?;
 
+    let mut rqe_plans: BTreeMap<String, RqePlanEntry> = BTreeMap::new();
+    for (id, &raqe) in rqe_raqes {
+        let index = served_by[raqe];
+        let key = &item_keys[&(index, workload.raqe_items[raqe])];
+        rqe_plans.insert(
+            id.clone(),
+            rqe_plan_entry(
+                key,
+                &workload.raqes[raqe],
+                &deployments[index],
+                aggregations[key].aggregation_type,
+            )?,
+        );
+    }
+
     let id_map: HashMap<String, u32> = aggregations
         .keys()
         .enumerate()
         .map(|(index, key)| (key.clone(), index as u32 + 1))
         .collect();
-    let (streaming_yaml, inference_yaml) = match config {
+    let (streaming_yaml, mut inference_yaml) = match config {
         MilpConfig::Promql(config) => {
             let schema = config.schema_from_hints();
             (
@@ -250,6 +272,15 @@ pub fn deployments_to_planner_output(
             build_sql_inference_yaml(config, CleanupPolicy::CircularBuffer, &queries, &id_map)?,
         ),
     };
+    if !rqe_plans.is_empty() {
+        let serde_yaml::Value::Mapping(root) = &mut inference_yaml else {
+            unreachable!("the inference YAML is a mapping");
+        };
+        root.insert(
+            KEY_RQE_CONFIGS.into(),
+            build_rqe_configs_yaml(CleanupPolicy::CircularBuffer, &rqe_plans, &id_map),
+        );
+    }
     Ok(PlannerOutput::from_output(GeneratorOutput {
         punted_queries: Vec::new(),
         streaming_yaml,
@@ -276,14 +307,71 @@ fn check_grouping(raqe: &Raqe, deployment: &Deployment) -> Result<(), MilpOutput
     })
 }
 
-/// How `query` (an occurrence of `raqe`) reads the aggregation `key`.
+/// The closed windows of `deployment` that `raqe`'s lookback reads. The
+/// store holds closed windows only; open ones live in the precompute engine.
+fn retained_windows(
+    query: &str,
+    raqe: &Raqe,
+    deployment: &Deployment,
+) -> Result<u64, MilpOutputError> {
+    deployment
+        .closed_instance_count(raqe.lookback_ms)
+        .ok_or_else(|| MilpOutputError::PartialWindowLookback {
+            query: query.to_string(),
+            lookback_ms: raqe.lookback_ms,
+            window_ms: deployment.window_ms,
+            slide_ms: deployment.slide_ms,
+        })
+}
+
+/// Whether `raqe` reads `deployment` through a query-time stage.
 ///
 /// A Raqe grouped by a strict subset of its deployment's grouping is a
 /// roll-up. The engine merges single-subpopulation sketches across the
-/// deployment's groups itself, so those name the aggregation as is. Exact
-/// keyed accumulators are read at the deployment's grouping and regrouped
-/// at query time, which is exact for sum, count, min and max, unless
-/// `stage_blocker` says `query` can't run a query-time stage.
+/// deployment's groups itself, so those need no stage. Exact keyed
+/// accumulators are read at the deployment's grouping and regrouped at query
+/// time, which is exact for sum, count, min and max.
+fn needs_query_time_stage(
+    raqe: &Raqe,
+    deployment: &Deployment,
+    aggregation_type: AggregationType,
+) -> Result<bool, MilpOutputError> {
+    let (fine, coarse) = (&deployment.grouping_labels, &raqe.grouping_labels);
+    if coarse == fine || aggregation_type.merges_across_groups() {
+        return Ok(false);
+    }
+    if matches!(
+        aggregation_type,
+        AggregationType::MultipleSum | AggregationType::MultipleMinMax
+    ) {
+        return Ok(true);
+    }
+    Err(rollup_unsupported(
+        raqe,
+        deployment,
+        aggregation_type,
+        RollupBlocker::Aggregation,
+    ))
+}
+
+fn rollup_unsupported(
+    raqe: &Raqe,
+    deployment: &Deployment,
+    aggregation_type: AggregationType,
+    reason: RollupBlocker,
+) -> MilpOutputError {
+    MilpOutputError::RollupUnsupported {
+        query: raqe.id.clone(),
+        aggregation_type,
+        raqe: label_names(&raqe.grouping_labels),
+        deployment: label_names(&deployment.grouping_labels),
+        reason,
+    }
+}
+
+/// How `query` (an occurrence of `raqe`) reads the aggregation `key`: the
+/// query-time stage of a roll-up regroups `query`'s own outer aggregation,
+/// unless `stage_blocker` says `query` can't run one.
 fn query_plan_entry(
     query: &str,
     key: &str,
@@ -292,45 +380,23 @@ fn query_plan_entry(
     aggregation_type: AggregationType,
     stage_blocker: Option<RollupBlocker>,
 ) -> Result<QueryPlanEntry, MilpOutputError> {
-    // The store holds closed windows only; open ones live in the precompute
-    // engine.
-    let retained = deployment
-        .closed_instance_count(raqe.lookback_ms)
-        .ok_or_else(|| MilpOutputError::PartialWindowLookback {
-            query: query.to_string(),
-            lookback_ms: raqe.lookback_ms,
-            window_ms: deployment.window_ms,
-            slide_ms: deployment.slide_ms,
-        })?;
-    let aggregation_keys = vec![(key.to_string(), Some(retained))];
-    let (fine, coarse) = (&deployment.grouping_labels, &raqe.grouping_labels);
-    if coarse == fine {
+    let aggregation_keys = vec![(
+        key.to_string(),
+        Some(retained_windows(query, raqe, deployment)?),
+    )];
+    if !needs_query_time_stage(raqe, deployment, aggregation_type)? {
         return Ok(QueryPlanEntry::fully_planned(
             query.to_string(),
             aggregation_keys,
         ));
-    }
-    if aggregation_type.merges_across_groups() {
-        return Ok(QueryPlanEntry::fully_planned(
-            query.to_string(),
-            aggregation_keys,
-        ));
-    }
-    let unsupported = |reason| MilpOutputError::RollupUnsupported {
-        query: raqe.id.clone(),
-        aggregation_type,
-        raqe: label_names(coarse),
-        deployment: label_names(fine),
-        reason,
-    };
-    if !matches!(
-        aggregation_type,
-        AggregationType::MultipleSum | AggregationType::MultipleMinMax
-    ) {
-        return Err(unsupported(RollupBlocker::Aggregation));
     }
     if let Some(reason) = stage_blocker {
-        return Err(unsupported(reason));
+        return Err(rollup_unsupported(
+            raqe,
+            deployment,
+            aggregation_type,
+            reason,
+        ));
     }
     let unregroupable = || MilpOutputError::UnregroupableQuery(query.to_string());
     let aggregate = outer_aggregate(query).ok_or_else(unregroupable)?;
@@ -341,9 +407,56 @@ fn query_plan_entry(
     }
     Ok(QueryPlanEntry {
         aggregation_keys,
-        planned_subquery: regrouped(aggregate, fine),
+        planned_subquery: regrouped(aggregate, &deployment.grouping_labels),
         query_time_aggregations: vec![stage],
     })
+}
+
+/// How the engine answers the RQE leaf `raqe` from the aggregation `key`. A
+/// roll-up's query-time stage regroups by the RQE's own grouping.
+fn rqe_plan_entry(
+    key: &str,
+    raqe: &Raqe,
+    deployment: &Deployment,
+    aggregation_type: AggregationType,
+) -> Result<RqePlanEntry, MilpOutputError> {
+    let aggregation_keys = vec![(
+        key.to_string(),
+        Some(retained_windows(&raqe.id, raqe, deployment)?),
+    )];
+    let query_time_aggregations = if needs_query_time_stage(raqe, deployment, aggregation_type)? {
+        vec![rqe_roll_up_stage(raqe)]
+    } else {
+        Vec::new()
+    };
+    Ok(RqePlanEntry {
+        aggregation_keys,
+        query_time_aggregations,
+    })
+}
+
+/// The stage that rolls an exact keyed accumulator up to `raqe`'s grouping.
+fn rqe_roll_up_stage(raqe: &Raqe) -> QueryTimeAggregation {
+    let operator = match raqe.capability {
+        // A coarse count is the sum of the fine counts.
+        Capability::Sum | Capability::Count => QueryTimeAggregationOperator::Sum,
+        Capability::Min => QueryTimeAggregationOperator::Min,
+        Capability::Max => QueryTimeAggregationOperator::Max,
+        other => {
+            unreachable!("only exact sum, count, min and max roll up at query time, not {other:?}")
+        }
+    };
+    let labels = label_names(&raqe.grouping_labels);
+    let mode = if labels.is_empty() {
+        QueryTimeGroupingMode::All
+    } else {
+        QueryTimeGroupingMode::By
+    };
+    QueryTimeAggregation {
+        operator,
+        grouping: QueryTimeGrouping { mode, labels },
+        parameter: None,
+    }
 }
 
 /// Plans each per-series avg query (`per_series_avg`) as its leaf's entry
@@ -944,9 +1057,14 @@ mod tests {
         deployment.config.sketch = "hll".into();
         deployment.config.sketch_config["params"] = json!({"lg_k": 12});
 
-        let output =
-            deployments_to_planner_output(MilpConfig::Sql(&sql), &workload, &[deployment], &[0])
-                .unwrap();
+        let output = deployments_to_planner_output(
+            MilpConfig::Sql(&sql),
+            &workload,
+            &[deployment],
+            &[0],
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let a = aggregation_in(&output, query, QueryLanguage::sql);
         assert_eq!(a.aggregation_type, AggregationType::HLL);
         assert_eq!(a.grouping_labels, instance_job());
