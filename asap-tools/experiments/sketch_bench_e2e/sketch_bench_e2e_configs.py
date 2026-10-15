@@ -26,8 +26,9 @@ metrics the paced feeder generates. The config has:
   the table's `expr` tree. The config leaves out the queries without `expr`
   (e.g. `rate`), with a note, so every query it runs has a tree; the baseline
   mode runs the same queries. It then refuses a
-  `--prebuilt-output-dir` that plans the left-out queries: plan those configs
-  with `asap-planner --planner saved --expr-only`.
+  `--prebuilt-output-dir` that is not an `--expr-only` plan (`rqe_configs`
+  only, no per-query configs): plan those configs with
+  `asap-planner --planner saved --expr-only`.
 
 Usage (from asap-tools/experiments):
   python sketch_bench_e2e/sketch_bench_e2e_configs.py \\
@@ -70,6 +71,9 @@ SERVERS = [
 ]
 SKETCHDB_MODE = {"mode": "sketchdb", "server": "sketchdb"}
 BASELINE_MODE = {"mode": "baseline", "server": "prometheus"}
+# inference_config.yaml sections: per-query configs and per-RQE-leaf configs.
+INFERENCE_QUERIES_KEY = "queries"
+INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
 # The side file next to a generated config: <config stem> + this.
 RQE_EXPRS_SUFFIX = ".rqe_exprs.json"
 # Seconds the window ending at an evaluation time gets for its data to arrive.
@@ -245,43 +249,34 @@ def build_config(
     if prebuilt_output_dir is not None:
         prebuilt_output_dir = os.path.abspath(prebuilt_output_dir)
         check_prebuilt_controller_output(prebuilt_output_dir)
-        check_prebuilt_plans_no_dropped_queries(
-            prebuilt_output_dir,
-            dropped=no_expr,
-            kept=[t for _, t in promql_entries + sql_entries],
-        )
+        if frontend == QUERY_FRONTEND_RQE:
+            check_prebuilt_plan_is_expr_only(prebuilt_output_dir)
         config["controller"] = {"prebuilt_output_dir": prebuilt_output_dir}
     if frontend == QUERY_FRONTEND_RQE:
         config["query_engine"] = {"frontend": QUERY_FRONTEND_RQE}
     return config, notes, rqe_exprs
 
 
-def check_prebuilt_plans_no_dropped_queries(
-    prebuilt_output_dir: str, dropped: List[str], kept: List[str]
-) -> None:
-    """Refuse planner configs that plan queries the config leaves out: ASAPQuery
-    would maintain sketches for queries never sent, skewing its cost."""
-    if not dropped:
-        return
+def check_prebuilt_plan_is_expr_only(prebuilt_output_dir: str) -> None:
+    """Refuse planner configs that are not an `--expr-only` plan: the rqe
+    frontend sends only RQE trees, so ASAPQuery would otherwise maintain
+    sketches for per-query configs it is never asked for, skewing its cost.
+    An `--expr-only` plan has `rqe_configs` and no per-query configs."""
     path = os.path.join(prebuilt_output_dir, "inference_config.yaml")
     with open(path) as f:
         inference_config = yaml.safe_load(f)
-    if not isinstance(inference_config, dict) or not isinstance(
-        inference_config.get("queries"), list
-    ):
-        raise ValueError(f"{path} has invalid queries")
-    # The planner may split a query into leaves: a planned query belongs to a
-    # dropped one when it is part of its text and of no kept query's.
-    extra = [
-        q["query"]
-        for q in inference_config["queries"]
-        if any(q["query"] in d for d in dropped)
-        and not any(q["query"] in k for k in kept)
-    ]
-    if extra:
+    if not isinstance(inference_config, dict):
+        inference_config = {}
+    problems = []
+    if not inference_config.get(INFERENCE_RQE_CONFIGS_KEY):
+        problems.append(f"no {INFERENCE_RQE_CONFIGS_KEY}")
+    if inference_config.get(INFERENCE_QUERIES_KEY):
+        problems.append(f"per-query configs under {INFERENCE_QUERIES_KEY!r}")
+    if problems:
         raise ValueError(
-            f"{path} plans queries that --frontend rqe leaves out (no expr): "
-            f"{extra}; plan with `asap-planner --planner saved --expr-only`"
+            f"{path} is not an --expr-only plan ({'; '.join(problems)}), which "
+            "--frontend rqe needs: plan with "
+            "`asap-planner --planner saved --expr-only`"
         )
 
 
