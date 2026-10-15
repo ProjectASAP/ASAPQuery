@@ -100,6 +100,8 @@ VARIANTS = {
     "base": (1, 50),
     # Lookbacks x3: 1m -> 3m, ..., 20m -> 60m; quantiles 100s -> 300s.
     "long": (3, 50),
+    # half the series: 5,000 at 10/s, 50,000 samples/s.
+    "half": (1, 25),
     # x2 series: 20,000 at 10/s, 200,000 samples/s.
     "x2": (1, 100),
     # x5 series: 50,000 at 10/s, 500,000 samples/s.
