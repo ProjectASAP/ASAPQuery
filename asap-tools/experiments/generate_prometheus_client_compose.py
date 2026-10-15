@@ -23,10 +23,14 @@ def rqe_exprs_mounts(config_file: str) -> List[Tuple[str, str]]:
 
     The client resolves a relative side file against its config's directory,
     so the file keeps that relative place inside the container. A config
-    that isn't there (yet) or lists no servers has no rqe server to mount for.
+    that lists no servers has no rqe server to mount for; a missing config
+    is an error, since its rqe servers' side files would go unmounted.
     """
     if not os.path.isfile(config_file):
-        return []
+        raise FileNotFoundError(
+            f"client config {config_file} does not exist; cannot tell which "
+            "rqe side files to mount"
+        )
     with open(config_file) as f:
         servers = (yaml.safe_load(f) or {}).get("servers") or []
     config_dir = os.path.dirname(os.path.abspath(config_file))

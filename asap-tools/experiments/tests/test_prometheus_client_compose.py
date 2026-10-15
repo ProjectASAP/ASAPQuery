@@ -81,8 +81,9 @@ class RqeExprsMountsTest(unittest.TestCase):
             yaml.safe_dump({"query_groups": []}, f)
         self.assertEqual(gen.rqe_exprs_mounts(self.config_file), [])
 
-    def test_no_mount_without_a_config_file(self):
-        self.assertEqual(gen.rqe_exprs_mounts(self.config_file), [])
+    def test_missing_config_file_is_an_error(self):
+        with self.assertRaisesRegex(FileNotFoundError, "client config"):
+            gen.rqe_exprs_mounts(self.config_file)
 
     def test_no_mount_without_rqe_servers(self):
         self.write_config([{"name": "sketchdb", "url": "http://s"}])
