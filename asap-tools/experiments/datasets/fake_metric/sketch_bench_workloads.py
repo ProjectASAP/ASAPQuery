@@ -98,7 +98,8 @@ SKETCHDB = constants.SKETCHDB_EXPERIMENT_NAME
 
 OUT_CONFIG_DIR = "config/experiment_type/sketch_bench_clickhouse"
 CLICKHOUSE_URL = "http://localhost:8123"
-ASAP_URL = "http://localhost:8088"
+# ASAPQuery's ClickHouse adapter serves SQL here, not at ClickHouse's `/`.
+ASAP_URL = "http://localhost:8088/clickhouse/query"
 # Seconds after an eval time the client sends it, so data up to the eval
 # time has arrived.
 QUERY_TIME_OFFSET_SECS = 10

@@ -501,6 +501,11 @@ class ConvertTest(unittest.TestCase):
                         {"mode": "sketchdb", "server": "asap"},
                     ],
                 )
+                # The engine serves SQL at /clickhouse/query and 404s at `/`.
+                self.assertIn(
+                    {"name": "asap", "url": "http://localhost:8088/clickhouse/query"},
+                    ep["servers"],
+                )
                 validate_experiment_config(OmegaConf.create(ep))
 
                 out = os.path.join(tmp, "out")
