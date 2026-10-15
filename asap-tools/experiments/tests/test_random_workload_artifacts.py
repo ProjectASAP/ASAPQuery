@@ -12,6 +12,13 @@ import unittest
 from pathlib import Path
 
 import yaml
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
+
+from experiment_run_clickhouse import _check_clickhouse_paced_feeder
+from experiment_utils import config as experiment_config
+from experiment_utils.core import read_exporter_config
+from experiment_utils.services.paced_feeder import check_paced_feeder_config
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "datasets", "fake_metric")
@@ -149,6 +156,91 @@ class PilotConfigsTest(unittest.TestCase):
         ]
         raw_sql = "".join(files[f"interval_{t}s_baseline.sql"] for t in (1, 20, 30))
         self.assertTrue(all(sql in raw_sql for sql in pilot_sql))
+
+
+class PilotConfigsPreflightTest(unittest.TestCase):
+    """Each config through Hydra and the checks its runner makes before it
+    starts any service, from a copy of the config directory."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cwd = os.getcwd()
+        shutil.copytree(
+            Path(artifacts.EXPERIMENTS_DIR) / "config", Path(self.tmp.name) / "config"
+        )
+        workload = workloads.generate_workloads(seed=862)[0]
+        for path, content in artifacts.pilot_configs(workload, PILOT_DIR).items():
+            (Path(self.tmp.name) / path).parent.mkdir(parents=True, exist_ok=True)
+            (Path(self.tmp.name) / path).write_text(content)
+        # Configs name their SQL relative to the runners' directory.
+        os.chdir(self.tmp.name)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        self.tmp.cleanup()
+
+    def compose(self, name):
+        with initialize_config_dir(
+            version_base=None, config_dir=os.path.join(self.tmp.name, "config")
+        ):
+            return compose(
+                "config",
+                overrides=[f"experiment_type=random_workload/workload-01/{name}"],
+            )
+
+    def test_e2e_and_victoriametrics_configs_validate(self):
+        for name, modes in (
+            ("e2e", ["sketchdb", "baseline"]),
+            ("victoriametrics", ["baseline"]),
+        ):
+            with self.subTest(config=name):
+                cfg = self.compose(name)
+                params = cfg.experiment_params
+                experiment_config.validate_experiment_config(params)
+                exporter_config, reason = read_exporter_config(params)
+                self.assertIsNotNone(exporter_config, reason)
+                check_paced_feeder_config(
+                    OmegaConf.to_container(exporter_config.exporter_list.paced_feeder),
+                    modes=OmegaConf.to_container(params.experiment),
+                    parallelism=cfg.streaming.parallelism,
+                    min_feed_secs=cfg.flow.steady_state_wait
+                    + experiment_config.get_minimum_experiment_running_time(params),
+                    forward_unsupported_queries=cfg.streaming.forward_unsupported_queries,
+                    auto_discover_labels=cfg.controller.auto_discover_labels,
+                )
+                got, _ = experiment_config.generate_controller_client_configs(
+                    params, os.path.join(self.tmp.name, name)
+                )
+                self.assertEqual(got, modes)
+
+    def test_clickhouse_configs_validate(self):
+        for name, mode in (
+            ("clickhouse", sbw.BASELINE),
+            ("clickhouse_mv", sbw.BASELINE_MV),
+        ):
+            with self.subTest(config=name):
+                params = self.compose(name).experiment_params
+                experiment_config.validate_experiment_config(params)
+                out = os.path.join(self.tmp.name, name)
+                servers = {s.name: s.url for s in params.servers}
+                modes = experiment_config.generate_clickhouse_client_configs(
+                    query_groups=params.query_groups,
+                    local_experiment_dir=out,
+                    mode_server_urls={mode: servers["clickhouse"]},
+                    clickhouse_database="default",
+                )
+                self.assertEqual(modes, [mode])
+                with open(
+                    os.path.join(out, "controller_client_configs", f"{mode}.yaml")
+                ) as f:
+                    client_config = yaml.safe_load(f)
+                align = _check_clickhouse_paced_feeder(
+                    OmegaConf.to_container(params.dataset.paced_feeder),
+                    modes,
+                    client_config,
+                    experiment_config.get_minimum_experiment_running_time(params),
+                )
+                self.assertEqual(align, 60)
 
 
 @unittest.skipUnless(CLICKHOUSE, "clickhouse binary not found")
