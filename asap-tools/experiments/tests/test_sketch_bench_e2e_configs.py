@@ -268,6 +268,37 @@ class BuildConfigTest(unittest.TestCase):
         config, _, _ = self.build(prebuilt_output_dir=prebuilt)
         self.assertEqual(config["controller"], {"prebuilt_output_dir": prebuilt})
 
+    def write_prebuilt(self, planned):
+        prebuilt = os.path.join(self.tmp.name, "prebuilt")
+        os.makedirs(prebuilt, exist_ok=True)
+        open(os.path.join(prebuilt, "streaming_config.yaml"), "w").close()
+        with open(os.path.join(prebuilt, "inference_config.yaml"), "w") as f:
+            yaml.safe_dump({"queries": [{"query": q} for q in planned]}, f)
+        return prebuilt
+
+    def test_rqe_accepts_prebuilt_planning_only_expr_queries(self):
+        prebuilt = self.write_prebuilt(
+            [
+                "sum by (job) (data)",
+                "sum_over_time(data[15m])",
+                "quantile by (job) (0.5, data)",
+            ]
+        )
+        config, _, _ = self.build(prebuilt_output_dir=prebuilt, frontend="rqe")
+        self.assertEqual(config["controller"], {"prebuilt_output_dir": prebuilt})
+
+    def test_rqe_refuses_prebuilt_planning_a_dropped_query(self):
+        prebuilt = self.write_prebuilt(["sum by (job) (data)", "rate(data_total[15m])"])
+        with self.assertRaisesRegex(
+            ValueError,
+            r"plans queries that --frontend rqe leaves out \(no expr\): "
+            r"\['rate\(data_total\[15m\]\)'\]; plan with "
+            r"`asap-planner --planner saved --expr-only`",
+        ):
+            self.build(prebuilt_output_dir=prebuilt, frontend="rqe")
+        # PromQL runs `rate`, so the same configs are fine there.
+        self.build(prebuilt_output_dir=prebuilt)
+
     def compose_and_validate(self, built, overrides=()):
         # A dry run of what experiment_run_e2e.py does with the file before it
         # starts any service; returns the experiment modes.

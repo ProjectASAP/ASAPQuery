@@ -25,7 +25,9 @@ metrics the paced feeder generates. The config has:
   the table's `expr` tree (queries without `expr` are left out). With
   `--frontend rqe` the config sets `query_engine.frontend=rqe` and leaves out
   the queries without `expr` (e.g. `rate`), with a note, so every query it runs
-  has a tree; the baseline mode runs the same queries.
+  has a tree; the baseline mode runs the same queries. It then refuses a
+  `--prebuilt-output-dir` that plans the left-out queries: plan those configs
+  with `asap-planner --planner saved --expr-only`.
 
 Usage (from asap-tools/experiments):
   python sketch_bench_e2e/sketch_bench_e2e_configs.py \\
@@ -132,6 +134,7 @@ def build_config(
             )
         sql_entries = list(zip(structured, statements))
 
+    no_expr: List[str] = []
     if frontend == QUERY_FRONTEND_RQE:
         # The rqe querier has no PromQL/SQL fallback.
         no_expr = [t for q, t in promql_entries + sql_entries if "expr" not in q]
@@ -242,10 +245,44 @@ def build_config(
     if prebuilt_output_dir is not None:
         prebuilt_output_dir = os.path.abspath(prebuilt_output_dir)
         check_prebuilt_controller_output(prebuilt_output_dir)
+        check_prebuilt_plans_no_dropped_queries(
+            prebuilt_output_dir,
+            dropped=no_expr,
+            kept=[t for _, t in promql_entries + sql_entries],
+        )
         config["controller"] = {"prebuilt_output_dir": prebuilt_output_dir}
     if frontend == QUERY_FRONTEND_RQE:
         config["query_engine"] = {"frontend": QUERY_FRONTEND_RQE}
     return config, notes, rqe_exprs
+
+
+def check_prebuilt_plans_no_dropped_queries(
+    prebuilt_output_dir: str, dropped: List[str], kept: List[str]
+) -> None:
+    """Refuse planner configs that plan queries the config leaves out: ASAPQuery
+    would maintain sketches for queries never sent, skewing its cost."""
+    if not dropped:
+        return
+    path = os.path.join(prebuilt_output_dir, "inference_config.yaml")
+    with open(path) as f:
+        inference_config = yaml.safe_load(f)
+    if not isinstance(inference_config, dict) or not isinstance(
+        inference_config.get("queries"), list
+    ):
+        raise ValueError(f"{path} has invalid queries")
+    # The planner may split a query into leaves: a planned query belongs to a
+    # dropped one when it is part of its text and of no kept query's.
+    extra = [
+        q["query"]
+        for q in inference_config["queries"]
+        if any(q["query"] in d for d in dropped)
+        and not any(q["query"] in k for k in kept)
+    ]
+    if extra:
+        raise ValueError(
+            f"{path} plans queries that --frontend rqe leaves out (no expr): "
+            f"{extra}; plan with `asap-planner --planner saved --expr-only`"
+        )
 
 
 def rqe_exprs_path(output_path: str) -> str:
