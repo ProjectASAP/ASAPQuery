@@ -51,6 +51,8 @@ EXPERIMENTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, EXPERIMENTS_DIR)
 
 from experiment_utils.config import (  # noqa: E402
+    INFERENCE_QUERIES_KEY,
+    INFERENCE_RQE_CONFIGS_KEY,
     QUERY_FRONTEND_PROMQL,
     QUERY_FRONTEND_RQE,
     _load_sql_queries,
@@ -71,9 +73,6 @@ SERVERS = [
 ]
 SKETCHDB_MODE = {"mode": "sketchdb", "server": "sketchdb"}
 BASELINE_MODE = {"mode": "baseline", "server": "prometheus"}
-# inference_config.yaml sections: per-query configs and per-RQE-leaf configs.
-INFERENCE_QUERIES_KEY = "queries"
-INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
 # The side file next to a generated config: <config stem> + this.
 RQE_EXPRS_SUFFIX = ".rqe_exprs.json"
 # Seconds the window ending at an evaluation time gets for its data to arrive.

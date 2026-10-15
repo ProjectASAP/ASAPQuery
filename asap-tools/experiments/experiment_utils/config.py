@@ -27,6 +27,10 @@ QUERY_FRONTEND_RQE = "rqe"
 # The side file's name next to the client configs, which the querier resolves
 # relative to its config.
 RQE_EXPRS_FILENAME = "rqe_exprs.json"
+# inference_config.yaml sections: per-query configs and per-RQE-leaf configs
+# (an `--expr-only` plan has only the latter, keyed by leaf id).
+INFERENCE_QUERIES_KEY = "queries"
+INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
 
 
 def rqe_exprs_file_for_frontend(query_engine_cfg: Any) -> Optional[str]:
@@ -712,15 +716,58 @@ def _validate_sql_inference_config(inference_config):
             )
 
 
+def rqe_leaf_ids(expr):
+    """Ids of the `rqe` leaves of an RQE expression tree, e.g.
+    {"agg": "sum", "by": [], "of": {"rqe": {"id": "a", ...}}} -> ["a"]."""
+    if not isinstance(expr, dict):
+        raise ValueError(f"not an RQE expression node: {expr!r}")
+    if "rqe" in expr:
+        return [expr["rqe"]["id"]]
+    if "of" in expr:
+        return rqe_leaf_ids(expr["of"])
+    if "lhs" in expr and "rhs" in expr:
+        return rqe_leaf_ids(expr["lhs"]) + rqe_leaf_ids(expr["rhs"])
+    if "scalar" in expr:
+        return []
+    raise ValueError(f"not an RQE expression node: {expr!r}")
+
+
+def _check_rqe_leaves_planned(inference_config, rqe_exprs_file):
+    """Raise unless every leaf of every tree in the side file has an
+    `rqe_configs` entry: ASAPQuery answers a leaf only from its plan."""
+    with open(rqe_exprs_file) as f:
+        exprs = json.load(f)
+    rqe_configs = (
+        inference_config.get(INFERENCE_RQE_CONFIGS_KEY)
+        if isinstance(inference_config, dict)
+        else None
+    ) or {}
+    missing = sorted(
+        {i for e in exprs.values() for i in rqe_leaf_ids(e) if i not in rqe_configs}
+    )
+    if missing:
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml has no "
+            f"{INFERENCE_RQE_CONFIGS_KEY} entry for these RQE leaves of "
+            f"{rqe_exprs_file}: {missing}; plan with "
+            "`asap-planner --planner saved --expr-only`"
+        )
+
+
 def copy_prebuilt_controller_output(
     src,
     dest,
     controller_input_config,
     scrape_interval_ms,
     query_language=QUERY_LANGUAGE_PROMQL,
+    rqe_exprs_file=None,
 ):
     """Replaces `dest` with the planner configs in `src`, after checking they
-    plan every query of `controller_input_config` at this scrape interval."""
+    plan every query of `controller_input_config` at this scrape interval.
+
+    With `rqe_exprs_file` (query_engine.frontend=rqe) the querier sends those
+    trees instead of the queries' text, so every tree leaf must be planned
+    under `rqe_configs` instead."""
     check_prebuilt_controller_output(src)
     src_real, dest_real = os.path.realpath(src), os.path.realpath(dest)
     if os.path.commonpath([src_real, dest_real]) in (src_real, dest_real):
@@ -732,20 +779,27 @@ def copy_prebuilt_controller_output(
         inference_config = yaml.safe_load(f)
     if query_language == QUERY_LANGUAGE_SQL:
         _validate_sql_inference_config(inference_config)
-    if not isinstance(inference_config, dict) or not isinstance(
-        inference_config.get("queries"), list
-    ):
-        raise ValueError(
-            "controller.prebuilt_output_dir inference_config.yaml has invalid queries"
-        )
-    planned = {q["query"] for q in inference_config["queries"]}
-    with open(controller_input_config) as f:
-        groups = yaml.safe_load(f)["query_groups"]
-    unplanned = [q for g in groups for q in g["queries"] if not _is_planned(q, planned)]
-    if unplanned:
-        raise ValueError(
-            f"controller.prebuilt_output_dir doesn't plan these queries: {unplanned}"
-        )
+    if rqe_exprs_file is not None:
+        _check_rqe_leaves_planned(inference_config, rqe_exprs_file)
+    else:
+        if not isinstance(inference_config, dict) or not isinstance(
+            inference_config.get("queries"), list
+        ):
+            raise ValueError(
+                "controller.prebuilt_output_dir inference_config.yaml has invalid "
+                "queries"
+            )
+        planned = {q["query"] for q in inference_config["queries"]}
+        with open(controller_input_config) as f:
+            groups = yaml.safe_load(f)["query_groups"]
+        unplanned = [
+            q for g in groups for q in g["queries"] if not _is_planned(q, planned)
+        ]
+        if unplanned:
+            raise ValueError(
+                "controller.prebuilt_output_dir doesn't plan these queries: "
+                f"{unplanned}"
+            )
     with open(os.path.join(src, "streaming_config.yaml")) as f:
         aggregations = yaml.safe_load(f)["aggregations"]
     bad = [
