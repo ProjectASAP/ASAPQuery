@@ -469,8 +469,18 @@ fn prometheus_error(status: StatusCode, error_type: &str, error: &str) -> Respon
 
 /// `POST /api/v1/rqe_query`: answers with Prometheus instant-vector JSON. Never
 /// forwards to a fallback backend: an invalid request is a 400, a failed
-/// execution a 500, and a window without data yet an empty result.
+/// execution a 500, and a window without data yet an empty result. With
+/// request handling disabled it answers 500 `internal`, as the instant route
+/// does when it has no fallback either.
 async fn handle_rqe_query(State(state): State<AppState>, body: Bytes) -> Response {
+    if !state.config.handle_http_requests {
+        debug!("HTTP request handling is disabled; RQE queries have no fallback");
+        return prometheus_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "RQE query handling is disabled",
+        );
+    }
     let start_time = Instant::now();
     let request: RqeQueryRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,

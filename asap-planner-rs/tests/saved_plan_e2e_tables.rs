@@ -176,9 +176,9 @@ fn trees_add_only_rqe_configs() {
     }
 }
 
-/// The `rate` queries have no tree: `--expr-only` deploys nothing for them
-/// (no aggregation reads `data_total`) and leaves the tree queries' configs
-/// as they are.
+/// `--expr-only` plans tree leaves alone: no `query_configs`, every tree
+/// leaf's `rqe_configs` entry, and only the aggregations those entries read.
+/// The `rate` queries have no tree, so nothing reads `data_total`.
 #[test]
 fn expr_only_skips_the_rate_queries() {
     let rate_queries: Vec<String> = table_queries()
@@ -196,39 +196,42 @@ fn expr_only_skips_the_rate_queries() {
             .values()
             .any(|a| a.metric == "data_total")
     };
-
-    let all = convert(&table_path(), QueryLanguage::promql);
-    assert!(reads_rate_metric(&all));
+    assert!(reads_rate_metric(&convert(
+        &table_path(),
+        QueryLanguage::promql
+    )));
 
     let plans = "synthetic-templatesall-shared1.plans.json.gz";
-    let expr_only = convert_filtered(&table_path(), plans, QueryLanguage::promql, true).unwrap();
-    assert!(!reads_rate_metric(&expr_only));
-    let inference = expr_only
-        .to_inference_config(QueryLanguage::promql)
-        .unwrap();
-    assert!(inference
-        .query_configs
-        .iter()
-        .all(|c| !rate_queries.contains(&c.query)));
-    assert_eq!(
-        inference.rqe_configs.len(),
-        all.to_inference_config(QueryLanguage::promql)
-            .unwrap()
+    for language in [QueryLanguage::promql, QueryLanguage::sql] {
+        let all = convert(&table_path(), language);
+        let expr_only = convert_filtered(&table_path(), plans, language, true).unwrap();
+        if language == QueryLanguage::promql {
+            assert!(!reads_rate_metric(&expr_only));
+        }
+        let inference = expr_only.to_inference_config(language).unwrap();
+        assert!(inference.query_configs.is_empty(), "{language:?}");
+        let rqe_ids = |i: &asap_types::InferenceConfig| {
+            i.rqe_configs.keys().cloned().collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            rqe_ids(&inference),
+            rqe_ids(&all.to_inference_config(language).unwrap()),
+            "{language:?}"
+        );
+        let read: BTreeSet<u64> = inference
             .rqe_configs
-            .len()
-    );
-    assert_eq!(
-        inference.query_configs.len() + rate_queries.len(),
-        all.inference_query_count()
-    );
-
-    // The SQL queries all have trees: nothing changes.
-    let sql_all = convert(&table_path(), QueryLanguage::sql);
-    let sql_expr_only = convert_filtered(&table_path(), plans, QueryLanguage::sql, true).unwrap();
-    assert_eq!(
-        sql_expr_only.to_streaming_yaml_string().unwrap(),
-        sql_all.to_streaming_yaml_string().unwrap()
-    );
+            .values()
+            .flat_map(|c| c.aggregations.iter().map(|a| a.aggregation_id))
+            .collect();
+        let deployed: BTreeSet<u64> = expr_only
+            .to_streaming_config(language)
+            .unwrap()
+            .aggregation_configs
+            .keys()
+            .copied()
+            .collect();
+        assert_eq!(deployed, read, "{language:?}");
+    }
 }
 
 const PILOT_PLANS: &str = "random-seed862-workload01-pilot.plans.json.gz";
