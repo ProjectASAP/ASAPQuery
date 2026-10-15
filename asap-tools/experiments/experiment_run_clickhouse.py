@@ -91,10 +91,14 @@ Baseline + sketchdb:
 
 A sketch-bench workload table (sketch_bench_workloads.py configs) is fed in
 real time instead, one paced feeder per metric table, when
-experiment_params.dataset.paced_feeder is set.
+experiment_params.dataset.paced_feeder is set. Each mode then recreates the
+tables and starts its own feed; sketchdb's feed goes to the engine's
+remote-write ingest as well as ClickHouse (which answers forwarded queries),
+from one start, and needs controller.prebuilt_output_dir.
 """
 
 import atexit
+import functools
 import json
 import os
 import time
@@ -116,6 +120,7 @@ from experiment_utils.services import (
 from experiment_utils.services.misc import ControllerService, DiscoveryBackend
 from experiment_utils.services.paced_feeder import (
     SINK_CLICKHOUSE,
+    SINK_QUERY_ENGINE,
     PacedFeederService,
     aligned_interval_lcm,
     check_paced_feeder_feed,
@@ -331,14 +336,18 @@ def _check_clickhouse_paced_feeder(
     experiment_modes: List[str],
     client_config: dict,
     minimum_experiment_running_time: int,
+    controller_prebuilt_output_dir: Optional[str],
 ) -> int:
     """Fail before ClickHouse starts on a feeder config the run can't serve;
     returns the seconds the feeders' start must align to."""
-    if constants.SKETCHDB_EXPERIMENT_NAME in experiment_modes:
+    if (
+        constants.SKETCHDB_EXPERIMENT_NAME in experiment_modes
+        and not controller_prebuilt_output_dir
+    ):
         raise ValueError(
-            "dataset.paced_feeder feeds ClickHouse only, and sketchdb mode's "
-            "engine ingests dataset.local_data_file; sketchdb on a paced feed "
-            "is not supported yet"
+            "sketchdb on dataset.paced_feeder needs controller.prebuilt_output_dir: "
+            "the planner's input is built from dataset.precompute, which a fed "
+            "dataset has none of"
         )
     check_paced_feeder_feed(
         feeder_config,
@@ -363,10 +372,16 @@ def _start_clickhouse_feed(
     experiment_mode: str,
     experiment_root_output_dir: str,
     local_experiment_root_dir: str,
+    query_engine_url: Optional[str] = None,
 ) -> int:
-    """Recreate the metric tables, start one feeder per metric, and point the
-    mode's aligned query groups at the feed's start; returns that start in
-    epoch ms."""
+    """Recreate the metric tables, start one feeder per (sink, metric), and
+    point the mode's aligned query groups at the feed's start; returns that
+    start in epoch ms.
+
+    ClickHouse is always fed; with `query_engine_url` (sketchdb) so is
+    ASAPQuery's remote-write ingest, from the same start and seed, so the
+    queries it forwards to ClickHouse read the same data.
+    """
     # An earlier mode's feeders (left running by no_teardown, or with an
     # INSERT in flight) would write into the recreated tables.
     feeder_service.stop()
@@ -377,13 +392,16 @@ def _start_clickhouse_feed(
         )
     # Before any data arrives: views only see rows inserted after they exist.
     data_loader.run_init_sql(dataset_name, init_sql_file)
+    sinks = {
+        # The feeder runs on the next node (see main()).
+        SINK_CLICKHOUSE: f"http://{provider.get_node_ip(node_offset)}:"
+        f"{clickhouse_http_port}/?database={CLICKHOUSE_DATABASE}"
+    }
+    if query_engine_url is not None:
+        sinks[SINK_QUERY_ENGINE] = query_engine_url
     start_ms = feeder_service.start(
         config=feeder_config,
-        sinks={
-            # The feeder runs on the next node (see main()).
-            SINK_CLICKHOUSE: f"http://{provider.get_node_ip(node_offset)}:"
-            f"{clickhouse_http_port}/?database={CLICKHOUSE_DATABASE}"
-        },
+        sinks=sinks,
         experiment_output_dir=os.path.join(experiment_root_output_dir, experiment_mode),
         local_experiment_dir=os.path.join(local_experiment_root_dir, experiment_mode),
         align_secs=feeder_align_secs,
@@ -645,6 +663,7 @@ def main(cfg: DictConfig) -> None:
                 experiment_modes,
                 yaml.safe_load(f),
                 minimum_experiment_running_time,
+                controller_prebuilt_output_dir,
             )
         # On its own node, as in experiment_run_e2e.py, so the feeder neither
         # takes ClickHouse's cores nor shows up as its CPU.
@@ -688,7 +707,22 @@ def main(cfg: DictConfig) -> None:
         clickhouse_http_port=clickhouse_http_port,
     )
     remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
-    if paced_feeder_service is None:
+    if paced_feeder_service is not None:
+        start_feed = functools.partial(
+            _start_clickhouse_feed,
+            provider=provider,
+            node_offset=node_offset,
+            data_loader=data_loader,
+            feeder_service=paced_feeder_service,
+            feeder_config=paced_feeder_config,
+            feeder_align_secs=paced_feeder_align_secs,
+            dataset_name=dataset_name,
+            init_sql_file=init_sql_file,
+            clickhouse_http_port=clickhouse_http_port,
+            experiment_root_output_dir=experiment_root_output_dir,
+            local_experiment_root_dir=local_experiment_root_dir,
+        )
+    else:
         ingest_mode = _ingest_mode(experiment_modes)
         ingest_client_config = os.path.join(
             experiment_root_output_dir,
@@ -798,13 +832,27 @@ def main(cfg: DictConfig) -> None:
                 generate_controller_output,
             )
 
-            # Start query engine (precompute + JSON ingest + ClickHouse fallback)
+            # Start query engine (precompute + ClickHouse fallback), ingesting
+            # the paced feed over remote write or else local_data_file as JSON
+            remote_write_port = int(cfg.streaming.remote_write.base_port)
+            if paced_feeder_service is not None:
+                ingest_json_config = None
+            else:
+                dataset_precompute_cfg = dataset_cfg.precompute
+                ingest_json_config = {
+                    "path": remote_data_file,
+                    "metric_name": str(dataset_cfg.metric_name),
+                    "value_col": str(dataset_precompute_cfg.value_col),
+                    "label_cols": list(dataset_precompute_cfg.label_cols),
+                    "timestamp_col": str(dataset_precompute_cfg.timestamp_col),
+                    "timestamp_unit": "seconds",
+                    "batch_size": 1000,
+                }
             query_engine_service = QueryEngineRustService(
                 provider=provider,
                 use_container=False,
                 node_offset=node_offset,
             )
-            dataset_precompute_cfg = dataset_cfg.precompute
             query_engine_service.start(
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
@@ -826,18 +874,25 @@ def main(cfg: DictConfig) -> None:
                 retention_slack_ms=config.get_retention_slack_ms(
                     ep.query_groups, data_ingestion_interval_ms
                 ),
-                ingest_json_config={
-                    "path": remote_data_file,
-                    "metric_name": str(dataset_cfg.metric_name),
-                    "value_col": str(dataset_precompute_cfg.value_col),
-                    "label_cols": list(dataset_precompute_cfg.label_cols),
-                    "timestamp_col": str(dataset_precompute_cfg.timestamp_col),
-                    "timestamp_unit": "seconds",
-                    "batch_size": 1000,
-                },
+                remote_write_port=remote_write_port,
+                ingest_json_config=ingest_json_config,
             )
 
             query_engine_service.wait_until_ready()
+
+            if paced_feeder_service is not None:
+                # The engine accepts writes now; the aligned query groups'
+                # starting delay, not steady_state_wait, gives data time to
+                # arrive.
+                start_feed(
+                    experiment_mode=experiment_mode,
+                    # The feeder runs on the next node (see main()).
+                    query_engine_url=f"http://{provider.get_node_ip(node_offset)}:"
+                    f"{remote_write_port}{cfg.streaming.remote_write.path}",
+                )
+                pre_query_wait_seconds = 0
+            else:
+                pre_query_wait_seconds = int(cfg.flow.steady_state_wait)
 
             controller_client_config = os.path.join(
                 experiment_root_output_dir,
@@ -846,13 +901,12 @@ def main(cfg: DictConfig) -> None:
             )
 
             # Single continuous monitor spanning ingest + query: the monitor
-            # starts now (engine is ingesting) and waits steady_state_wait
+            # starts now (engine is ingesting) and waits pre_query_wait_seconds
             # before the query client runs, so one monitor_output.json captures
             # precompute CPU (pc-worker threads) during ingest and query CPU
             # during the query phase, with per-thread attribution.
-            steady_state_wait = int(cfg.flow.steady_state_wait)
             print(
-                f"Monitoring precompute+query CPU; waiting {steady_state_wait}s "
+                f"Monitoring precompute+query CPU; waiting {pre_query_wait_seconds}s "
                 "for ingest before queries..."
             )
             _run_query_workload(
@@ -868,9 +922,11 @@ def main(cfg: DictConfig) -> None:
                 query_engine_service=query_engine_service,
                 profile_query_engine=profile_query_engine,
                 profile_prometheus_time=profile_prometheus_time,
-                pre_query_wait_seconds=steady_state_wait,
+                pre_query_wait_seconds=pre_query_wait_seconds,
                 monitor_interval_seconds=monitor_interval_seconds,
             )
+            if paced_feeder_service is not None:
+                _finish_clickhouse_feed(paced_feeder_service)
             spill_error = query_engine_service.record_spill()
 
             sync.rsync_experiment_data(
@@ -890,20 +946,7 @@ def main(cfg: DictConfig) -> None:
         else:
             # --- baseline mode ---
             if paced_feeder_service is not None:
-                _start_clickhouse_feed(
-                    provider=provider,
-                    node_offset=node_offset,
-                    data_loader=data_loader,
-                    feeder_service=paced_feeder_service,
-                    feeder_config=paced_feeder_config,
-                    feeder_align_secs=paced_feeder_align_secs,
-                    dataset_name=dataset_name,
-                    init_sql_file=init_sql_file,
-                    clickhouse_http_port=clickhouse_http_port,
-                    experiment_mode=experiment_mode,
-                    experiment_root_output_dir=experiment_root_output_dir,
-                    local_experiment_root_dir=local_experiment_root_dir,
-                )
+                start_feed(experiment_mode=experiment_mode)
             controller_client_config = os.path.join(
                 experiment_root_output_dir,
                 "controller_client_configs",
