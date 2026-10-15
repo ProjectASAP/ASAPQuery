@@ -15,7 +15,8 @@ services:
       - "{{ experiment_output_dir }}:/app/outputs"
       - "{{ client_output_dir }}:/app/prometheus_client_output"
       - "{{ config_file }}:/app/prometheus_client_config.yaml:ro"{% if query_engine_config_file is defined and query_engine_config_file is not none %}
-      - "{{ query_engine_config_file}}:/app/query_engine_config_file.yaml:ro"{% endif %}
+      - "{{ query_engine_config_file}}:/app/query_engine_config_file.yaml:ro"{% endif %}{% for host_path, container_path in rqe_exprs_mounts %}
+      - "{{ host_path }}:{{ container_path }}:ro"{% endfor %}
     network_mode: "host" # Allows prometheus client to send requests to localhost, not ideal for production
     command: [
       "--config_file", "/app/prometheus_client_config.yaml",

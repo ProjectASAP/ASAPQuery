@@ -1,5 +1,5 @@
 import requests
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 from requests.adapters import HTTPAdapter
 
 from .query_client import QueryClient, QueryResponse
@@ -47,6 +47,7 @@ class ClickHouseQueryClient(QueryClient):
         self,
         query: str,
         query_time: Optional[int] = None,
+        config_query: Optional[str] = None,
     ) -> QueryResponse:
         """
         Execute SQL query via ClickHouse HTTP interface.
@@ -55,6 +56,7 @@ class ClickHouseQueryClient(QueryClient):
             query: SQL query string (may contain template variables already substituted)
             query_time: Not directly used - time filtering should be done via
                         template substitution before calling this method
+            config_query: Unused; SQL is sent as rendered
 
         Returns:
             QueryResponse with normalized data
@@ -112,16 +114,3 @@ class ClickHouseQueryClient(QueryClient):
         # Simple check - look for FORMAT keyword followed by format name
         upper_query = query.upper()
         return " FORMAT " in upper_query or "\nFORMAT " in upper_query
-
-    def get_runtime_info(self) -> Optional[Dict[str, Any]]:
-        """Check ClickHouse availability via ping endpoint."""
-        try:
-            response = self._session.get(
-                f"{self.server_url}/ping",
-                timeout=5,
-            )
-            if response.status_code == 200:
-                return {"status": "ok", "response": response.text.strip()}
-        except Exception:
-            pass
-        return None

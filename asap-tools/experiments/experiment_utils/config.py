@@ -8,8 +8,9 @@ import os
 import re
 import shutil
 import copy
+import json
 import yaml
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import hydra.utils
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -19,6 +20,70 @@ from experiment_utils.providers.factory import create_provider
 
 # Keys the planner's `ControllerOptions` accepts.
 CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
+
+# `query_engine.frontend`: how the querier sends queries to ASAPQuery.
+QUERY_FRONTEND_PROMQL = "promql"
+QUERY_FRONTEND_RQE = "rqe"
+# The side file's name next to the client configs, which the querier resolves
+# relative to its config.
+RQE_EXPRS_FILENAME = "rqe_exprs.json"
+# inference_config.yaml sections: per-query configs and per-RQE-leaf configs
+# (an `--expr-only` plan has only the latter, keyed by leaf id).
+INFERENCE_QUERIES_KEY = "queries"
+INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
+
+
+def rqe_exprs_file_for_frontend(query_engine_cfg: Any) -> Optional[str]:
+    """The side file (query text -> RQE expression tree) the sketchdb server's
+    querier reads under `query_engine.frontend=rqe`; None under promql."""
+    frontend = query_engine_cfg.frontend
+    if frontend == QUERY_FRONTEND_PROMQL:
+        return None
+    if frontend != QUERY_FRONTEND_RQE:
+        raise ValueError(
+            f"query_engine.frontend must be {QUERY_FRONTEND_PROMQL!r} or "
+            f"{QUERY_FRONTEND_RQE!r}, got {frontend!r}"
+        )
+    path = query_engine_cfg.get("rqe_exprs_file")
+    if not path:
+        raise ValueError(
+            "query_engine.frontend=rqe needs query_engine.rqe_exprs_file "
+            "(written by sketch_bench_e2e_configs.py)"
+        )
+    return str(path)
+
+
+def require_promql_frontend(query_engine_cfg: Any, script_name: str) -> None:
+    """Fail unless `query_engine.frontend` is promql, for runners that only
+    send PromQL: an rqe run would otherwise measure the PromQL frontend."""
+    frontend = query_engine_cfg.frontend
+    if frontend != QUERY_FRONTEND_PROMQL:
+        raise ValueError(
+            f"{script_name} supports only query_engine.frontend="
+            f"{QUERY_FRONTEND_PROMQL!r}, got {frontend!r}; run "
+            "experiment_run_e2e.py for the rqe frontend"
+        )
+
+
+def _copy_rqe_exprs(
+    rqe_exprs_file: str, query_groups: List[Dict[str, Any]], output_dir: str
+) -> None:
+    """Copy the side file next to the client configs after checking it has a
+    tree for every query: the rqe querier has no PromQL/SQL fallback."""
+    with open(rqe_exprs_file) as f:
+        exprs = json.load(f)
+    if not isinstance(exprs, dict):
+        raise ValueError(
+            f"{rqe_exprs_file}: expected a JSON object of query text -> expr"
+        )
+    missing = [q for g in query_groups for q in g["queries"] if q not in exprs]
+    if missing:
+        raise ValueError(
+            f"{rqe_exprs_file} has no RQE expression for {missing}; drop these "
+            "queries for query_engine.frontend=rqe (sketch_bench_e2e_configs.py "
+            "--frontend rqe does)"
+        )
+    shutil.copyfile(rqe_exprs_file, os.path.join(output_dir, RQE_EXPRS_FILENAME))
 
 
 def validate_basic_config(
@@ -370,8 +435,13 @@ def generate_controller_client_configs(
     aggregate_cleanup: DictConfig = None,
     sketch_parameters: DictConfig = None,
     windowing: DictConfig = None,
+    rqe_exprs_file: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
-    """Generate controller client configurations from experiment parameters."""
+    """Generate controller client configurations from experiment parameters.
+
+    With `rqe_exprs_file` (see `rqe_exprs_file_for_frontend`), the sketchdb
+    mode's server uses the rqe protocol and a copy of that side file.
+    """
     # experiment_params is already loaded by Hydra
     experiment_config = OmegaConf.to_container(experiment_params, resolve=True)
     assert experiment_config is not None and isinstance(experiment_config, dict)
@@ -413,6 +483,16 @@ def generate_controller_client_configs(
         "existing_streaming_config",
     }
 
+    if rqe_exprs_file is not None:
+        if not any(
+            m["mode"] == constants.SKETCHDB_EXPERIMENT_NAME for m in experiment_modes
+        ):
+            raise ValueError(
+                "query_engine.frontend=rqe needs a "
+                f"{constants.SKETCHDB_EXPERIMENT_NAME!r} experiment mode"
+            )
+        _copy_rqe_exprs(rqe_exprs_file, experiment_config["query_groups"], output_dir)
+
     for experiment_mode in experiment_modes:
         full_config = copy.deepcopy(experiment_config)
         del full_config["experiment"]
@@ -428,6 +508,23 @@ def generate_controller_client_configs(
             and experiment_mode["query_prometheus_too"]
         ):
             full_config["servers"] = servers_config
+
+        if (
+            rqe_exprs_file is not None
+            and experiment_mode["mode"] == constants.SKETCHDB_EXPERIMENT_NAME
+        ):
+            full_config["servers"] = [
+                (
+                    {
+                        **server,
+                        "protocol": constants.RQE_PROTOCOL,
+                        "rqe_exprs_file": RQE_EXPRS_FILENAME,
+                    }
+                    if server["name"] == experiment_mode["server"]
+                    else server
+                )
+                for server in full_config["servers"]
+            ]
 
         # Full config — used by prometheus_client (needs "servers", etc.)
         with open(
@@ -627,15 +724,58 @@ def _validate_sql_inference_config(inference_config):
             )
 
 
+def rqe_leaf_ids(expr):
+    """Ids of the `rqe` leaves of an RQE expression tree, e.g.
+    {"agg": "sum", "by": [], "of": {"rqe": {"id": "a", ...}}} -> ["a"]."""
+    if not isinstance(expr, dict):
+        raise ValueError(f"not an RQE expression node: {expr!r}")
+    if "rqe" in expr:
+        return [expr["rqe"]["id"]]
+    if "of" in expr:
+        return rqe_leaf_ids(expr["of"])
+    if "lhs" in expr and "rhs" in expr:
+        return rqe_leaf_ids(expr["lhs"]) + rqe_leaf_ids(expr["rhs"])
+    if "scalar" in expr:
+        return []
+    raise ValueError(f"not an RQE expression node: {expr!r}")
+
+
+def _check_rqe_leaves_planned(inference_config, rqe_exprs_file):
+    """Raise unless every leaf of every tree in the side file has an
+    `rqe_configs` entry: ASAPQuery answers a leaf only from its plan."""
+    with open(rqe_exprs_file) as f:
+        exprs = json.load(f)
+    rqe_configs = (
+        inference_config.get(INFERENCE_RQE_CONFIGS_KEY)
+        if isinstance(inference_config, dict)
+        else None
+    ) or {}
+    missing = sorted(
+        {i for e in exprs.values() for i in rqe_leaf_ids(e) if i not in rqe_configs}
+    )
+    if missing:
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml has no "
+            f"{INFERENCE_RQE_CONFIGS_KEY} entry for these RQE leaves of "
+            f"{rqe_exprs_file}: {missing}; plan with "
+            "`asap-planner --planner saved --expr-only`"
+        )
+
+
 def copy_prebuilt_controller_output(
     src,
     dest,
     controller_input_config,
     scrape_interval_ms,
     query_language=QUERY_LANGUAGE_PROMQL,
+    rqe_exprs_file=None,
 ):
     """Replaces `dest` with the planner configs in `src`, after checking they
-    plan every query of `controller_input_config` at this scrape interval."""
+    plan every query of `controller_input_config` at this scrape interval.
+
+    With `rqe_exprs_file` (query_engine.frontend=rqe) the querier sends those
+    trees instead of the queries' text, so every tree leaf must be planned
+    under `rqe_configs` instead."""
     check_prebuilt_controller_output(src)
     src_real, dest_real = os.path.realpath(src), os.path.realpath(dest)
     if os.path.commonpath([src_real, dest_real]) in (src_real, dest_real):
@@ -647,20 +787,27 @@ def copy_prebuilt_controller_output(
         inference_config = yaml.safe_load(f)
     if query_language == QUERY_LANGUAGE_SQL:
         _validate_sql_inference_config(inference_config)
-    if not isinstance(inference_config, dict) or not isinstance(
-        inference_config.get("queries"), list
-    ):
-        raise ValueError(
-            "controller.prebuilt_output_dir inference_config.yaml has invalid queries"
-        )
-    planned = {q["query"] for q in inference_config["queries"]}
-    with open(controller_input_config) as f:
-        groups = yaml.safe_load(f)["query_groups"]
-    unplanned = [q for g in groups for q in g["queries"] if not _is_planned(q, planned)]
-    if unplanned:
-        raise ValueError(
-            f"controller.prebuilt_output_dir doesn't plan these queries: {unplanned}"
-        )
+    if rqe_exprs_file is not None:
+        _check_rqe_leaves_planned(inference_config, rqe_exprs_file)
+    else:
+        if not isinstance(inference_config, dict) or not isinstance(
+            inference_config.get("queries"), list
+        ):
+            raise ValueError(
+                "controller.prebuilt_output_dir inference_config.yaml has invalid "
+                "queries"
+            )
+        planned = {q["query"] for q in inference_config["queries"]}
+        with open(controller_input_config) as f:
+            groups = yaml.safe_load(f)["query_groups"]
+        unplanned = [
+            q for g in groups for q in g["queries"] if not _is_planned(q, planned)
+        ]
+        if unplanned:
+            raise ValueError(
+                "controller.prebuilt_output_dir doesn't plan these queries: "
+                f"{unplanned}"
+            )
     with open(os.path.join(src, "streaming_config.yaml")) as f:
         aggregations = yaml.safe_load(f)["aggregations"]
     bad = [

@@ -7,7 +7,48 @@ Processes the docker-compose.yml.j2 template with command line arguments.
 import argparse
 import os
 import sys
+from typing import List, Tuple
+
+import yaml
 from jinja2 import Template
+
+import constants
+
+# Where docker-compose.yml.j2 mounts the client config.
+CONTAINER_CONFIG_DIR = "/app"
+
+
+def rqe_exprs_mounts(config_file: str) -> List[Tuple[str, str]]:
+    """(host path, container path) of each rqe server's side file.
+
+    The client resolves a relative side file against its config's directory,
+    so the file keeps that relative place inside the container. A config
+    that lists no servers has no rqe server to mount for; a missing config
+    is an error, since its rqe servers' side files would go unmounted.
+    """
+    if not os.path.isfile(config_file):
+        raise FileNotFoundError(
+            f"client config {config_file} does not exist; cannot tell which "
+            "rqe side files to mount"
+        )
+    with open(config_file) as f:
+        servers = (yaml.safe_load(f) or {}).get("servers") or []
+    config_dir = os.path.dirname(os.path.abspath(config_file))
+    mounts = []
+    for server in servers:
+        if server.get("protocol") != constants.RQE_PROTOCOL:
+            continue
+        host_path = os.path.join(config_dir, server["rqe_exprs_file"])
+        if not os.path.isfile(host_path):
+            # Docker would mount an empty directory in its place.
+            raise FileNotFoundError(
+                f"rqe server {server['name']!r} in {config_file}: side file "
+                f"{host_path} does not exist"
+            )
+        mounts.append(
+            (host_path, os.path.join(CONTAINER_CONFIG_DIR, server["rqe_exprs_file"]))
+        )
+    return mounts
 
 
 def generate_compose_file(template_path: str, output_path: str, **template_vars):
@@ -154,6 +195,7 @@ def main():
         "dry_run": args.dry_run,
         "compare_results": args.compare_results,
         "parallel": args.parallel,
+        "rqe_exprs_mounts": rqe_exprs_mounts(args.config_file),
     }
 
     # Only add optional args if they have values

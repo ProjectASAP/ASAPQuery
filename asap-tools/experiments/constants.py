@@ -23,6 +23,9 @@ PROMETHEUS_THROUGHPUT_POLLING_INTERVAL = 5
 PROMETHEUS_HEALTH_POLLING_INTERVAL = 5
 
 SKETCHDB_EXPERIMENT_NAME = "sketchdb"
+# The querier protocol that POSTs RQE expression trees (prometheus-client's
+# RqeQueryClient).
+RQE_PROTOCOL = "rqe"
 BASELINE_EXPERIMENT_NAME = "baseline"
 INGEST_MONITOR_STOP_FILE = ".ingest_monitor_stop"
 # ClickHouse precompute-strategy arms (issue #491): same raw table/queries as

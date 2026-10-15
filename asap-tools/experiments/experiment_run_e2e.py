@@ -179,6 +179,7 @@ def main(cfg: DictConfig):
         )
 
     sync.copy_experiment_config(cfg.experiment_params, local_experiment_root_dir)
+    rqe_exprs_file = config.rqe_exprs_file_for_frontend(cfg.query_engine)
     experiment_modes, metrics_to_remote_write = (
         config.generate_controller_client_configs(
             cfg.experiment_params,
@@ -186,6 +187,7 @@ def main(cfg: DictConfig):
             cfg.aggregate_cleanup,
             cfg.get("sketch_parameters", None),
             cfg.get("windowing", None),
+            rqe_exprs_file=rqe_exprs_file,
         )
     )
     sync.rsync_controller_client_configs(
@@ -377,6 +379,7 @@ def main(cfg: DictConfig):
                         f"{experiment_mode}_controller_input.yaml",
                     ),
                     data_ingestion_interval_ms,
+                    rqe_exprs_file=rqe_exprs_file,
                 )
                 sync.rsync_streaming_configs(
                     provider,
