@@ -482,9 +482,9 @@ mod tests {
     #[test]
     fn test_spatial_of_temporal_sql_is_rejected() {
         // PromQL still supports (and collapses) sum(sum_over_time(...)) by (label);
-        // the SQL equivalent is a nested subquery, which the matcher now rejects
-        // outright with QueryError::NestedQueryUnsupported (#499) rather than
-        // mis-executing it, so there's no longer a SQL context to compare.
+        // the SQL equivalent is a nested subquery. Its config here has no
+        // query-time aggregations for the outer layer, so the engine rejects it
+        // rather than mis-executing it as the inner layer alone.
         let scrape_interval_ms = 1000;
         let promql_query = "sum(sum_over_time(cpu_usage[10s])) by (L1)";
         let sql_query = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";

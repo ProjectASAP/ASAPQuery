@@ -108,7 +108,7 @@ cases:
   # Nested aggregations
   - name: nested_avg_of_quantile
     query: SELECT L1, AVG(result) FROM (SELECT L1, L2, QUANTILE(0.95, value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2) GROUP BY L1
-    expected: unsupported
+    expected: supported
   - name: nested_sum_of_sum
     query: SELECT L1, SUM(total) FROM (SELECT L1, L2, SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2) GROUP BY L1
-    expected: unsupported
+    expected: supported
