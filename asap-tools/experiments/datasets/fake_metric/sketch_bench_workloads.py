@@ -12,15 +12,21 @@ For a table `<stem>.json` this writes, under OUT_CONFIG_DIR:
 - <stem>/init.sql: the metric tables (baseline);
 - <stem>/init_mv.sql: the metric tables and their materialized views
   (baseline_mv);
-- <stem>/interval_<T>s_<mode>.sql: one statement per query that repeats every
-  T s, for the baseline (raw table) and baseline_mv (views) arms;
-- <stem>/asapquery.sql: each structured entry's `sql` (ASAPQuery's SQL, as
-  sketch-bench's exporter writes it) with NOW() replaced by the floored eval
-  time;
+- <stem>/interval_<T>s[_structured]_<mode>.sql: one statement per query that
+  repeats every T s, for the baseline (raw table) and baseline_mv (views)
+  arms, and for structured entries also sketchdb's: the entry's `sql`
+  (ASAPQuery's SQL, as sketch-bench's exporter writes it) with NOW() replaced
+  by the floored eval time;
 - <stem>_clickhouse.yaml, <stem>_clickhouse_mv.yaml: one
   experiment_run_clickhouse.py config per arm, each creating the tables
   through its own init SQL and feeding every metric with the paced feeder,
-  with one query group per T, repeating every T seconds.
+  with one query group per T and kind (structured groups first), repeating
+  every T seconds;
+- <stem>_clickhouse_sketchdb.yaml, with --prebuilt-output-dir: baseline and
+  sketchdb in one experiment, so baseline's results score sketchdb's.
+  sketchdb runs the structured groups only (PromQL entries have no ASAPQuery
+  SQL) on those planner configs; since they come first, its query indices
+  are baseline's.
 
 baseline_mv keeps exact mergeable states, no sketches: one view per (metric,
 value, statistic, T) holds per T-second bucket and group the state of sums,
@@ -84,12 +90,15 @@ sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 import constants  # noqa: E402
+from experiment_utils.config import check_prebuilt_controller_output  # noqa: E402
 
 BASELINE = constants.BASELINE_EXPERIMENT_NAME
 BASELINE_MV = constants.BASELINE_MV_EXPERIMENT_NAME
+SKETCHDB = constants.SKETCHDB_EXPERIMENT_NAME
 
 OUT_CONFIG_DIR = "config/experiment_type/sketch_bench_clickhouse"
 CLICKHOUSE_URL = "http://localhost:8123"
+ASAP_URL = "http://localhost:8088"
 # Seconds after an eval time the client sends it, so data up to the eval
 # time has arrived.
 QUERY_TIME_OFFSET_SECS = 10
@@ -609,6 +618,7 @@ def convert(
     duration_secs: int,
     samples_per_sec: Optional[int] = None,
     records_per_sec: Optional[int] = None,
+    prebuilt_output_dir: Optional[str] = None,
 ) -> List[str]:
     """Writes the SQL files and one config per arm; returns the config paths.
     Everything is rendered before anything is written, so a table that fails
@@ -653,19 +663,27 @@ def convert(
             metrics, list(views.values()), mode == BASELINE_MV
         )
 
-    by_interval: Dict[int, Dict[str, List[str]]] = {}
-    asapquery: List[str] = []
+    # Structured groups come first: sketchdb runs only those, and results pair
+    # across modes by query index, so its queries must be baseline's first.
+    groups: Dict[Tuple[bool, int], Dict[str, List[str]]] = {}
     for entry, q in entries:
-        files = by_interval.setdefault(q.interval_secs, {m: [] for m in modes})
-        files[BASELINE].append(f"-- {describe(entry)}\n{raw_sql(q, labels)}")
+        structured = "promql" not in entry
+        files = groups.setdefault(
+            (not structured, q.interval_secs),
+            {m: [] for m in modes + ([SKETCHDB] if structured else [])},
+        )
+        comment = f"-- {describe(entry)}\n"
+        files[BASELINE].append(comment + raw_sql(q, labels))
         if BASELINE_MV in files:
-            sql = mv_sql(q, views, labels)
-            files[BASELINE_MV].append(f"-- {describe(entry)}\n{sql}")
-        if "promql" not in entry:
-            asapquery.append(f"-- {describe(entry)}\n{asapquery_sql(entry)}")
-    if asapquery:
-        # For the ASAPQuery arm; the runner does not read it.
-        outputs[os.path.join(sql_dir, "asapquery.sql")] = statements_text(asapquery)
+            files[BASELINE_MV].append(comment + mv_sql(q, views, labels))
+        if structured:
+            files[SKETCHDB].append(comment + asapquery_sql(entry))
+    has_structured = any(not promql for promql, _ in groups)
+    if prebuilt_output_dir is not None and not has_structured:
+        raise ValueError(
+            f"{table_path}: --prebuilt-output-dir given, but no structured entry "
+            "has ASAPQuery SQL for a sketchdb arm"
+        )
     max_window = max((q.window_secs for _, q in entries), default=0)
     if starting_delay_secs < QUERY_TIME_OFFSET_SECS + max_window:
         # Same data for every arm, so arms stay comparable; absolutes are biased.
@@ -676,8 +694,8 @@ def convert(
         )
 
     query_groups = []
-    for interval, files in sorted(by_interval.items()):
-        name = f"interval_{interval}s"
+    for (promql, interval), files in sorted(groups.items()):
+        name = f"interval_{interval}s" + ("" if promql else "_structured")
         sql_files = {}
         for mode, statements in files.items():
             sql_files[mode] = os.path.join(sql_dir, f"{name}_{mode}.sql")
@@ -709,34 +727,56 @@ def convert(
     if records_per_sec is not None:
         feeder["records_per_sec"] = records_per_sec
 
-    out_paths = []
-    for mode in modes:
-        suffix = "_mv" if mode == BASELINE_MV else ""
-        out = {
-            "experiment": [{"mode": mode, "server": "clickhouse"}],
-            "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}],
+    def experiment_params(arm_modes: List[str], init_mode: str) -> dict:
+        return {
+            "experiment": [
+                {"mode": m, "server": "asap" if m == SKETCHDB else "clickhouse"}
+                for m in arm_modes
+            ],
+            "servers": [{"name": "clickhouse", "url": CLICKHOUSE_URL}]
+            + ([{"name": "asap", "url": ASAP_URL}] if SKETCHDB in arm_modes else []),
             "dataset": {
                 "name": "custom",
-                "init_sql_file": init_paths[mode],
+                "init_sql_file": init_paths[init_mode],
                 "paced_feeder": feeder,
             },
-            # Both arms' SQL, so the saved config labels queries by baseline's text.
+            # Every arm's SQL, so the saved config labels queries by baseline's text.
             "query_groups": query_groups,
             "data_ingestion_interval_ms": SCRAPE_INTERVAL_SECONDS * 1000,
         }
+
+    out_paths = []
+    header = f"# Generated from {table_path}\n"
+    for mode in modes:
+        suffix = "_mv" if mode == BASELINE_MV else ""
         out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse{suffix}.yaml")
         outputs[out_path] = (
-            f"# @package experiment_params\n# Generated from {table_path}\n"
-            + yaml.safe_dump(out, sort_keys=False)
+            "# @package experiment_params\n"
+            + header
+            + yaml.safe_dump(experiment_params([mode], mode), sort_keys=False)
+        )
+        out_paths.append(out_path)
+    if prebuilt_output_dir is not None:
+        prebuilt_output_dir = os.path.abspath(prebuilt_output_dir)
+        check_prebuilt_controller_output(prebuilt_output_dir)
+        # With baseline in the same experiment, so its results score sketchdb's.
+        out = {
+            "experiment_params": experiment_params([BASELINE, SKETCHDB], BASELINE),
+            "controller": {"prebuilt_output_dir": prebuilt_output_dir},
+        }
+        out_path = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse_sketchdb.yaml")
+        outputs[out_path] = (
+            "# @package _global_\n" + header + yaml.safe_dump(out, sort_keys=False)
         )
         out_paths.append(out_path)
 
-    # Clear files an earlier run wrote, e.g. a baseline_mv arm or an interval
-    # this table no longer has.
+    # Clear files an earlier run wrote, e.g. a baseline_mv or sketchdb arm or
+    # an interval this table no longer has.
     shutil.rmtree(sql_dir, ignore_errors=True)
-    mv_config = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse_mv.yaml")
-    if os.path.exists(mv_config):
-        os.remove(mv_config)
+    for suffix in ("_mv", "_sketchdb"):
+        stale = os.path.join(OUT_CONFIG_DIR, f"{stem}_clickhouse{suffix}.yaml")
+        if os.path.exists(stale):
+            os.remove(stale)
     os.makedirs(sql_dir)
     for path, content in outputs.items():
         with open(path, "w") as f:
@@ -754,6 +794,11 @@ def main() -> None:
     )
     parser.add_argument("--samples-per-sec", type=int, help="gauges and counters")
     parser.add_argument("--records-per-sec", type=int, help="records metrics")
+    parser.add_argument(
+        "--prebuilt-output-dir",
+        help="planner configs for the sketchdb arm (e.g. from asap-planner "
+        "--planner saved); without it there is no sketchdb arm",
+    )
     args = parser.parse_args()
     for path in convert(
         args.table,
@@ -762,6 +807,7 @@ def main() -> None:
         args.duration_secs,
         args.samples_per_sec,
         args.records_per_sec,
+        args.prebuilt_output_dir,
     ):
         print(path)
 

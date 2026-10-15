@@ -30,7 +30,11 @@ sys.path.insert(
 )
 
 import sketch_bench_workloads as sbw  # noqa: E402
-from experiment_utils.config import validate_experiment_config  # noqa: E402
+from experiment_utils.config import (  # noqa: E402
+    copy_prebuilt_controller_output,
+    generate_clickhouse_client_configs,
+    validate_experiment_config,
+)
 from omegaconf import OmegaConf  # noqa: E402
 
 SERIES_LABELS = [{"name": "job"}, {"name": "label_0", "child_of": "job"}]
@@ -327,7 +331,11 @@ class ConvertTest(unittest.TestCase):
                 validate_experiment_config(OmegaConf.create(cfg))
                 _, init = cfgs["baseline"]
                 groups = {g["name"]: g for g in cfg["query_groups"]}
-                self.assertEqual(sorted(groups), ["interval_1s", "interval_60s"])
+                # Structured first, so sketchdb's queries are baseline's first.
+                self.assertEqual(
+                    list(groups),
+                    ["interval_60s_structured", "interval_1s", "interval_60s"],
+                )
                 g60 = groups["interval_60s"]
                 self.assertEqual(g60["repetition_delay_ms"], 60000)
                 self.assertEqual(
@@ -346,7 +354,7 @@ class ConvertTest(unittest.TestCase):
                 for path in g60["sql_file"].values():
                     with open(path) as f:
                         statements = [s for s in f.read().split(";") if s.strip()]
-                    self.assertEqual(len(statements), 9)
+                    self.assertEqual(len(statements), 8)
                 self.assertIn(
                     "endpoint String, status String, latency Float64, "
                     "user_id Float64)",
@@ -364,10 +372,14 @@ class ConvertTest(unittest.TestCase):
                         "sketch_bench_views.data_total_value_counter_60s"
                     ),
                 )
-                sql_dir = os.path.dirname(g60["sql_file"]["baseline"])
+                structured = groups["interval_60s_structured"]
+                self.assertEqual(
+                    sorted(structured["sql_file"]),
+                    ["baseline", "baseline_mv", "sketchdb"],
+                )
                 # The table's sql as written, with only NOW() substituted.
                 end = "'" + sbw.floored_end_datetime(60) + "'"
-                with open(os.path.join(sql_dir, "asapquery.sql")) as f:
+                with open(structured["sql_file"]["sketchdb"]) as f:
                     self.assertEqual(
                         f.read(),
                         "-- quantile(0.99, latency) by (service) over 300s\n"
@@ -435,6 +447,119 @@ class ConvertTest(unittest.TestCase):
                     sorted(os.listdir(sbw.OUT_CONFIG_DIR)),
                     ["instant", "instant_clickhouse.yaml"],
                 )
+            finally:
+                os.chdir(cwd)
+
+    def test_sketchdb_arm_runs_the_structured_queries_on_the_saved_plan(self):
+        structured = [
+            mg_entry("quantile", ["service"], 300),
+            mg_entry("cardinality", [], 60),
+        ]
+        promql = {"promql": "sum_over_time(data[1m])", "interval_secs": 60, "rqes": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "mixed.json")
+            with open(table, "w") as f:
+                e2e = {"metrics": METRICS, "queries": [promql] + structured}
+                json.dump({"workloads": [{"e2e": e2e}]}, f)
+            # As `asap-planner --planner saved` writes it: the table's sql, on NOW().
+            plan = os.path.join(tmp, "plan")
+            os.makedirs(plan)
+            with open(os.path.join(plan, "inference_config.yaml"), "w") as f:
+                yaml.safe_dump(
+                    {
+                        "tables": [
+                            {
+                                "name": "http",
+                                "time_column": "ts",
+                                "value_columns": ["latency", "user_id"],
+                                "metadata_columns": ["region", "service"],
+                            }
+                        ],
+                        "queries": [{"query": e["sql"]} for e in structured],
+                    },
+                    f,
+                )
+            with open(os.path.join(plan, "streaming_config.yaml"), "w") as f:
+                yaml.safe_dump(
+                    {"aggregations": [{"aggregationId": 1, "slideIntervalMs": 1000}]},
+                    f,
+                )
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                paths = sbw.convert(table, 42, 310, 600, prebuilt_output_dir=plan)
+                sketchdb_path = os.path.join(
+                    sbw.OUT_CONFIG_DIR, "mixed_clickhouse_sketchdb.yaml"
+                )
+                self.assertIn(sketchdb_path, paths)
+                with open(sketchdb_path) as f:
+                    # Sets controller.prebuilt_output_dir, outside experiment_params.
+                    self.assertTrue(f.readline().startswith("# @package _global_"))
+                    cfg = yaml.safe_load(f)
+                self.assertEqual(
+                    cfg["controller"], {"prebuilt_output_dir": os.path.abspath(plan)}
+                )
+                ep = cfg["experiment_params"]
+                # Baseline in the same experiment scores sketchdb's results.
+                self.assertEqual(
+                    ep["experiment"],
+                    [
+                        {"mode": "baseline", "server": "clickhouse"},
+                        {"mode": "sketchdb", "server": "asap"},
+                    ],
+                )
+                validate_experiment_config(OmegaConf.create(ep))
+
+                out = os.path.join(tmp, "out")
+                servers = {s["name"]: s["url"] for s in ep["servers"]}
+                generate_clickhouse_client_configs(
+                    ep["query_groups"],
+                    out,
+                    {m["mode"]: servers[m["server"]] for m in ep["experiment"]},
+                )
+                client = {}
+                for mode in ("baseline", "sketchdb"):
+                    path = os.path.join(
+                        out, "controller_client_configs", f"{mode}.yaml"
+                    )
+                    with open(path) as f:
+                        client[mode] = yaml.safe_load(f)["query_groups"]
+                # sketchdb runs the structured groups, which come first, so its
+                # query indices are baseline's.
+                self.assertEqual([g["id"] for g in client["baseline"]], [0, 1])
+                self.assertEqual([g["id"] for g in client["sketchdb"]], [0])
+                self.assertEqual(len(client["baseline"][0]["queries"]), 2)
+                self.assertEqual(len(client["sketchdb"][0]["queries"]), 2)
+                # The runner's check that the saved plan covers sketchdb's queries.
+                copy_prebuilt_controller_output(
+                    plan,
+                    os.path.join(tmp, "deployed"),
+                    os.path.join(out, "controller_client_configs", "sketchdb.yaml"),
+                    1000,
+                    query_language="sql",
+                )
+
+                # A re-run without the plan leaves no stale sketchdb arm.
+                self.assertNotIn(sketchdb_path, sbw.convert(table, 42, 310, 600))
+                self.assertFalse(os.path.exists(sketchdb_path))
+            finally:
+                os.chdir(cwd)
+
+    def test_sketchdb_arm_without_structured_entries_raises(self):
+        promql = {"promql": "sum_over_time(data[1m])", "interval_secs": 60, "rqes": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            table = os.path.join(tmp, "t.json")
+            with open(table, "w") as f:
+                json.dump(
+                    {"workloads": [{"e2e": {"metrics": METRICS, "queries": [promql]}}]},
+                    f,
+                )
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with self.assertRaisesRegex(ValueError, "no structured entry"):
+                    sbw.convert(table, 42, 310, 600, prebuilt_output_dir=tmp)
+                self.assertFalse(os.path.exists(sbw.OUT_CONFIG_DIR))
             finally:
                 os.chdir(cwd)
 
