@@ -94,12 +94,12 @@ def arrows(ax, rows, improvement, set_name):
     x = leftmost / 1.3
     ax.annotate("", (x, ly), xytext=(x, ly * cpu), arrowprops=style, zorder=4)
     ax.text(
-        x,
+        x / 1.15,
         ly * cpu * 1.12,
         vs("cpu_secs", "cheaper"),
         color=INK,
         fontsize=13,
-        ha="center",
+        ha="left",
         va="bottom",
     )
     arm, lat = worst["latency_p95"]
@@ -115,7 +115,7 @@ def arrows(ax, rows, improvement, set_name):
         va="top",
     )
     left, right = ax.get_xlim()
-    ax.set_xlim(min(left, x / 2.5), right)
+    ax.set_xlim(min(left, x / 2), right)
     bottom, top = ax.get_ylim()
     ax.set_ylim(min(bottom, ly / 2.6), max(top, ly * cpu * 2.2))
 
