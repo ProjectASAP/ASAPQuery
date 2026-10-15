@@ -24,8 +24,6 @@ CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
 # `query_engine.frontend`: how the querier sends queries to ASAPQuery.
 QUERY_FRONTEND_PROMQL = "promql"
 QUERY_FRONTEND_RQE = "rqe"
-# The querier protocol that POSTs RQE expression trees.
-RQE_PROTOCOL = "rqe"
 # The side file's name next to the client configs, which the querier resolves
 # relative to its config.
 RQE_EXPRS_FILENAME = "rqe_exprs.json"
@@ -516,7 +514,7 @@ def generate_controller_client_configs(
                 (
                     {
                         **server,
-                        "protocol": RQE_PROTOCOL,
+                        "protocol": constants.RQE_PROTOCOL,
                         "rqe_exprs_file": RQE_EXPRS_FILENAME,
                     }
                     if server["name"] == experiment_mode["server"]

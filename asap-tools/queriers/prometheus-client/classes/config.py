@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional
 
+from .rqe_query_client import RQE_PROTOCOL
+
 
 class ServerConfig:
     def __init__(
@@ -15,7 +17,7 @@ class ServerConfig:
         # relative to the client config's directory
         rqe_exprs_file: Optional[str] = None,
     ):
-        if protocol == "rqe" and not rqe_exprs_file:
+        if protocol == RQE_PROTOCOL and not rqe_exprs_file:
             raise ValueError(f"server {name!r}: the rqe protocol needs rqe_exprs_file")
         self.name = name
         self.url = url

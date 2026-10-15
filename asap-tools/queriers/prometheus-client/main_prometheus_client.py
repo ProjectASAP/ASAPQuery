@@ -30,7 +30,7 @@ from classes.QueryLatencyExporter import QueryLatencyExporter
 from classes.query_client import QueryClient
 from classes.query_client_factory import QueryClientFactory
 from classes.query_template import QueryTemplate
-from classes.rqe_query_client import resolve_rqe_exprs_file
+from classes.rqe_query_client import RQE_PROTOCOL, resolve_rqe_exprs_file
 from classes.query_time import (
     aligned_eval_time,
     first_aligned_eval_time,
@@ -681,7 +681,7 @@ def main(args: Any) -> None:
             debug_adapter = DebugHTTPAdapter(server.name)
             client.session.mount("http://", debug_adapter)
             client.session.mount("https://", debug_adapter)
-        elif protocol == "rqe":
+        elif protocol == RQE_PROTOCOL:
             assert server.rqe_exprs_file is not None
             client = QueryClientFactory.create(
                 protocol=protocol,

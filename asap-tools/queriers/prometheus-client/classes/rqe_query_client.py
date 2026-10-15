@@ -7,6 +7,8 @@ import requests
 from .prometheus_query_client import fetch_runtime_info, normalize_vector
 from .query_client import QueryClient, QueryResponse
 
+# The `protocol` of a config server answered by RqeQueryClient.
+RQE_PROTOCOL = "rqe"
 RQE_QUERY_PATH = "/api/v1/rqe_query"
 # (connect, read): the engine answers from precomputed sketches, but a dead
 # server must still fail instead of hanging the querier.
@@ -55,7 +57,7 @@ class RqeQueryClient(QueryClient):
 
     @property
     def protocol_name(self) -> str:
-        return "rqe"
+        return RQE_PROTOCOL
 
     @property
     def session(self) -> requests.Session:

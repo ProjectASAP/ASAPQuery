@@ -12,6 +12,8 @@ from typing import List, Tuple
 import yaml
 from jinja2 import Template
 
+import constants
+
 # Where docker-compose.yml.j2 mounts the client config.
 CONTAINER_CONFIG_DIR = "/app"
 
@@ -31,7 +33,7 @@ def rqe_exprs_mounts(config_file: str) -> List[Tuple[str, str]]:
             os.path.join(CONTAINER_CONFIG_DIR, server["rqe_exprs_file"]),
         )
         for server in servers
-        if server.get("protocol") == "rqe"
+        if server.get("protocol") == constants.RQE_PROTOCOL
     ]
 
 
