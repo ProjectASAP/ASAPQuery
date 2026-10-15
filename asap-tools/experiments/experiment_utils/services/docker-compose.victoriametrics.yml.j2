@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   vmsingle:
-    image: victoriametrics/victoria-metrics:latest
+    image: victoriametrics/victoria-metrics:v1.154.0
     container_name: {{ vmsingle_container_name }}
     user: "{{ user_id }}:{{ group_id }}"
     network_mode: host
@@ -19,6 +19,9 @@ services:
       # Raise the per-query caps so 24 h windows over many series aren't rejected.
       - "-search.maxSamplesPerQuery=10000000000"
       - "-search.maxPointsPerTimeseries=1000000"
+      # Serve samples as soon as they arrive, as Prometheus does; the default
+      # 30 s hides the end of any window queried sooner after it closes.
+      - "-search.latencyOffset=0s"
     {% if cpu_limit or memory_limit -%}
     deploy:
       resources:
@@ -33,7 +36,7 @@ services:
     restart: "no"
 
   vmagent:
-    image: victoriametrics/vmagent:latest
+    image: victoriametrics/vmagent:v1.154.0
     container_name: {{ vmagent_container_name }}
     user: "{{ user_id }}:{{ group_id }}"
     network_mode: host

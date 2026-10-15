@@ -1,0 +1,80 @@
+cleanup_policy:
+  name: circular_buffer
+metrics:
+  data:
+  - job
+  - label_0
+  - region
+  - service
+queries:
+- aggregations:
+  - aggregation_id: 2
+    num_aggregates_to_retain: 60
+  query: sum by (region, service) (sum_over_time(data[1m]))
+  planned_subquery: sum by (job, region, service) (sum_over_time(data[1m]))
+  query_time_aggregations:
+  - operator: sum
+    grouping:
+      mode: by
+      labels:
+      - region
+      - service
+    parameter: null
+- aggregations:
+  - aggregation_id: 2
+    num_aggregates_to_retain: 60
+  query: sum by (region, service, job) (sum_over_time(data[1m]))
+  planned_subquery: sum by (region, service, job) (sum_over_time(data[1m]))
+  query_time_aggregations: []
+- aggregations:
+  - aggregation_id: 3
+    num_aggregates_to_retain: 59
+  query: topk by (region) (4, sum_over_time(data[1m]))
+  planned_subquery: topk by (region) (4, sum_over_time(data[1m]))
+  query_time_aggregations: []
+- aggregations:
+  - aggregation_id: 4
+    num_aggregates_to_retain: 40
+  query: topk by (region) (4, sum_over_time(data[20m]))
+  planned_subquery: topk by (region) (4, sum_over_time(data[20m]))
+  query_time_aggregations: []
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 81
+  query: avg by (region, service) (quantile_over_time(0.95, data[100s]))
+  planned_subquery: quantile_over_time(0.95, data[1m40s])
+  query_time_aggregations:
+  - operator: avg
+    grouping:
+      mode: by
+      labels:
+      - region
+      - service
+    parameter: null
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 81
+  query: avg by (region, service) (quantile_over_time(0.90, data[100s]))
+  planned_subquery: quantile_over_time(0.9, data[1m40s])
+  query_time_aggregations:
+  - operator: avg
+    grouping:
+      mode: by
+      labels:
+      - region
+      - service
+    parameter: null
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 81
+  query: avg by (region, service, job) (quantile_over_time(0.90, data[100s]))
+  planned_subquery: quantile_over_time(0.9, data[1m40s])
+  query_time_aggregations:
+  - operator: avg
+    grouping:
+      mode: by
+      labels:
+      - region
+      - service
+      - job
+    parameter: null

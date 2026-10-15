@@ -216,7 +216,7 @@ struct Chosen {
     /// Index of the plan's deployment.
     deployment: usize,
     /// Present only when the deployment's grouping differs from the RQE's
-    /// (a roll-up), which the converter refuses.
+    /// (a roll-up).
     deployment_grouping: Option<LabelSet>,
 }
 
@@ -843,6 +843,41 @@ mod tests {
                 "job".into(),
                 "label_0".into()
             ])
+        );
+    }
+
+    /// An avg of per-series quantiles is one leaf, the per-series quantile
+    /// its one RQE names, averaged by `job` at query time.
+    #[test]
+    fn writes_a_per_series_avg_as_a_query_time_avg() {
+        let query = "avg by (job) (quantile_over_time(0.5, data[5m]))";
+        let table = TABLE.replace(
+            r#""quantile_over_time(0.5, data[5m])", "interval_secs": 60"#,
+            &format!(r#""{query}", "interval_secs": 60"#),
+        );
+        let inference = run_on(&table, plans(shared_p50()).to_string().as_bytes(), None)
+            .unwrap()
+            .to_inference_config(asap_types::enums::QueryLanguage::promql)
+            .unwrap();
+        let query_config = inference
+            .query_configs
+            .iter()
+            .find(|q| q.query == query)
+            .expect("a query_config for the avg");
+        assert_eq!(
+            query_config.planned_subquery,
+            "quantile_over_time(0.5, data[5m])"
+        );
+        let [stage] = query_config.query_time_aggregations.as_slice() else {
+            panic!("{:?}", query_config.query_time_aggregations);
+        };
+        assert_eq!(
+            serde_json::to_value(stage).unwrap(),
+            json!({
+                "operator": "avg",
+                "grouping": {"mode": "by", "labels": ["job"]},
+                "parameter": null,
+            })
         );
     }
 

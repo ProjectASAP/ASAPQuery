@@ -5,7 +5,7 @@
 Run a practical, end-to-end version of the paper's §6.2 experiment before the
 full PR 862 workload.  The experiment should retain the important workload
 shape—many input series and few returned series—and show the benefit of
-planning a *workload* of related RQEs rather than isolated queries.
+planning a *workload* of related repeating query expressions (RQEs) rather than isolated queries.
 
 The experiment has ten deterministic random workloads.  Each workload contains
 exactly ten atomic user queries; binary arithmetic queries are out of scope for
@@ -51,20 +51,21 @@ unbounded.
 
 | Lookback `W` | Allowed repeat intervals `T` |
 | ---: | ---: |
-| 100 ms | 1 s |
+| 100 s | 1 s |
 | 1 min | 1 s, 2 s |
 | 5 min | 5 s, 10 s |
 | 10 min | 10 s, 20 s |
 | 20 min | 30 s, 60 s |
 
 The maximum accelerated backfill is therefore only 20 minutes of event-time
-history.  The first 100 ms class is for spatial queries; temporal queries use
-the 1--20 minute classes.  The spatial class targets a 100 ms repetition
-interval.  Current exact-MV support is whole-second only, so this class is
-gated on [#876](https://github.com/ProjectASAP/ASAPQuery/issues/876), which
-adds millisecond interval metadata, `DateTime64` bucket flooring and edge
-handling, a sub-second query schedule, and raw-versus-MV equivalence tests.
-This is a limitation of the current baseline generator, not of ClickHouse.
+history.  The first 100 s class is for quantile queries; the other temporal
+queries use the 1--20 minute classes.  Scraping remains every 100 ms, so each
+quantile query consumes 1,000 samples per leaf series: the first N that
+sketch-bench's accuracy curves cover, below which no saved plan can serve it.
+Its whole-second repetition and lookback are compatible with the current
+exact-MV arm; it is not gated on
+[#876](https://github.com/ProjectASAP/ASAPQuery/issues/876).  That issue is
+needed only for a future sub-second query/MV schedule.
 
 ## Query-template catalogue
 
@@ -118,12 +119,6 @@ top-k, so it is a gated template rather than an unconditional member of the
 first pilot workload.
 
 ### Quantile
-
-For the 100 ms spatial class, PromQL has exact grouped semantics:
-
-```promql
-quantile by (G) (phi, data)
-```
 
 For a temporal grouped quantile, PromQL cannot directly express a pooled
 quantile over every raw sample in each group.  The PromQL-compatible rendering
@@ -181,6 +176,13 @@ quantile phi or top-k k, accuracy SLA, rendered PromQL or SQL, RQE IDs
 The manifest also contains the label hierarchy, cardinalities of every legal
 grouping, value/key distribution facts, feeder seed, and support class
 (`common-promql`, `counter-gated-promql`, or `sql-only`).
+
+The `data_facts` contract fixes a 100 ms scrape cadence and 20-minute
+backfill, a deterministic Zipf-like ranking of the 10,000 leaf series, a
+rank-scaled Pareto gauge and monotonic counter (no resets), plus a 10,000-ID user
+universe.  Each leaf rotates through 1,000 deterministically assigned IDs;
+the pools overlap across leaves.  The eventual feeder and every baseline
+adapter must implement these facts rather than choose their own distributions.
 
 Sampling is constrained rather than purely independent:
 

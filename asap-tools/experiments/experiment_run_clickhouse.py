@@ -380,8 +380,9 @@ def _start_clickhouse_feed(
     start_ms = feeder_service.start(
         config=feeder_config,
         sinks={
-            SINK_CLICKHOUSE: f"http://localhost:{clickhouse_http_port}/"
-            f"?database={CLICKHOUSE_DATABASE}"
+            # The feeder runs on the next node (see main()).
+            SINK_CLICKHOUSE: f"http://{provider.get_node_ip(node_offset)}:"
+            f"{clickhouse_http_port}/?database={CLICKHOUSE_DATABASE}"
         },
         experiment_output_dir=os.path.join(experiment_root_output_dir, experiment_mode),
         local_experiment_dir=os.path.join(local_experiment_root_dir, experiment_mode),
@@ -406,16 +407,16 @@ def _start_clickhouse_feed(
     return start_ms
 
 
-def _finish_clickhouse_feed(
-    feeder_service: PacedFeederService, start_ms: int, duration_secs: int
-) -> None:
-    """Let the feeders run to the end of their feed, so they write their
-    stats (they write none when killed), then stop any that overstay."""
-    remaining_secs = start_ms / 1000 + duration_secs - time.time()
-    if not feeder_service.wait_for_exit(
-        max(remaining_secs, 0) + PACED_FEEDER_STOP_TIMEOUT_SECS
-    ):
-        feeder_service.stop()
+def _finish_clickhouse_feed(feeder_service: PacedFeederService) -> None:
+    """Stop the feeders once the queries are done: the run ends with its
+    queries, however slow, and its feed's duration is only an upper bound.
+    SIGTERM lets a feeder finish its tick and write its stats."""
+    feeder_service.stop()
+    if not feeder_service.wait_for_exit(PACED_FEEDER_STOP_TIMEOUT_SECS):
+        print(
+            f"Warning: paced_feeder still running {PACED_FEEDER_STOP_TIMEOUT_SECS} s "
+            "after SIGTERM; the next mode's feed start refuses to run over it"
+        )
 
 
 def _run_clickhouse_ingest_with_monitor(
@@ -645,8 +646,14 @@ def main(cfg: DictConfig) -> None:
                 yaml.safe_load(f),
                 minimum_experiment_running_time,
             )
-        # Next to ClickHouse, so the feed crosses no network.
-        paced_feeder_service = PacedFeederService(provider, [node_offset])
+        # On its own node, as in experiment_run_e2e.py, so the feeder neither
+        # takes ClickHouse's cores nor shows up as its CPU.
+        if num_nodes < 1:
+            raise ValueError(
+                "dataset.paced_feeder runs the feeder on its own node: "
+                "providers.*.num_nodes must be at least 1"
+            )
+        paced_feeder_service = PacedFeederService(provider, [node_offset + 1])
         if not no_teardown:
             # Otherwise a failed run leaves feeders inserting into the next
             # run's tables.
@@ -883,7 +890,7 @@ def main(cfg: DictConfig) -> None:
         else:
             # --- baseline mode ---
             if paced_feeder_service is not None:
-                feed_start_ms = _start_clickhouse_feed(
+                _start_clickhouse_feed(
                     provider=provider,
                     node_offset=node_offset,
                     data_loader=data_loader,
@@ -918,11 +925,7 @@ def main(cfg: DictConfig) -> None:
                 monitor_interval_seconds=monitor_interval_seconds,
             )
             if paced_feeder_service is not None:
-                _finish_clickhouse_feed(
-                    paced_feeder_service,
-                    feed_start_ms,
-                    paced_feeder_config["duration_secs"],
-                )
+                _finish_clickhouse_feed(paced_feeder_service)
 
             sync.rsync_experiment_data(
                 provider,

@@ -6,6 +6,8 @@ use super::SimpleEngine;
 use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps};
 use crate::data_model::{AggregationIdInfo, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVector, InstantVectorElement, QueryResult};
+use crate::engines::query_time_aggregation::apply_instant_pipeline;
+use asap_types::query_config::QueryTimeAggregation;
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
@@ -17,7 +19,7 @@ use sql_utilities::sqlhelper::{OrderByItem, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// SQL-only post-processing produced alongside a `QueryExecutionContext`:
 /// rules for ordering and truncating the final result vector.
@@ -279,7 +281,7 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let (context, post) =
+        let (context, post, query_time_aggregations) =
             self.build_query_execution_context_sql_with_post_processing(query, time)?;
         let is_topk = context.metadata.statistic_to_compute == Statistic::Topk;
         // Top-k: enable heap-based limiting (truncate to k) but NOT PromQL-style
@@ -287,6 +289,21 @@ impl SimpleEngine {
         // `(group-by key, count)` rows, so SQL ORDER BY / LIMIT post-processing
         // would be redundant and is skipped.
         let (output_labels, result) = self.execute_context(context, is_topk, false)?;
+        let (output_labels, result) = if query_time_aggregations.is_empty() {
+            (output_labels, result)
+        } else {
+            let QueryResult::Vector(InstantVector { values, timestamp }) = result else {
+                error!("SQL query-time aggregations need an instant vector");
+                return None;
+            };
+            match apply_instant_pipeline(output_labels, values, &query_time_aggregations) {
+                Ok((labels, values)) => (labels, QueryResult::vector(values, timestamp)),
+                Err(e) => {
+                    error!("SQL query-time aggregation failed: {e}");
+                    return None;
+                }
+            }
+        };
         let result = if is_topk {
             result
         } else {
@@ -305,17 +322,24 @@ impl SimpleEngine {
         time: f64,
     ) -> Option<QueryExecutionContext> {
         self.build_query_execution_context_sql_with_post_processing(query, time)
-            .map(|(ctx, _)| ctx)
+            .map(|(ctx, _, _)| ctx)
     }
 
-    /// Internal: parses + plans a SQL query and returns both the execution
-    /// context (shared with PromQL/Elastic engines) and the SQL-only
-    /// post-processing rules (ORDER BY / LIMIT / alias resolution).
+    /// Internal: parses + plans a SQL query and returns the execution
+    /// context (shared with PromQL/Elastic engines), the SQL-only
+    /// post-processing rules (ORDER BY / LIMIT / alias resolution), and the
+    /// query-time aggregations to apply to the context's result. For a
+    /// nested query the context serves its inner layer and the aggregations
+    /// are its outer layer.
     fn build_query_execution_context_sql_with_post_processing(
         &self,
         query: String,
         time: f64,
-    ) -> Option<(QueryExecutionContext, SqlPostProcessing)> {
+    ) -> Option<(
+        QueryExecutionContext,
+        SqlPostProcessing,
+        Vec<QueryTimeAggregation>,
+    )> {
         // Get SQL schema from inference config
         let schema = match &self.inference_config.read().unwrap().schema {
             SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
@@ -342,6 +366,9 @@ impl SimpleEngine {
         // seconds-denominated SQL query duration by this value — convert back to seconds.
         let matcher =
             SQLPatternMatcher::new(schema, self.data_ingestion_interval_ms as f64 / 1000.0);
+        if query_data.subquery.is_some() {
+            return self.build_nested_query_execution_context_sql(&matcher, &query_data);
+        }
         let match_result = matcher.query_info_to_pattern(&query_data);
 
         debug!("Match result: {:?}", match_result);
@@ -365,17 +392,64 @@ impl SimpleEngine {
         let query_time = Self::convert_query_time_to_data_time(
             query_data.time_info.get_start() + query_data.time_info.get_duration(),
         );
-        let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
-        Some((ctx, post))
+        let config = self.find_query_config_sql(&query_data);
+        let ctx =
+            self.build_spatiotemporal_context(&match_result, query_time, &query_data, config)?;
+        Some((ctx, post, Vec::new()))
+    }
+
+    /// A nested query is served from its inner layer, with its outer layer
+    /// applied as the planned query-time aggregations. Only a config carries
+    /// those, so a nested query without one is not served: running its inner
+    /// layer alone would drop the outer aggregation.
+    fn build_nested_query_execution_context_sql(
+        &self,
+        matcher: &SQLPatternMatcher,
+        query_data: &SQLQueryData,
+    ) -> Option<(
+        QueryExecutionContext,
+        SqlPostProcessing,
+        Vec<QueryTimeAggregation>,
+    )> {
+        let inner_match = matcher.nested_query_to_pattern(query_data);
+        if !inner_match.is_valid() {
+            debug!("Nested query not matched: {:?}", inner_match.msg);
+            return None;
+        }
+        let Some(config) = self.find_query_config_sql(query_data) else {
+            warn!("No query_config entry for nested SQL query; not serving it");
+            return None;
+        };
+        if config.query_time_aggregations.is_empty() {
+            warn!(
+                "query_config for nested SQL query has no query-time aggregations; not serving it"
+            );
+            return None;
+        }
+        let inner = query_data.subquery.as_deref()?;
+        let query_time = Self::convert_query_time_to_data_time(
+            inner.time_info.get_start() + inner.time_info.get_duration(),
+        );
+        let query_time_aggregations = config.query_time_aggregations.clone();
+        let ctx =
+            self.build_spatiotemporal_context(&inner_match, query_time, inner, Some(config))?;
+        Some((
+            ctx,
+            SqlPostProcessing::from_query_data(query_data),
+            query_time_aggregations,
+        ))
     }
 
     /// Build execution context for SpatioTemporal queries.
     /// These queries span multiple scrape intervals but GROUP BY a subset of labels.
+    /// `config` is the query's planned config; without one the aggregation
+    /// is found by capability matching.
     fn build_spatiotemporal_context(
         &self,
         match_result: &SQLQuery,
         query_time: u64,
         query_data: &SQLQueryData,
+        config: Option<QueryConfig>,
     ) -> Option<QueryExecutionContext> {
         // Output labels are the GROUP BY columns (subset of all labels)
         let query_output_labels = KeyByLabelNames::new(
@@ -440,9 +514,7 @@ impl SimpleEngine {
         };
 
         // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
-        let agg_info: AggregationIdInfo = if let Some(config) =
-            self.find_query_config_sql(query_data)
-        {
+        let agg_info: AggregationIdInfo = if let Some(config) = config {
             self.get_aggregation_id_info(&config.aggregations)
                 .map_err(|e| {
                     warn!("{}", e);
@@ -664,8 +736,8 @@ mod detect_topk_tests {
         let qd = parse(&sql).expect("nested query should parse");
         assert!(
             detect_sql_topk(&qd).is_some(),
-            "outer SELECT alone matches the top-k shape — this is why nested queries must be \
-             rejected (NestedQueryUnsupported) before topk detection ever runs on them",
+            "outer SELECT alone matches the top-k shape — this is why a nested query's outer \
+             ORDER BY / LIMIT is rejected and top-k detection only ever sees its inner layer",
         );
     }
 }

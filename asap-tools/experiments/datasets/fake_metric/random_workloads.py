@@ -12,6 +12,7 @@ import math
 import random
 from pathlib import Path
 
+from sketch_bench_workloads import Query, raw_sql
 
 WORKLOAD_COUNT = 10
 QUERIES_PER_WORKLOAD = 10
@@ -19,8 +20,10 @@ SAMPLES_PER_SEC_PER_SERIES = 10
 ACCURACY_SLA = 0.95
 SECOND_MS = 1_000
 MINUTE_MS = 60 * SECOND_MS
-SPATIAL_LOOKBACK_MS = 100
-SPATIAL_INTERVAL_MS = 100
+# 100 s at 10 samples/s gives each series' quantile sketch 1,000 samples, the
+# first N sketch-bench's accuracy curves cover.
+QUANTILE_LOOKBACK_MS = 100 * SECOND_MS
+QUANTILE_INTERVAL_MS = SECOND_MS
 LABEL_HIERARCHY = (
     ("region", 4, None),
     ("service", 5, "region"),
@@ -29,7 +32,11 @@ LABEL_HIERARCHY = (
 )
 LABEL_CARDINALITIES = {name: cardinality for name, cardinality, _ in LABEL_HIERARCHY}
 METRIC_LABELS = [
-    {"name": name, "cardinality": cardinality, **({"child_of": parent} if parent else {})}
+    {
+        "name": name,
+        "cardinality": cardinality,
+        **({"child_of": parent} if parent else {}),
+    }
     for name, cardinality, parent in LABEL_HIERARCHY
 ]
 GROUPINGS = (("region",), ("region", "service"), ("region", "service", "job"))
@@ -45,6 +52,26 @@ TEMPORAL_TIMES = (
 )
 QUANTILES = (0.50, 0.75, 0.90, 0.95, 0.99)
 TOPK_VALUES = (4, 8)
+BACKFILL_HISTORY_MS = 20 * MINUTE_MS
+LEAF_SERIES_COUNT = math.prod(LABEL_CARDINALITIES.values())
+LEAF_LABELS = tuple(name for name, _, _ in LABEL_HIERARCHY)
+# Every ClickHouse table has the leaf labels (sketch_bench_workloads' tables).
+CLICKHOUSE_LABELS = {
+    table: list(LEAF_LABELS) for table in ("data", "data_total", "events")
+}
+ZIPF_EXPONENT = 1.1
+USER_ID_UNIVERSE_SIZE = 10_000
+USER_IDS_PER_LEAF = 1_000
+# A variant stretches one dimension of a seed's workloads and keeps every
+# random choice, so its workloads pair with the base's: (lookback scale,
+# label_0 values per job).
+VARIANTS = {
+    "base": (1, 50),
+    # Lookbacks x3: 1m -> 3m, ..., 20m -> 60m; quantiles 100s -> 300s.
+    "long": (3, 50),
+    # x5 series: 50,000 at 10/s, 500,000 samples/s.
+    "x5": (1, 250),
+}
 
 
 def duration(milliseconds):
@@ -56,9 +83,112 @@ def grouping_text(grouping):
     return ", ".join(grouping)
 
 
+def rqe_query(rqe):
+    """The ClickHouse renderers' Query for one RQE, built from its fields,
+    never from its PromQL. Raw and MV ClickHouse SQL both render it."""
+    capability, grouping = rqe["capability"], tuple(rqe["grouping_labels"])
+    common = {
+        "table": rqe["metric"],
+        "interval_secs": rqe["interval_ms"] // SECOND_MS,
+        "window_secs": rqe["lookback_ms"] // SECOND_MS,
+    }
+    if capability == "sum":
+        return Query(**common, grouping=grouping, series_fn=None, agg="sum")
+    if capability == "quantile":
+        quantile = f"{rqe['phi']:.2f}"
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn="quantile",
+            agg="avg",
+            quantile=quantile,
+        )
+    if capability == "topk_by_value":
+        return Query(
+            **common,
+            grouping=LEAF_LABELS,
+            series_fn=None,
+            agg="sum",
+            topk=rqe["k"],
+            topk_by=grouping,
+        )
+    if capability in ("topk_by_count", "rate"):
+        series_fn = "increase" if capability == "topk_by_count" else "rate"
+        return Query(
+            **common,
+            grouping=LEAF_LABELS,
+            series_fn=series_fn,
+            agg=None,
+            topk=rqe["k"],
+            topk_by=grouping,
+        )
+    if capability == "cardinality":
+        # Planner SQL windows are left-open, (E - W, E].
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn=None,
+            agg="cardinality",
+            value=rqe["value"],
+            left_open=True,
+        )
+    raise ValueError(f"unknown capability {capability!r}")
+
+
+def metric_labels(label_0_cardinality):
+    """METRIC_LABELS with `label_0_cardinality` label_0 values per job."""
+    return [
+        (
+            {**label, "cardinality": label_0_cardinality}
+            if label["name"] == "label_0"
+            else label
+        )
+        for label in METRIC_LABELS
+    ]
+
+
 def choose_temporal_time(rng):
     lookback_ms, intervals = rng.choice(TEMPORAL_TIMES)
     return lookback_ms, rng.choice(intervals)
+
+
+def workload_data_facts(
+    seed, leaf_count=LEAF_SERIES_COUNT, backfill_history_ms=BACKFILL_HISTORY_MS
+):
+    """Return the feeder contract shared by every workload from one seed."""
+    return {
+        "feeder_seed": seed,
+        "scrape_interval_ms": SECOND_MS // SAMPLES_PER_SEC_PER_SERIES,
+        "backfill_history_ms": backfill_history_ms,
+        "series": {
+            "leaf_count": leaf_count,
+            "ranking": {
+                "kind": "deterministic_zipf_like",
+                "exponent": ZIPF_EXPONENT,
+                "rank_scope": "leaf_series",
+            },
+        },
+        "metrics": {
+            "data": {
+                "kind": "gauge",
+                "value_shape": "rank_scaled_pareto",
+                "pareto_shape": 2.0,
+            },
+            "data_total": {
+                "kind": "counter",
+                "increment_shape": "rank_scaled_positive_deterministic",
+                "resets": "none",
+            },
+        },
+        "events": {
+            "table": "events",
+            "time_column": "ts",
+            "distinct_key": "user_id",
+            "user_id_universe_size": USER_ID_UNIVERSE_SIZE,
+            "user_ids_per_leaf": USER_IDS_PER_LEAF,
+            "assignment": "deterministic_rotating_pool_with_cross_leaf_overlap",
+        },
+    }
 
 
 def query(
@@ -72,10 +202,15 @@ def query(
     **params,
 ):
     """Create one manifest query and its single optimizer-facing RQE."""
+    metrics = {
+        "rate": "data_total",
+        "topk_by_count": "data_total",
+        "cardinality": "events",
+    }
     rqe = {
         "id": f"{query_id}/rqe",
         "capability": capability,
-        "metric": "data_total" if capability in ("rate", "topk_by_count") else "data",
+        "metric": metrics.get(capability, "data"),
         "grouping_labels": list(grouping),
         "lookback_ms": lookback_ms,
         "interval_ms": interval_ms,
@@ -92,6 +227,7 @@ def query(
         "interval_ms": interval_ms,
         "promql": rendered if support != "sql-only" else None,
         "sql": rendered if support == "sql-only" else None,
+        "clickhouse_sql": raw_sql(rqe_query(rqe), CLICKHOUSE_LABELS),
         "rqes": [rqe],
     }
 
@@ -99,18 +235,24 @@ def query(
 def sum_query(query_id, grouping, lookback_ms, interval_ms):
     rendered = f"sum by ({grouping_text(grouping)}) (sum_over_time(data[{duration(lookback_ms)}]))"
     return query(
-        query_id, "sum", grouping, lookback_ms, interval_ms, rendered, "common-promql"
+        query_id,
+        "sum",
+        grouping,
+        lookback_ms,
+        interval_ms,
+        rendered,
+        "common-promql",
     )
 
 
-def quantile_query(query_id, grouping, phi):
-    rendered = f"quantile by ({grouping_text(grouping)}) ({phi:.2f}, data)"
+def quantile_query(query_id, grouping, phi, lookback_ms=QUANTILE_LOOKBACK_MS):
+    rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[{lookback_ms // SECOND_MS}s]))"
     return query(
         query_id,
         "quantile",
         grouping,
-        SPATIAL_LOOKBACK_MS,
-        SPATIAL_INTERVAL_MS,
+        lookback_ms,
+        QUANTILE_INTERVAL_MS,
         rendered,
         "common-promql",
         phi=phi,
@@ -179,22 +321,26 @@ def cardinality_query(query_id, grouping, lookback_ms, interval_ms):
     )
 
 
-def generate_workload(seed, index):
-    """Return one validated ten-query workload for `seed` and one-based `index`."""
+def generate_workload(seed, index, variant="base"):
+    """Return one validated ten-query workload for `seed` and one-based
+    `index`, stretched as VARIANTS[`variant`] says."""
+    scale, label_0_cardinality = VARIANTS[variant]
     rng = random.Random(f"{seed}/{index}")
     fine, coarse = GROUPINGS[2], GROUPINGS[1]
     rollup_w, rollup_t = choose_temporal_time(rng)
-    short_w, short_t = MINUTE_MS, rng.choice((SECOND_MS, 2 * SECOND_MS))
-    long_w, long_t = 20 * MINUTE_MS, rng.choice((30 * SECOND_MS, MINUTE_MS))
+    rollup_w *= scale
+    short_w, short_t = scale * MINUTE_MS, rng.choice((SECOND_MS, 2 * SECOND_MS))
+    long_w, long_t = scale * 20 * MINUTE_MS, rng.choice((30 * SECOND_MS, MINUTE_MS))
+    quantile_w = scale * QUANTILE_LOOKBACK_MS
     quantile_specs = rng.sample(
         [(grouping, phi) for grouping in GROUPINGS for phi in QUANTILES], 3
     )
     queries = [
         sum_query("q01-sum-fine", fine, rollup_w, rollup_t),
         sum_query("q02-sum-coarse", coarse, rollup_w, rollup_t),
-        quantile_query("q03-quantile", *quantile_specs[0]),
-        quantile_query("q04-quantile", *quantile_specs[1]),
-        quantile_query("q05-quantile", *quantile_specs[2]),
+        quantile_query("q03-quantile", *quantile_specs[0], quantile_w),
+        quantile_query("q04-quantile", *quantile_specs[1], quantile_w),
+        quantile_query("q05-quantile", *quantile_specs[2], quantile_w),
         topk_sum_query(
             "q06-topk-sum",
             rng.choice(GROUPINGS[:2]),
@@ -225,14 +371,22 @@ def generate_workload(seed, index):
         ),
         cardinality_query("q10-cardinality", rng.choice(GROUPINGS), rollup_w, rollup_t),
     ]
+    labels = metric_labels(label_0_cardinality)
     workload = {
         "version": 1,
         "id": f"workload-{index:02d}",
         "seed": seed,
-        "labels": METRIC_LABELS,
+        "labels": labels,
         "samples_per_sec_per_series": SAMPLES_PER_SEC_PER_SERIES,
+        "data_facts": workload_data_facts(
+            seed,
+            math.prod(label["cardinality"] for label in labels),
+            scale * BACKFILL_HISTORY_MS,
+        ),
         "queries": queries,
     }
+    if variant != "base":
+        workload["variant"] = variant
     validate_workload(workload)
     return workload
 
@@ -240,8 +394,21 @@ def generate_workload(seed, index):
 def validate_workload(workload):
     """Reject manifests that violate the experiment's stable public contract."""
     queries = workload["queries"]
+    data_facts = workload["data_facts"]
+    if data_facts["scrape_interval_ms"] != SECOND_MS // SAMPLES_PER_SEC_PER_SERIES:
+        raise ValueError("data facts must declare the 100 ms scrape interval")
+    leaf_count = math.prod(label["cardinality"] for label in workload["labels"])
+    if data_facts["series"]["leaf_count"] != leaf_count:
+        raise ValueError("data facts must declare every leaf series")
+    if data_facts["metrics"]["data_total"]["resets"] != "none":
+        raise ValueError("the pilot counter contract must be monotonic")
+    events = data_facts["events"]
+    if not 0 < events["user_ids_per_leaf"] <= events["user_id_universe_size"]:
+        raise ValueError("distinct user pools must fit in the declared universe")
     if len(queries) != QUERIES_PER_WORKLOAD:
-        raise ValueError(f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries")
+        raise ValueError(
+            f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries"
+        )
     if len({query["id"] for query in queries}) != len(queries):
         raise ValueError("query IDs must be unique")
     rqe_keys = {
@@ -279,18 +446,22 @@ def validate_workload(workload):
         raise ValueError("a workload must contain the fine side of a roll-up chain")
 
 
-def generate_workloads(seed, workload_count=WORKLOAD_COUNT):
+def generate_workloads(seed, workload_count=WORKLOAD_COUNT, variant="base"):
     """Generate the deterministic workload suite for one experiment seed."""
-    return [generate_workload(seed, index) for index in range(1, workload_count + 1)]
+    return [
+        generate_workload(seed, index, variant)
+        for index in range(1, workload_count + 1)
+    ]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--variant", choices=sorted(VARIANTS), default="base")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    for workload in generate_workloads(args.seed):
+    for workload in generate_workloads(args.seed, variant=args.variant):
         path = args.out / f"{workload['id']}.json"
         path.write_text(json.dumps(workload, indent=2, sort_keys=True) + "\n")
         print(path)
