@@ -7,7 +7,10 @@ from unittest.mock import Mock, patch
 from constants import BASELINE_EXPERIMENT_NAME, SKETCHDB_EXPERIMENT_NAME
 from experiment_utils.services.base import DockerServiceBase
 from experiment_utils.services.docker_victoriametrics import get_remote_write_urls
-from experiment_utils.services.query_engine import QueryEngineRustService
+from experiment_utils.services.query_engine import (
+    QueryEngineRustService,
+    runtime_info_endpoint,
+)
 
 
 class RemoteWriteConfigurationTest(unittest.TestCase):
@@ -82,6 +85,24 @@ class ReadinessCheckTest(unittest.TestCase):
         self.assertIn(
             "/api/v1/status/runtimeinfo",
             provider.execute_command.call_args_list[1].kwargs["cmd"],
+        )
+
+    def test_clickhouse_backed_query_engine_probes_its_adapters_endpoint(self):
+        # It serves /clickhouse/ping and 404s on the Prometheus runtime-info
+        # path, so probing that one never saw it ready.
+        provider = Mock()
+        provider.execute_command.return_value = subprocess.CompletedProcess(
+            args="curl", returncode=0, stdout="", stderr=""
+        )
+        service = QueryEngineRustService(provider, use_container=False, node_offset=0)
+        service.runtime_info_endpoint = runtime_info_endpoint("clickhouse")
+
+        self.assertTrue(service._is_runtime_info_ready())
+        self.assertIn(
+            "/clickhouse/ping", provider.execute_command.call_args.kwargs["cmd"]
+        )
+        self.assertEqual(
+            runtime_info_endpoint("prometheus"), "/api/v1/status/runtimeinfo"
         )
 
 

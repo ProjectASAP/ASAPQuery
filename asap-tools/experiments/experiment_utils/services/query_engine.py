@@ -77,6 +77,14 @@ class BaseQueryEngineService(BaseService):
         return 8088
 
 
+def runtime_info_endpoint(backend_type: str) -> str:
+    """The readiness endpoint of the engine's query adapter for `backend_type`:
+    the ClickHouse adapter serves no Prometheus API."""
+    if backend_type == "clickhouse":
+        return constants.QUERY_ENGINE_CLICKHOUSE_RUNTIME_INFO_ENDPOINT
+    return constants.QUERY_ENGINE_RUNTIME_INFO_ENDPOINT
+
+
 class QueryEngineRustService(BaseQueryEngineService):
     """Service for managing the Rust query engine process."""
 
@@ -100,6 +108,8 @@ class QueryEngineRustService(BaseQueryEngineService):
         self.remote_spill_dir: Optional[str] = None
         self.local_spill_report: Optional[str] = None
         self.http_port: Optional[int] = None
+        # The started backend's adapter's; set by start().
+        self.runtime_info_endpoint = constants.QUERY_ENGINE_RUNTIME_INFO_ENDPOINT
 
     # ------------------------------------------------------------------
     # Config-file helpers (used by both bare-metal and containerized paths)
@@ -272,6 +282,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             remote_write_port: Port the precompute engine listens on for Prometheus remote
                                write; should match streaming.remote_write.base_port (default 8080)
         """
+        self.runtime_info_endpoint = runtime_info_endpoint(backend_config["type"])
         if spill:
             self.remote_spill_dir = os.path.join(
                 experiment_output_dir, "query_engine_output", SPILL_SUBDIR
@@ -652,7 +663,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         cmd = (
             f"curl -fsS --max-time {constants.HTTP_READINESS_CURL_TIMEOUT_SECONDS} "
             f"http://127.0.0.1:{self.get_http_port()}"
-            f"{constants.QUERY_ENGINE_RUNTIME_INFO_ENDPOINT} >/dev/null"
+            f"{self.runtime_info_endpoint} >/dev/null"
         )
         result = self.provider.execute_command(
             node_idx=self.node_offset,

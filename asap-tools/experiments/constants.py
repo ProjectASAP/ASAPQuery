@@ -56,6 +56,8 @@ PROMETHEUS_REMOTE_WRITE_ENDPOINT = "/api/v1/write"
 PROMETHEUS_REMOTE_WRITE_RECEIVER_FLAG = "--web.enable-remote-write-receiver"
 HTTP_READINESS_CURL_TIMEOUT_SECONDS = 5
 QUERY_ENGINE_RUNTIME_INFO_ENDPOINT = "/api/v1/status/runtimeinfo"
+# The ClickHouse adapter's runtime-info endpoint; it serves no Prometheus API.
+QUERY_ENGINE_CLICKHOUSE_RUNTIME_INFO_ENDPOINT = "/clickhouse/ping"
 # Query engine spill files live in this subdirectory of its output dir, which
 # the container mounts, so host and container paths agree. Results syncs skip it.
 QUERY_ENGINE_SPILL_SUBDIR = "spill"
