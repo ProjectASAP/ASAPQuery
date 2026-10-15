@@ -60,8 +60,8 @@ struct E2eQuery {
     sql: Option<String>,
     interval_secs: u64,
     /// Plan RQE ids: for `promql`, one per leaf in order; for `sql`, a single
-    /// leaf, every RQE it reads. With `expr`, its leaves' ids, which this
-    /// may omit.
+    /// leaf, every RQE it reads. Required with text; a query with only `expr`
+    /// may omit them, and then reads its leaves' ids.
     #[serde(default)]
     rqes: Vec<String>,
     /// Leaves name plan RQE ids.
@@ -99,10 +99,7 @@ impl E2eQuery {
             None => None,
             Some(expr) => {
                 let reads_records = |leaf: &RqeLeaf| {
-                    let metric = metrics.get(&leaf.metric).with_context(|| {
-                        format!("RQE {:?} reads unknown metric {:?}", leaf.id, leaf.metric)
-                    })?;
-                    anyhow::Ok(metric.kind == RECORDS_METRIC_TYPE)
+                    anyhow::Ok(leaf_metric(leaf, metrics)?.kind == RECORDS_METRIC_TYPE)
                 };
                 let leaves = expr.leaves();
                 let (first, rest) = leaves.split_first().expect("a valid tree reads a leaf");
@@ -129,11 +126,18 @@ impl E2eQuery {
         }
     }
 
-    /// The plan RQEs the query reads: `rqes`, or, if it omits them, its
-    /// tree's leaves. With both, they must name the same RQEs, in any order
-    /// and however often each appears.
+    /// The plan RQEs the query reads: `rqes`, or, for a query with only a
+    /// tree that omits them, its leaves. With both, they must name the same
+    /// RQEs, in any order and however often each appears.
     fn rqe_ids(&self) -> anyhow::Result<Vec<&str>> {
         let rqes: Vec<&str> = self.rqes.iter().map(String::as_str).collect();
+        // A text query's `rqes` map its text leaves to plan RQEs, which a
+        // tree's leaf order can't.
+        ensure!(
+            self.text()?.is_none() || !rqes.is_empty(),
+            "e2e query {} has text but no `rqes`",
+            self.name()
+        );
         let Some(expr) = &self.expr else {
             return Ok(rqes);
         };
@@ -153,6 +157,16 @@ impl E2eQuery {
 /// The ids of a tree's leaves, left to right.
 fn leaf_ids(expr: &RqeExpr) -> Vec<&str> {
     expr.leaves().iter().map(|l| l.id.as_str()).collect()
+}
+
+/// The table metric an RQE leaf reads.
+fn leaf_metric<'a>(
+    leaf: &RqeLeaf,
+    metrics: &'a BTreeMap<String, E2eMetric>,
+) -> anyhow::Result<&'a E2eMetric> {
+    metrics
+        .get(&leaf.metric)
+        .with_context(|| format!("RQE {:?} reads unknown metric {:?}", leaf.id, leaf.metric))
 }
 
 /// A query planned from its text, and the plan RQEs it reads.
@@ -301,7 +315,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
 
 /// Streaming and inference YAML for the selected plan of `plan_path` (JSON,
 /// gzipped or not) over the workload of `table_path`: its queries written in
-/// `language`, and only those with an RQE tree if `expr_only`.
+/// `language`. With `expr_only`, only the queries with an RQE tree, planned
+/// from their tree leaves alone: no text items and no `query_configs`.
 pub fn saved_plan_output(
     table_path: &Path,
     plan_path: &Path,
@@ -358,7 +373,8 @@ pub fn saved_plan_output(
             c.rqe
         );
     }
-    // Queries in `language`: those with text, and those with a tree.
+    // Queries in `language`: those with text (unless `expr_only`), and those
+    // with a tree.
     let mut selected: Vec<TextQuery> = Vec::new();
     let mut trees: Vec<(&E2eQuery, &RqeExpr)> = Vec::new();
     for q in &e2e.queries {
@@ -373,7 +389,7 @@ pub fn saved_plan_output(
             continue;
         }
         let rqes = q.rqe_ids()?;
-        if let Some(text) = q.text()? {
+        if let (Some(text), false) = (q.text()?, expr_only) {
             selected.push(TextQuery {
                 query: q,
                 text,
@@ -415,7 +431,6 @@ pub fn saved_plan_output(
         let leaves: Vec<(String, Vec<&str>)> = match config {
             // A SQL query is one leaf, and its RQEs a set.
             MilpConfig::Sql(_) => {
-                ensure!(!rqe_ids.is_empty(), "query {text:?} names no RQEs");
                 let mut rqes = rqe_ids;
                 rqes.sort_unstable();
                 vec![(text.to_string(), rqes)]
@@ -573,9 +588,7 @@ fn leaf_item(
     metrics: &BTreeMap<String, E2eMetric>,
 ) -> anyhow::Result<OptimizerItem> {
     let id = &leaf.id;
-    let m = metrics
-        .get(&leaf.metric)
-        .with_context(|| format!("RQE {id:?} reads unknown metric {:?}", leaf.metric))?;
+    let m = leaf_metric(leaf, metrics)?;
     let metric = match (m.kind == RECORDS_METRIC_TYPE, &leaf.value) {
         (true, Some(value)) => {
             ensure!(
@@ -602,7 +615,6 @@ fn leaf_item(
             leaf.metric
         );
     }
-    ensure!(leaf.lookback_ms > 0, "RQE {id:?} looks back 0 ms");
     ensure!(interval_ms > 0, "RQE {id:?} repeats every 0 s");
     let (statistic, topk_count_events) = match leaf.capability {
         RqeCapability::Sum => (Statistic::Sum, None),
@@ -1380,7 +1392,7 @@ mod tests {
     #[test]
     fn writes_a_sketch_roll_up_rqe_without_a_stage() {
         let table = json!({"workloads": [{"e2e": {
-            "queries": [{"promql": "quantile by (job) (0.5, data)", "interval_secs": 1,
+            "queries": [{"promql": "quantile by (job) (0.5, data)", "interval_secs": 1, "rqes": ["p50"],
                          "expr": quantile_leaf("p50", 0.5, 1000, &["job"])}],
             "metrics": {"data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}}
         }}]});
@@ -1572,8 +1584,9 @@ mod tests {
         );
     }
 
-    /// `--expr-only` skips the queries without a tree: nothing is deployed
-    /// or written for them.
+    /// `--expr-only` skips the queries without a tree, and plans the others
+    /// from their tree leaves alone: only deployments and `rqe_configs`, no
+    /// `query_configs`.
     #[test]
     fn expr_only_plans_only_the_queries_with_a_tree() {
         let mut table = tree_table();
@@ -1600,12 +1613,9 @@ mod tests {
         let expr_only = run(true);
         // Only the DDSketch the quantile trees read; no sum.
         assert_eq!(expr_only.streaming_aggregation_count(), 1);
-        assert_eq!(expr_only.inference_query_count(), 2);
+        assert_eq!(expr_only.inference_query_count(), 0);
         let inference = inference_of(&expr_only, QueryLanguage::promql);
-        assert!(inference
-            .query_configs
-            .iter()
-            .all(|q| q.query != "sum by (job) (data)"));
+        assert!(inference.query_configs.is_empty());
         let mut ids: Vec<&str> = inference.rqe_configs.keys().map(String::as_str).collect();
         ids.sort();
         assert_eq!(ids, ["p50", "p90"]);
@@ -1618,20 +1628,22 @@ mod tests {
         assert!(err.contains("no e2e query with an `expr`"), "{err}");
     }
 
-    /// `rqes` may be omitted: the tree names the RQEs.
+    /// A query with text needs `rqes`, even with a tree: its text leaves
+    /// map to RQEs by `rqes`, not by the tree's leaf order. Only a query
+    /// with just a tree may omit them (`plans_a_tree_only_query`).
     #[test]
-    fn reads_the_rqes_of_a_tree_without_rqes() {
+    fn refuses_a_query_with_text_but_no_rqes() {
         let mut table = tree_table();
-        for q in queries(&mut table).iter_mut() {
-            q.as_object_mut().unwrap().remove("rqes");
-        }
-        let output = run_table(&table, &plans(shared_p50()), QueryLanguage::promql).unwrap();
-        assert_eq!(output.inference_query_count(), 3);
-        assert_eq!(
-            inference_of(&output, QueryLanguage::promql)
-                .rqe_configs
-                .len(),
-            3
+        queries(&mut table)[1]
+            .as_object_mut()
+            .unwrap()
+            .remove("rqes");
+        let err = tree_refusal(&table);
+        assert!(
+            err.contains(
+                r#"e2e query "quantile_over_time(0.9, data[5m]) / quantile_over_time(0.5, data[5m])" has text but no `rqes`"#
+            ),
+            "{err}"
         );
     }
 

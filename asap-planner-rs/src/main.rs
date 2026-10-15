@@ -87,8 +87,10 @@ struct Args {
     #[arg(long = "sla-ms")]
     sla_ms: Option<f64>,
 
-    /// Saved only. Plan only the e2e queries that have an RQE tree (`expr`);
-    /// the others (e.g. `rate`) are skipped, so nothing is deployed for them.
+    /// Saved only. Plan only the tree leaves of the e2e queries that have an
+    /// RQE tree (`expr`): no query text is planned, so no `query_configs` are
+    /// written, only deployments and `rqe_configs`. Queries without a tree
+    /// (e.g. `rate`) are skipped.
     #[arg(long = "expr-only")]
     expr_only: bool,
 

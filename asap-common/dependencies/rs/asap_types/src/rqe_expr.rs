@@ -768,7 +768,7 @@ mod tests {
         assert_eq!(parse(by).validate(), dup("agg by"));
         let topk_by = topk_by_leaf(&["job", "region"], json!(["job", "job"]));
         assert_eq!(parse(topk_by).validate(), dup("topk_by"));
-        // A duplicated grouping no longer slips past the binary label-set check.
+        // A duplicated grouping fails the binary label-set check.
         let binary = json!({"op": "+", "lhs": sum_leaf("a", &["job", "job"]), "rhs": sum_leaf("b", &["job"])});
         assert_eq!(parse(binary).validate(), dup("grouping"));
     }
