@@ -42,16 +42,7 @@ pub struct NestedAggregationPlan {
 pub(crate) fn aggregation_stage(
     aggregate: &promql_parser::parser::AggregateExpr,
 ) -> Option<QueryTimeAggregation> {
-    let operator = match aggregate.op.to_string().as_str() {
-        "sum" => QueryTimeAggregationOperator::Sum,
-        "count" => QueryTimeAggregationOperator::Count,
-        "avg" => QueryTimeAggregationOperator::Avg,
-        "min" => QueryTimeAggregationOperator::Min,
-        "max" => QueryTimeAggregationOperator::Max,
-        "quantile" => QueryTimeAggregationOperator::Quantile,
-        "topk" => QueryTimeAggregationOperator::Topk,
-        _ => return None,
-    };
+    let operator = QueryTimeAggregationOperator::from_name(&aggregate.op.to_string())?;
 
     let grouping = match &aggregate.modifier {
         Some(promql_parser::parser::LabelModifier::Include(labels)) if !labels.is_empty() => {

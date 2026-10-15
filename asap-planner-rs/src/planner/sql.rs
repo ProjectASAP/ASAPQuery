@@ -252,19 +252,12 @@ fn sql_query_time_aggregation(
     outer: &SQLQueryData,
 ) -> Result<QueryTimeAggregation, ControllerError> {
     let info = &outer.aggregation_info;
-    let operator = match info.get_name() {
-        "SUM" => QueryTimeAggregationOperator::Sum,
-        "COUNT" => QueryTimeAggregationOperator::Count,
-        "AVG" => QueryTimeAggregationOperator::Avg,
-        "MIN" => QueryTimeAggregationOperator::Min,
-        "MAX" => QueryTimeAggregationOperator::Max,
-        "QUANTILE" => QueryTimeAggregationOperator::Quantile,
-        other => {
-            return Err(ControllerError::SqlParse(format!(
-                "unsupported outer aggregation: {other}"
-            )))
-        }
-    };
+    let operator = QueryTimeAggregationOperator::from_name(info.get_name()).ok_or_else(|| {
+        ControllerError::SqlParse(format!(
+            "unsupported outer aggregation: {}",
+            info.get_name()
+        ))
+    })?;
     let parameter = match operator {
         QueryTimeAggregationOperator::Quantile => {
             let phi = info

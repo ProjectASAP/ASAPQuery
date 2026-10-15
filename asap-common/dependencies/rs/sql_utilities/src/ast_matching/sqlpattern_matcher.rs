@@ -30,7 +30,7 @@ pub enum QueryError {
 }
 
 /// Aggregations an outer layer can apply to its inner layer's rows.
-const QUERY_TIME_AGGREGATIONS: [&str; 6] = ["SUM", "COUNT", "AVG", "MIN", "MAX", "QUANTILE"];
+pub const QUERY_TIME_AGGREGATIONS: [&str; 6] = ["SUM", "COUNT", "AVG", "MIN", "MAX", "QUANTILE"];
 
 #[derive(Debug)]
 pub struct SQLQuery {
