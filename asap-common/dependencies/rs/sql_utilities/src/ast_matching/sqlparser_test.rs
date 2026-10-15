@@ -83,6 +83,37 @@ mod tests {
     }
 
     #[test]
+    fn test_global_aggregate_parses_with_empty_grouping_labels() {
+        let query = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()",
+        )
+        .expect("global aggregate parses");
+
+        assert!(query.labels.is_empty());
+    }
+
+    #[test]
+    fn test_nested_global_aggregates_parse_with_empty_grouping_labels() {
+        let query = parse_sql_query(
+            "SELECT SUM(total) FROM (SELECT SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW())",
+        )
+        .expect("nested global aggregates parse");
+
+        // Matching and execution may reject nested queries, but parsing retains both layers.
+        assert!(query.labels.is_empty());
+        assert!(query.subquery.expect("inner query").labels.is_empty());
+    }
+
+    #[test]
+    fn test_nested_global_aggregates_remain_unsupported_by_matcher() {
+        check_query(
+            "SELECT SUM(total) FROM (SELECT SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW())",
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
+        );
+    }
+
+    #[test]
     fn test_pattern_matching() {
         let schema = create_test_schema();
         let time = std::time::SystemTime::now()
@@ -1371,5 +1402,200 @@ mod tests {
              GROUP BY L1",
         )
         .is_none());
+    }
+
+    // ── Two-layer nested aggregation ─────────────────────────────────────────
+
+    const NESTED_INNER: &str = "SELECT L1, L2, SUM(value) AS v FROM cpu_usage \
+         WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2";
+
+    fn nested_pattern(sql: &str) -> crate::sqlpattern_matcher::SQLQuery {
+        let query_data =
+            parse_sql_query(sql).unwrap_or_else(|| panic!("Failed to parse query: {}", sql));
+        SQLPatternMatcher::new(create_test_schema(), 1.0).nested_query_to_pattern(&query_data)
+    }
+
+    fn assert_invalid_nested(sql: &str) {
+        let result = nested_pattern(sql);
+        assert_eq!(
+            result.error,
+            Some(QueryError::InvalidNestedQuery),
+            "{sql}: {:?}",
+            result.msg
+        );
+    }
+
+    #[test]
+    fn test_nested_query_matches_its_inner_layer() {
+        let result = nested_pattern(&format!(
+            "SELECT L1, SUM(v) FROM ({NESTED_INNER}) GROUP BY L1"
+        ));
+
+        assert!(result.is_valid(), "{:?}", result.msg);
+        assert_eq!(result.query_type, vec![QueryType::SpatioTemporal]);
+        let inner = result.outer_data().expect("inner layer");
+        assert_eq!(inner.aggregation_info.get_name(), "SUM");
+        assert_eq!(inner.aggregation_info.get_value_column_name(), "value");
+        assert_eq!(
+            inner.labels,
+            HashSet::from(["L1".to_string(), "L2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_nested_query_accepts_every_query_time_aggregation() {
+        for outer in [
+            "SUM(v)",
+            "COUNT(v)",
+            "AVG(v)",
+            "MIN(v)",
+            "MAX(v)",
+            "QUANTILE(0.9, v)",
+        ] {
+            let sql = format!("SELECT L1, {outer} FROM ({NESTED_INNER}) GROUP BY L1");
+            let result = nested_pattern(&sql);
+            assert!(result.is_valid(), "{sql}: {:?}", result.msg);
+        }
+    }
+
+    #[test]
+    fn test_nested_query_accepts_a_global_outer_aggregation() {
+        let result = nested_pattern(&format!("SELECT SUM(v) FROM ({NESTED_INNER})"));
+        assert!(result.is_valid(), "{:?}", result.msg);
+    }
+
+    #[test]
+    fn test_nested_query_rejects_an_outer_aggregate_not_over_the_inner_alias() {
+        assert_invalid_nested(&format!(
+            "SELECT L1, SUM(value) FROM ({NESTED_INNER}) GROUP BY L1"
+        ));
+        // Without an inner alias there is no column for the outer layer to aggregate.
+        assert_invalid_nested(
+            "SELECT L1, SUM(value) FROM (SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1) GROUP BY L1",
+        );
+    }
+
+    #[test]
+    fn test_nested_query_rejects_an_outer_label_missing_from_the_inner_layer() {
+        assert_invalid_nested(&format!(
+            "SELECT L3, SUM(v) FROM ({NESTED_INNER}) GROUP BY L3"
+        ));
+    }
+
+    #[test]
+    fn test_nested_query_rejects_count_distinct_outer_aggregation() {
+        assert_invalid_nested(&format!(
+            "SELECT L1, COUNT(DISTINCT v) FROM ({NESTED_INNER}) GROUP BY L1"
+        ));
+    }
+
+    #[test]
+    fn test_nested_query_rejects_outer_order_by_and_limit() {
+        assert_invalid_nested(&format!(
+            "SELECT L1, SUM(v) AS s FROM ({NESTED_INNER}) GROUP BY L1 ORDER BY s DESC LIMIT 3"
+        ));
+        assert_invalid_nested(&format!(
+            "SELECT L1, SUM(v) FROM ({NESTED_INNER}) GROUP BY L1 LIMIT 3"
+        ));
+    }
+
+    #[test]
+    fn test_nested_query_rejects_a_flat_query() {
+        assert_invalid_nested(NESTED_INNER);
+    }
+
+    #[test]
+    fn test_nested_query_propagates_inner_layer_errors() {
+        let result = nested_pattern(
+            "SELECT L1, SUM(v) FROM (SELECT L1, SUM(mb) AS v FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1) GROUP BY L1",
+        );
+        assert_eq!(result.error, Some(QueryError::InvalidValueCol));
+    }
+
+    /// Each of these clauses would otherwise be silently dropped from the
+    /// nested query's data, so it must fail to parse instead.
+    #[test]
+    fn test_nested_query_rejects_clauses_it_cannot_represent() {
+        let rejected = [
+            // Outer WHERE (a filter, or a second time range).
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER}) WHERE L1 = 'a' GROUP BY L1"),
+            format!(
+                "SELECT L1, SUM(v) FROM ({NESTED_INNER}) \
+                 WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1"
+            ),
+            // Outer HAVING.
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER}) GROUP BY L1 HAVING SUM(v) > 1"),
+            // Inner ORDER BY / LIMIT (per-group or plain).
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER} ORDER BY v DESC LIMIT 3 BY L1) GROUP BY L1"),
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER} ORDER BY v DESC LIMIT 3) GROUP BY L1"),
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER} LIMIT 3) GROUP BY L1"),
+            // Inner HAVING.
+            "SELECT L1, SUM(v) FROM (SELECT L1, L2, SUM(value) AS v FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2 HAVING SUM(value) > 1) \
+             GROUP BY L1"
+                .to_string(),
+            // Three layers.
+            format!(
+                "SELECT L1, SUM(m) FROM (SELECT L1, SUM(v) AS m FROM ({NESTED_INNER}) GROUP BY L1) GROUP BY L1"
+            ),
+            // Joins and extra FROM entries on the outer layer.
+            format!(
+                "SELECT L1, SUM(v) FROM ({NESTED_INNER}) t JOIN mem_usage m ON t.L1 = m.L1 GROUP BY L1"
+            ),
+            format!("SELECT L1, SUM(v) FROM ({NESTED_INNER}) t, mem_usage GROUP BY L1"),
+            // A join on the inner layer.
+            "SELECT L1, SUM(v) FROM (SELECT L1, L2, SUM(value) AS v FROM cpu_usage \
+             JOIN mem_usage ON cpu_usage.L1 = mem_usage.L1 \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2) GROUP BY L1"
+                .to_string(),
+            // Inner QUALIFY.
+            "SELECT L1, SUM(v) FROM (SELECT L1, L2, SUM(value) AS v FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2 QUALIFY v > 1) \
+             GROUP BY L1"
+                .to_string(),
+        ];
+        for sql in rejected {
+            assert!(parse_sql_query(&sql).is_none(), "should not parse: {sql}");
+        }
+    }
+
+    /// A CTE would be served from whichever CTE comes first, whatever name
+    /// FROM references, so CTEs are rejected outright.
+    #[test]
+    fn test_ctes_are_rejected() {
+        let rejected = [
+            format!("WITH t AS ({NESTED_INNER}) SELECT L1, SUM(v) FROM t GROUP BY L1"),
+            format!(
+                "WITH a AS ({NESTED_INNER}), b AS (SELECT L1, L2, MAX(value) AS v FROM cpu_usage \
+                 WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2) \
+                 SELECT L1, SUM(v) FROM b GROUP BY L1"
+            ),
+            format!(
+                "SELECT L1, SUM(v) FROM (WITH t AS ({NESTED_INNER}) SELECT * FROM t) GROUP BY L1"
+            ),
+        ];
+        for sql in rejected {
+            assert!(parse_sql_query(&sql).is_none(), "should not parse: {sql}");
+        }
+    }
+
+    /// Single-level queries reject the same unrepresentable clauses: each
+    /// would otherwise be dropped from the query's data.
+    #[test]
+    fn test_flat_query_rejects_joins_and_qualify() {
+        let window = "WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()";
+        let rejected = [
+            format!(
+                "SELECT L1, SUM(value) FROM cpu_usage JOIN mem_usage ON cpu_usage.L1 = mem_usage.L1 \
+                 {window} GROUP BY L1"
+            ),
+            format!("SELECT L1, SUM(value) FROM cpu_usage, mem_usage {window} GROUP BY L1"),
+            format!("SELECT L1, SUM(value) AS s FROM cpu_usage {window} GROUP BY L1 QUALIFY s > 1"),
+        ];
+        for sql in rejected {
+            assert!(parse_sql_query(&sql).is_none(), "should not parse: {sql}");
+        }
     }
 }

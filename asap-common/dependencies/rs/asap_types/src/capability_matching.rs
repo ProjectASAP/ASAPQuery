@@ -157,6 +157,15 @@ pub fn labels_compatible(config_labels: &KeyByLabelNames, req_labels: &KeyByLabe
     config_labels == req_labels
 }
 
+fn scalar_requirement_compatible(
+    config: &AggregationConfig,
+    requirements: &QueryRequirements,
+) -> bool {
+    !requirements.grouping_labels.labels.is_empty()
+        || requirements.statistics.contains(&Statistic::Topk)
+        || config.aggregated_labels.labels.is_empty()
+}
+
 /// Spatial filter compatibility.
 /// - Both empty → compatible.
 /// - Config non-empty and matches query → compatible.
@@ -290,6 +299,7 @@ pub fn find_compatible_aggregation(
                     && sub_type.is_none_or(|st| c.aggregation_sub_type.eq_ignore_ascii_case(st))
                     && window_compatible(c, requirements.data_range_ms)
                     && labels_compatible(&c.grouping_labels, &requirements.grouping_labels)
+                    && scalar_requirement_compatible(c, requirements)
                     && spatial_filter_compatible(
                         &c.spatial_filter_normalized,
                         &requirements.spatial_filter_normalized,
@@ -550,6 +560,20 @@ mod tests {
             find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_some());
         assert_eq!(result.unwrap().aggregation_id_for_value, 1);
+    }
+
+    #[test]
+    fn scalar_sum_does_not_match_an_internally_partitioned_config() {
+        let mut value = make_config(1, "cpu", "MultipleSum", "sum", 300_000, "tumbling", &[], "");
+        value.aggregated_labels = KeyByLabelNames::new(vec!["host".to_string()]);
+        let key = make_config(2, "cpu", "SetAggregator", "", 300_000, "tumbling", &[], "");
+        let configs = HashMap::from([(1, value), (2, key)]);
+
+        assert!(
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""))
+                .is_none(),
+            "a scalar query cannot be served by an internally partitioned aggregation"
+        );
     }
 
     #[test]
