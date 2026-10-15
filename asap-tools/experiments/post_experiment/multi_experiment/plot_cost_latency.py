@@ -5,6 +5,10 @@ CPU-seconds, both log. Lower left is better. A run collate_batch.py marks
 invalid (failed queries, or answers that disagree with the reference) is
 drawn hollow: its latency and CPU don't stand for a correct answer.
 
+Beside each scatter, two bars: LiteOlly's improvement in CPU and in p95
+latency over the worst baseline for that metric, as collate_batch.py's
+geometric mean of baseline / LiteOlly over workloads where both are valid.
+
 Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
 
 Usage: python3 plot_cost_latency.py collated.csv out_dir
@@ -20,6 +24,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from collate_batch import ratios  # noqa: E402
 
 # Validated categorical slots 1-5 (fixed order) and a marker per system, so
 # identity never rests on color alone.
@@ -39,10 +46,23 @@ def main(csv_path, out_dir):
     for r in rows:
         by_set[r["set"]].append(r)
     sets = sorted(by_set)
-    fig, axes = plt.subplots(
-        1, len(sets), figsize=(7 * len(sets), 6), facecolor=SURFACE, squeeze=False
+    numeric = ("cpu_secs", "latency_p50", "latency_p95", "latency_sum")
+    improvement = ratios(
+        [
+            {**r, "valid": r["valid"] == "True", **{k: float(r[k]) for k in numeric}}
+            for r in rows
+        ]
     )
-    for ax, set_name in zip(axes[0], sets):
+    names = {key: label for key, label, *_ in SYSTEMS}
+    fig, axes = plt.subplots(
+        1,
+        2 * len(sets),
+        figsize=(9.5 * len(sets), 6),
+        facecolor=SURFACE,
+        squeeze=False,
+        gridspec_kw={"width_ratios": [3, 1.3] * len(sets)},
+    )
+    for ax, bar_ax, set_name in zip(axes[0][::2], axes[0][1::2], sets):
         ax.set_facecolor(SURFACE)
         workloads = sorted({r["workload"] for r in by_set[set_name]})
         for key, label, color, marker in SYSTEMS:
@@ -85,6 +105,41 @@ def main(csv_path, out_dir):
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
         ax.tick_params(colors=MUTED, labelsize=13)
         for spine in ax.spines.values():
+            spine.set_color("#d4d3cf")
+        bars = []
+        for metric, what in (("cpu_secs", "CPU"), ("latency_p95", "p95 latency")):
+            arm, m = max(
+                ((arm, m) for (s, arm), m in improvement.items() if s == set_name),
+                key=lambda am: am[1][metric],
+            )
+            bars.append((what, names[arm], m[metric]))
+        whats, worst, heights = zip(*bars)
+        # One worst baseline goes in the title; two go under their bars.
+        one = len(set(worst)) == 1
+        labels = whats if one else [f"{w}\n{b}" for w, b in zip(whats, worst)]
+        bar_ax.set_facecolor(SURFACE)
+        bar_ax.bar(labels, heights, width=0.5, color=SYSTEMS[0][2], zorder=3)
+        for i, h in enumerate(heights):
+            bar_ax.annotate(
+                f"{h:.1f}x",
+                (i, h),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                color=INK,
+                fontsize=13,
+            )
+        bar_ax.set_ylim(0, max(heights) * 1.15)
+        bar_ax.set_ylabel("LiteOlly improvement, geomean (x)", color=MUTED, fontsize=14)
+        bar_ax.set_title(
+            "vs worst baseline" + (f":\n{worst[0]}" if one else ""),
+            color=INK,
+            fontsize=14,
+            loc="left",
+        )
+        bar_ax.grid(True, axis="y", color="#e6e5e1", linewidth=0.8)
+        bar_ax.tick_params(colors=MUTED, labelsize=12)
+        for spine in bar_ax.spines.values():
             spine.set_color("#d4d3cf")
     axes[0][0].legend(frameon=False, fontsize=13, loc="best")
     fig.tight_layout()
