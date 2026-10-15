@@ -5,11 +5,12 @@
 
 use super::promql::{combine_scalar, combine_vector_vector};
 use super::{QueryExecutionError, QueryMetadata, QueryTimestamps, SimpleEngine};
-use crate::data_model::RqeConfig;
+use crate::data_model::{RqeConfig, StreamingConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::query_time_aggregation::{
     apply_instant_pipeline, output_labels_for_aggregation, pipeline_supports_labels,
 };
+use crate::precompute_engine::accumulator_factory::cms_heap_params;
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::aggregation_mode::{AggregationMode, CountMode};
 use asap_types::capability_matching::{compatible_agg_types, window_compatible};
@@ -62,6 +63,8 @@ impl SimpleEngine {
             )));
         }
         let leaves = expr.leaves();
+        // One snapshot (a shared pointer, not a copy) for every leaf to read.
+        let streaming_config = self.streaming_config.read().unwrap().clone();
         // The leaves' entries, copied so the lock isn't held while reading.
         // Configs are loaded once and don't change while a tree is answered.
         let configs: HashMap<&str, RqeConfig> = {
@@ -81,7 +84,7 @@ impl SimpleEngine {
         };
 
         let query_time = Self::convert_query_time_to_data_time(time);
-        match self.evaluate_rqe_node(expr, &configs, query_time)? {
+        match self.evaluate_rqe_node(expr, &configs, &streaming_config, query_time)? {
             RqeValue::Vector { labels, values } => {
                 Ok((labels, QueryResult::vector(values, query_time)))
             }
@@ -93,17 +96,22 @@ impl SimpleEngine {
         &self,
         expr: &RqeExpr,
         configs: &HashMap<&str, RqeConfig>,
+        streaming_config: &StreamingConfig,
         query_time: u64,
     ) -> Result<RqeValue, RqeQueryError> {
         match expr {
             RqeExpr::Rqe { rqe } => {
-                let (labels, values) =
-                    self.evaluate_rqe_leaf(rqe, &configs[rqe.id.as_str()], query_time)?;
+                let (labels, values) = self.evaluate_rqe_leaf(
+                    rqe,
+                    &configs[rqe.id.as_str()],
+                    streaming_config,
+                    query_time,
+                )?;
                 Ok(RqeValue::Vector { labels, values })
             }
             RqeExpr::Agg { agg, by, of } => {
                 let RqeValue::Vector { labels, values } =
-                    self.evaluate_rqe_node(of, configs, query_time)?
+                    self.evaluate_rqe_node(of, configs, streaming_config, query_time)?
                 else {
                     unreachable!("a valid agg operand reads a leaf");
                 };
@@ -114,8 +122,8 @@ impl SimpleEngine {
             }
             RqeExpr::Binary { op, lhs, rhs } => {
                 let op = binary_token(*op);
-                let lhs = self.evaluate_rqe_node(lhs, configs, query_time)?;
-                let rhs = self.evaluate_rqe_node(rhs, configs, query_time)?;
+                let lhs = self.evaluate_rqe_node(lhs, configs, streaming_config, query_time)?;
+                let rhs = self.evaluate_rqe_node(rhs, configs, streaming_config, query_time)?;
                 match (lhs, rhs) {
                     (
                         RqeValue::Vector {
@@ -173,6 +181,7 @@ impl SimpleEngine {
         &self,
         leaf: &RqeLeaf,
         config: &RqeConfig,
+        streaming_config: &StreamingConfig,
         query_time: u64,
     ) -> Result<(KeyByLabelNames, Vec<InstantVectorElement>), RqeQueryError> {
         let failed =
@@ -180,7 +189,6 @@ impl SimpleEngine {
         let agg_info = self
             .get_aggregation_id_info(&config.aggregations)
             .map_err(failed)?;
-        let streaming_config = self.streaming_config.read().unwrap().clone();
         let value_config = streaming_config
             .get_aggregation_config(agg_info.aggregation_id_for_value)
             .ok_or_else(|| {
@@ -192,6 +200,7 @@ impl SimpleEngine {
 
         let (statistic_to_compute, query_kwargs) = leaf_statistic(leaf);
         check_leaf_against_aggregation(leaf, statistic_to_compute, value_config)?;
+        check_leaf_retention(leaf, config, value_config)?;
 
         let end_timestamp = self.align_end_timestamp_promql(query_time);
         let start_timestamp = end_timestamp.checked_sub(leaf.lookback_ms).ok_or_else(|| {
@@ -255,7 +264,8 @@ fn bad_leaf(leaf: &RqeLeaf, reason: String) -> RqeQueryError {
 
 /// Whether the aggregation `leaf`'s RQE reads can answer it: same metric
 /// (`table.value` for SQL), a type serving its capability, and windows that
-/// tile its lookback. A top-k leaf must rank within the aggregation's heaps.
+/// tile its lookback. A top-k leaf must rank within the aggregation's heaps,
+/// and ask for no more than a heap holds.
 fn check_leaf_against_aggregation(
     leaf: &RqeLeaf,
     statistic: Statistic,
@@ -309,6 +319,19 @@ fn check_leaf_against_aggregation(
         ));
     }
     if leaf.capability == RqeCapability::TopkByValue {
+        // Top-k is served only by a CountMinSketchWithHeap (checked above).
+        let (_, _, heap_size) = cms_heap_params(aggregation)
+            .map_err(|error| QueryExecutionError::Native(format!("RQE {:?}: {error}", leaf.id)))?;
+        let k = leaf.k.expect("a valid top-k leaf has k");
+        if k > heap_size as u64 {
+            return Err(bad_leaf(
+                leaf,
+                format!(
+                    "asks for the top {k}, but its aggregation {} keeps a heap of {heap_size}",
+                    aggregation.aggregation_id
+                ),
+            ));
+        }
         let buckets = KeyByLabelNames::new(leaf.topk_by.clone().unwrap_or_default());
         if aggregation.grouping_labels != buckets {
             return Err(bad_leaf(
@@ -319,6 +342,43 @@ fn check_leaf_against_aggregation(
                 ),
             ));
         }
+    }
+    Ok(())
+}
+
+/// The closed windows a lookback reads: those wholly inside it, which start
+/// in `[end - lookback, end - window]`, so `(lookback - window) / slide + 1`.
+/// The planner retains this many for the lookback (its `retained_windows`).
+/// The lookback must already be `window_compatible`.
+fn windows_needed(aggregation: &AggregationConfig, lookback_ms: u64) -> u64 {
+    (lookback_ms - aggregation.window_size_ms) / SimpleEngine::bucket_step_ms(aggregation) + 1
+}
+
+/// A leaf may look back only as many windows as its RQE's plan retains of
+/// the aggregation it reads: older ones may already be gone.
+fn check_leaf_retention(
+    leaf: &RqeLeaf,
+    config: &RqeConfig,
+    aggregation: &AggregationConfig,
+) -> Result<(), RqeQueryError> {
+    let retained = config
+        .aggregations
+        .iter()
+        .find(|reference| reference.aggregation_id == aggregation.aggregation_id)
+        .and_then(|reference| reference.num_aggregates_to_retain);
+    let Some(retained) = retained else {
+        return Ok(());
+    };
+    let needed = windows_needed(aggregation, leaf.lookback_ms);
+    if needed > retained {
+        return Err(bad_leaf(
+            leaf,
+            format!(
+                "its {} ms lookback reads {needed} windows of its aggregation {}, \
+                 but its plan retains {retained}",
+                leaf.lookback_ms, aggregation.aggregation_id
+            ),
+        ));
     }
     Ok(())
 }
@@ -445,4 +505,53 @@ fn binary_token(op: RqeBinaryOp) -> TokenType {
         RqeBinaryOp::Mul => T_MUL,
         RqeBinaryOp::Div => T_DIV,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asap_types::enums::{AggregationType, WindowType};
+
+    fn aggregation(window_size_ms: u64, slide_interval_ms: u64) -> AggregationConfig {
+        let window_type = if window_size_ms == slide_interval_ms {
+            WindowType::Tumbling
+        } else {
+            WindowType::Sliding
+        };
+        AggregationConfig::new(
+            1,
+            AggregationType::Sum,
+            String::new(),
+            HashMap::new(),
+            KeyByLabelNames::empty(),
+            KeyByLabelNames::empty(),
+            KeyByLabelNames::empty(),
+            String::new(),
+            window_size_ms,
+            slide_interval_ms,
+            window_type,
+            String::new(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn windows_needed_counts_the_closed_windows_inside_the_lookback() {
+        const MINUTE_MS: u64 = 60_000;
+        // Tumbling: one window per window width.
+        assert_eq!(
+            windows_needed(&aggregation(MINUTE_MS, MINUTE_MS), 3 * MINUTE_MS),
+            3
+        );
+        // A tumbling config may leave the slide unset.
+        assert_eq!(windows_needed(&aggregation(MINUTE_MS, 0), 3 * MINUTE_MS), 3);
+        // 5m windows sliding every minute: the newest for 5m, eleven for 15m.
+        let sliding = aggregation(5 * MINUTE_MS, MINUTE_MS);
+        assert_eq!(windows_needed(&sliding, 5 * MINUTE_MS), 1);
+        assert_eq!(windows_needed(&sliding, 15 * MINUTE_MS), 11);
+    }
 }

@@ -44,6 +44,10 @@ mod tests {
     const TOPK_BY_JOB_QUERY: &str = "topk by (job) (2, sum_over_time(flows[1s]))";
     /// A SQL table's `latency` column, as the planner names it.
     const SQL_DDSKETCH_AGG: u64 = 7;
+    /// Each top-k aggregation's heap capacity.
+    const HEAP_SIZE: usize = 32;
+    const CMS_DEPTH: usize = 3;
+    const CMS_WIDTH: usize = 1024;
     /// In `rqe_configs` but not in the streaming config.
     const MISSING_AGG: u64 = 99;
 
@@ -72,7 +76,14 @@ mod tests {
                     }
                     _ => String::new(),
                 },
-                parameters: HashMap::new(),
+                parameters: match aggregation_type {
+                    AggregationType::CountMinSketchWithHeap => HashMap::from([
+                        ("depth".to_string(), json!(CMS_DEPTH)),
+                        ("width".to_string(), json!(CMS_WIDTH)),
+                        ("heapsize".to_string(), json!(HEAP_SIZE)),
+                    ]),
+                    _ => HashMap::new(),
+                },
                 grouping_labels: KeyByLabelNames::new(strings(grouping)),
                 aggregated_labels: KeyByLabelNames::new(strings(aggregated)),
                 rollup_labels: KeyByLabelNames::empty(),
@@ -248,7 +259,7 @@ mod tests {
         );
         insert(HLL_AGG, QUERY_TIME_MS, Some(&["web"]), Box::new(hll(0..50)));
 
-        let mut heap = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        let mut heap = CountMinSketchWithHeapAccumulator::new(CMS_DEPTH, CMS_WIDTH, HEAP_SIZE);
         for i in 1..=5u64 {
             heap.inner.update(&format!("10.0.0.{i}"), (i * 10) as f64);
         }
@@ -257,7 +268,7 @@ mod tests {
         // `api`'s smallest sources outweigh `web`'s largest, so a global
         // ranking would keep only `api` rows.
         for (job, sums) in [("api", [100.0, 200.0, 300.0]), ("web", [10.0, 20.0, 30.0])] {
-            let mut heap = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+            let mut heap = CountMinSketchWithHeapAccumulator::new(CMS_DEPTH, CMS_WIDTH, HEAP_SIZE);
             for (i, sum) in sums.into_iter().enumerate() {
                 heap.inner.update(&format!("10.0.0.{}", i + 1), sum);
             }
@@ -319,6 +330,14 @@ mod tests {
                 ("sum".to_string(), rqe_config(SUM_AGG, vec![])),
                 ("sum_by_job".to_string(), rqe_config(SUM_AGG, vec![])),
                 ("latest".to_string(), rqe_config(SUM_AGG, vec![])),
+                (
+                    // Planned for a lookback of two windows.
+                    "sum_retains_two".to_string(),
+                    RqeConfig {
+                        aggregations: vec![AggregationReference::new(SUM_AGG, Some(2))],
+                        query_time_aggregations: vec![],
+                    },
+                ),
                 ("p90".to_string(), rqe_config(DDSKETCH_AGG, vec![])),
                 ("distinct".to_string(), rqe_config(HLL_AGG, vec![])),
                 ("top3".to_string(), rqe_config(TOPK_AGG, vec![])),
@@ -668,6 +687,41 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn refuses_a_lookback_longer_than_its_plan_retains() {
+        let series = ["instance", "job"];
+        assert_bad_leaf(
+            sum_leaf("sum_retains_two", 3 * WINDOW_MS, &series),
+            "its 3000 ms lookback reads 3 windows of its aggregation 1, but its plan retains 2",
+        );
+        // The retained windows are served.
+        let engine = engine();
+        assert_eq!(
+            rqe(
+                &engine,
+                sum_leaf("sum_retains_two", TWO_WINDOWS_MS, &series)
+            ),
+            rqe(&engine, series_sum())
+        );
+    }
+
+    #[test]
+    fn refuses_a_topk_k_its_heap_cannot_hold() {
+        let mut too_many = topk_leaf();
+        too_many["rqe"]["k"] = json!(HEAP_SIZE + 1);
+        assert_bad_leaf(
+            too_many,
+            &format!(
+                "asks for the top 33, but its aggregation {TOPK_AGG} keeps a heap of {HEAP_SIZE}"
+            ),
+        );
+        // A whole heap is served.
+        let mut whole_heap = topk_leaf();
+        whole_heap["rqe"]["k"] = json!(HEAP_SIZE);
+        let (_, rows) = rqe(&engine(), whole_heap);
+        assert_eq!(rows.len(), 5, "every source fits the heap");
+    }
+
     /// Without a stage, a leaf gets the aggregation's labels; a single-
     /// population aggregation can also be merged to a subset of its groups.
     #[test]
@@ -929,6 +983,10 @@ mod tests {
     // --- HTTP route ---
 
     async fn server() -> (HttpServer, String) {
+        server_handling(true).await
+    }
+
+    async fn server_handling(handle_http_requests: bool) -> (HttpServer, String) {
         let engine = Arc::new(engine());
         let store: Arc<dyn Store> = Arc::new(SimpleMapStore::new(
             Arc::new(StreamingConfig::default()),
@@ -936,7 +994,7 @@ mod tests {
         ));
         let config = HttpServerConfig {
             port: 0,
-            handle_http_requests: true,
+            handle_http_requests,
             // Forwarding on, so a test would see any fallback attempt fail.
             adapter_config: AdapterConfig::prometheus_promql(
                 "http://127.0.0.1:1".to_string(),
@@ -1054,5 +1112,17 @@ mod tests {
         assert_eq!(status, 500);
         assert_eq!(response["status"], "error");
         assert_eq!(response["errorType"], "internal");
+    }
+
+    /// RQE queries have no fallback: disabled handling refuses them.
+    #[tokio::test]
+    async fn route_refuses_when_handling_is_disabled() {
+        let (_server, url) = server_handling(false).await;
+        let body = json!({"expr": series_sum(), "time": QUERY_TIME_S});
+        let (status, response) = post(&url, body.to_string()).await;
+        assert_eq!(status, 500);
+        assert_eq!(response["status"], "error");
+        assert_eq!(response["errorType"], "internal");
+        assert_eq!(response["error"], "RQE query handling is disabled");
     }
 }
