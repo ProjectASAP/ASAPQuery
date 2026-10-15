@@ -652,6 +652,9 @@ def main(args: Any) -> None:
         global_query_idx += len(query_group.queries)
 
     server_url_for_alignment = None
+    # Every query of every group can be in flight at once; a smaller pool
+    # opens a new connection per excess request, inside its latency.
+    pool_size = max(requests.adapters.DEFAULT_POOLSIZE, global_query_idx)
 
     servers: Dict[str, QueryClient] = {}
     for server in config.servers:
@@ -676,7 +679,7 @@ def main(args: Any) -> None:
             )
 
             # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name)
+            debug_adapter = DebugHTTPAdapter(server.name, pool_maxsize=pool_size)
             client.session.mount("http://", debug_adapter)
             client.session.mount("https://", debug_adapter)
         else:
@@ -691,7 +694,7 @@ def main(args: Any) -> None:
             )
 
             # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name)
+            debug_adapter = DebugHTTPAdapter(server.name, pool_maxsize=pool_size)
             client.session.mount("http://", debug_adapter)
             client.session.mount("https://", debug_adapter)
 

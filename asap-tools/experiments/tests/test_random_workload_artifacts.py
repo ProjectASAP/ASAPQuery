@@ -194,6 +194,42 @@ class PilotConfigsTest(unittest.TestCase):
         raw_sql = "".join(files[f"interval_{t}s_baseline.sql"] for t in (1, 20, 30))
         self.assertTrue(all(sql in raw_sql for sql in pilot_sql))
 
+    def test_two_dashboards_repeat_every_group_on_the_same_plan(self):
+        workload = workloads.generate_workloads(seed=862)[0]
+
+        def configs(dashboards):
+            files = artifacts.pilot_configs(workload, PILOT_DIR, dashboards)
+            # The SQL files are the same, under the variant's directory.
+            return {
+                p.name: yaml.safe_load(c.replace("workload-01-dash2/", "workload-01/"))
+                for p, c in files.items()
+                if p.suffix == ".yaml"
+            }, {p.parent.name for p in files}
+
+        one, _ = configs(1)
+        two, dirs = configs(2)
+        self.assertEqual(dirs, {"workload-01-dash2"})
+        for name, key in (
+            ("e2e.yaml", "id"),
+            ("clickhouse.yaml", "name"),
+            ("clickhouse_mv.yaml", "name"),
+        ):
+            with self.subTest(config=name):
+                single, double = one[name], two[name]
+                params = (
+                    (single["experiment_params"], double["experiment_params"])
+                    if name == "e2e.yaml"
+                    else (single, double)
+                )
+                groups, copies = (p.pop("query_groups") for p in params)
+                # Same plan, feeder and data; only the groups repeat.
+                self.assertEqual(double, single)
+                # Each copy is its own group, so the client keeps its latencies apart.
+                self.assertEqual(len({g[key] for g in copies}), 2 * len(groups))
+                for g in groups + copies:
+                    del g[key]
+                self.assertEqual(copies, 2 * groups)
+
 
 class PilotConfigsPreflightTest(unittest.TestCase):
     """Each config through Hydra and the checks its runner makes before it

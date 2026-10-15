@@ -133,7 +133,24 @@ def workload_set(workload):
     return f"seed-{workload['seed']}" + (f"-{variant}" if variant else "")
 
 
-def pilot_configs(workload, pilot_dir):
+def as_dashboards(groups, dashboards, key):
+    """`groups` repeated once per dashboard, each copy its own client thread
+    and output group; `key` ("id" or "name") stays unique per copy."""
+    if dashboards == 1:
+        return groups
+    copies = []
+    for d in range(1, dashboards + 1):
+        for group in groups:
+            group = copy.deepcopy(group)
+            if key == "id":
+                group["id"] = len(copies) + 1
+            else:
+                group[key] = f"{group[key]}_d{d}"
+            copies.append(group)
+    return copies
+
+
+def pilot_configs(workload, pilot_dir, dashboards=1):
     """The five-system pilot's run configs, {path under EXPERIMENTS_DIR:
     content}: ASAPQuery (the saved plan in `pilot_dir`) and Prometheus in
     one experiment_run_e2e.py config, VictoriaMetrics in another, and raw
@@ -144,7 +161,10 @@ def pilot_configs(workload, pilot_dir):
     freshness delay, then evaluates each query at multiples of its interval
     for PILOT_DURATION_MS: the same windows relative to its data start.
     Raw ClickHouse runs the manifest's clickhouse_sql, and ClickHouse+MV
-    the same RQEs' Query over exact views (sketch_bench_workloads)."""
+    the same RQEs' Query over exact views (sketch_bench_workloads).
+
+    With `dashboards` K > 1, every query group runs K times concurrently,
+    as K dashboards over the same data, from `<workload>-dashK/`."""
     queries = [q for q in workload["queries"] if q["support"] == PILOT_SUPPORT]
     lookback_secs = max(q["lookback_ms"] for q in queries) // 1000
     starting_delay = lookback_secs + QUERY_FRESHNESS_DELAY_SECS
@@ -152,7 +172,8 @@ def pilot_configs(workload, pilot_dir):
     feed_secs = starting_delay + FEED_BOUND_QUERY_PHASES * duration
     seed = workload["data_facts"]["feeder_seed"]
     table = pilot_dir / "eval_table.json"
-    out_dir = Path(CONFIG_DIR) / workload_set(workload) / workload["id"]
+    variant = f"-dash{dashboards}" if dashboards > 1 else ""
+    out_dir = Path(CONFIG_DIR) / workload_set(workload) / (workload["id"] + variant)
 
     e2e, _ = build_config(
         str(table),
@@ -162,6 +183,10 @@ def pilot_configs(workload, pilot_dir):
         QUERY_FRESHNESS_DELAY_SECS,
         feeder_duration_secs=feed_secs,
         prebuilt_output_dir=str(pilot_dir),
+    )
+    e2e_params = e2e["experiment_params"]
+    e2e_params["query_groups"] = as_dashboards(
+        e2e_params["query_groups"], dashboards, "id"
     )
     # One monitoring tool per run, so VictoriaMetrics is its own baseline run.
     vm = copy.deepcopy(e2e)
@@ -232,7 +257,7 @@ def pilot_configs(workload, pilot_dir):
                 "paced_feeder": feeder,
                 "clickhouse_image_tag": CLICKHOUSE_IMAGE_TAG,
             },
-            "query_groups": groups,
+            "query_groups": as_dashboards(groups, dashboards, "name"),
             "data_ingestion_interval_ms": workload["data_facts"]["scrape_interval_ms"],
         }
         files[name] = "# @package experiment_params\n" + yaml.safe_dump(
@@ -277,7 +302,16 @@ def main():
         help="the workload's archived pilot plan (eval_table.json and planner "
         f"configs): also write the pilot's run configs under {CONFIG_DIR}",
     )
+    parser.add_argument(
+        "--dashboards",
+        type=int,
+        default=1,
+        help="with --pilot-dir: issue every query group this many times "
+        "concurrently, into <workload>-dashK/",
+    )
     args = parser.parse_args()
+    if args.dashboards < 1:
+        parser.error("--dashboards must be at least 1")
     workload = json.loads(args.manifest.read_text())
     rendered = render(workload)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -305,7 +339,9 @@ def main():
     )
     print(table)
     if args.pilot_dir:
-        for path, content in pilot_configs(workload, args.pilot_dir).items():
+        for path, content in pilot_configs(
+            workload, args.pilot_dir, args.dashboards
+        ).items():
             path = Path(EXPERIMENTS_DIR) / path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)

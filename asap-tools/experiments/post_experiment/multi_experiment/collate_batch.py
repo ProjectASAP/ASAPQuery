@@ -4,8 +4,9 @@ with total CPU-seconds (warm-up + queries), peak memory, the median, p95 and
 sum of every answered query's latency, and whether the run is valid:
 
 - no query failed or timed out;
-- its answers agree with the reference arm (Prometheus, which keeps up):
-  exact arms to EXACT_REL_ERR, ASAPQuery's sketches to their bounds.
+- its answers agree with the reference arm (Prometheus, which keeps up, or
+  else ClickHouse+MV): exact arms to EXACT_REL_ERR, ASAPQuery's sketches to
+  their bounds.
 
 Separately, whether ingest kept up: during the query phase the feeder never
 ran more than MAX_INGEST_LAG_SECS behind (from the feeder's
@@ -15,7 +16,7 @@ answers late but correctly is slow, not wrong, and stays valid.
 
 Then each baseline's ratio to ASAPQuery (baseline / asap, > 1 means ASAPQuery
 is better) over workloads where both runs are valid. Only workloads whose
-arms all finished are collated.
+batch arms all finished, one of them a reference, are collated.
 
 Usage:
   python3 collate_batch.py <experiment_outputs>/<batch> [--csv out.csv]
@@ -37,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from random_workload_batch import ARMS, OUTPUTS_DIR  # noqa: E402
 
 REFERENCE = "prom"
+# The reference of a batch without Prometheus: exact, and answers every window.
+FALLBACK_REFERENCE = "chmv"
 # The queries' freshness delay: a feed further behind leaves on-time
 # queries' windows incomplete.
 MAX_INGEST_LAG_SECS = 10
@@ -120,9 +123,10 @@ def rows(batch_dir):
         by_workload[(j["set"], j["workload"])][j["arm"]] = j
     out = []
     for (set_name, workload), jobs_by_arm in sorted(by_workload.items()):
-        if set(jobs_by_arm) != set(ARMS) or any(
-            j["status"] != "done" for j in jobs_by_arm.values()
-        ):
+        if any(j["status"] != "done" for j in jobs_by_arm.values()):
+            continue
+        reference = REFERENCE if REFERENCE in jobs_by_arm else FALLBACK_REFERENCE
+        if reference not in jobs_by_arm:
             continue
         dirs = {
             a: OUTPUTS_DIR / j["names"][-1] / ARMS[a][3] for a, j in jobs_by_arm.items()
@@ -137,8 +141,8 @@ def rows(batch_dir):
             why = []
             if len(recorded) != len(latencies):
                 why.append(f"{len(recorded) - len(latencies)} failed queries")
-            if arm_name != REFERENCE:
-                why += disagreements(arm_name, arm, arms[REFERENCE])
+            if arm_name != reference:
+                why += disagreements(arm_name, arm, arms[reference])
             out.append(
                 {
                     "set": set_name,
@@ -170,8 +174,8 @@ def ratios(table):
     by = {(r["set"], r["workload"], r["arm"]): r for r in table}
     result = defaultdict(lambda: defaultdict(list))
     for (set_name, workload, arm), r in by.items():
-        asap = by[(set_name, workload, "asap")]
-        if arm == "asap" or not (r["valid"] and asap["valid"]):
+        asap = by.get((set_name, workload, "asap"))
+        if arm == "asap" or not (asap and r["valid"] and asap["valid"]):
             continue
         for key in ("cpu_secs", "latency_p50", "latency_p95", "latency_sum"):
             result[(set_name, arm)][key].append(r[key] / asap[key])
