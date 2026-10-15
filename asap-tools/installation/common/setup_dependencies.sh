@@ -26,6 +26,7 @@ fi
 (cd "$THIS_DIR/../../../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter" && cargo build --release)
 
 DOCKER_DATA_DIR=/scratch/var_lib_docker
+CONTAINERD_DATA_DIR=/scratch/var_lib_containerd
 
 # Add Docker's official GPG key:
 sudo apt-get install -y ca-certificates curl
@@ -45,4 +46,13 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 sudo usermod -aG docker "$USER"
 sudo mkdir -p /etc/docker && mkdir -p $DOCKER_DATA_DIR
 echo '{ "data-root": "'$DOCKER_DATA_DIR'" }' | sudo tee /etc/docker/daemon.json
+# Docker's containerd image store ignores data-root; images/snapshots live under containerd's root, which defaults to the small / disk.
+CONTAINERD_ROOT_LINE='root = "'$CONTAINERD_DATA_DIR'"'
+sudo mkdir -p $CONTAINERD_DATA_DIR
+if sudo grep -qE '^#?root = ' /etc/containerd/config.toml 2>/dev/null; then
+  sudo sed -i -E "s|^#?root = .*|$CONTAINERD_ROOT_LINE|" /etc/containerd/config.toml
+else
+  echo "$CONTAINERD_ROOT_LINE" | sudo tee -a /etc/containerd/config.toml >/dev/null
+fi
+sudo systemctl restart containerd
 sudo service docker restart
