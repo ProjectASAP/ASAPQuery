@@ -5,9 +5,10 @@ CPU-seconds, both log. Lower left is better. A run collate_batch.py marks
 invalid (failed queries, or answers that disagree with the reference) is
 drawn hollow: its latency and CPU don't stand for a correct answer.
 
-Beside each scatter, two bars: LiteOlly's improvement in CPU and in p95
-latency over the worst baseline for that metric, as collate_batch.py's
-geometric mean of baseline / LiteOlly over workloads where both are valid.
+Two arrows from LiteOlly's geometric-mean point show its improvement in CPU
+(vertical) and p95 latency (horizontal) over the worst baseline for that
+metric: collate_batch.py's geometric mean of baseline / LiteOlly over
+workloads where both are valid. Arrow lengths are those ratios.
 
 Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
 
@@ -16,6 +17,7 @@ Usage: python3 plot_cost_latency.py collated.csv out_dir
 
 import csv
 import datetime
+import statistics
 import sys
 from pathlib import Path
 from collections import defaultdict
@@ -40,6 +42,50 @@ SYSTEMS = [
 SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#52514e"
 
 
+def arrows(ax, rows, improvement, set_name):
+    """LiteOlly's improvement over the worst baseline per metric, drawn from
+    LiteOlly's geometric-mean point (over its valid runs, else all)."""
+    names = {key: label for key, label, *_ in SYSTEMS}
+    lite = [r for r in rows if r["arm"] == "asap"]
+    lite = [r for r in lite if r["valid"] == "True"] or lite
+    lx = statistics.geometric_mean(float(r["latency_p95"]) for r in lite)
+    ly = statistics.geometric_mean(float(r["cpu_secs"]) for r in lite)
+    worst = {}
+    for metric in ("cpu_secs", "latency_p95"):
+        worst[metric] = max(
+            ((arm, m[metric]) for (s, arm), m in improvement.items() if s == set_name),
+            key=lambda am: am[1],
+        )
+    style = dict(arrowstyle="->", color=INK, linewidth=2, mutation_scale=22)
+    arm, cpu = worst["cpu_secs"]
+    x = lx / 1.5
+    ax.annotate("", (x, ly), xytext=(x, ly * cpu), arrowprops=style, zorder=4)
+    ax.text(
+        x * 1.08,
+        ly * cpu**0.75,
+        f"{cpu:.1f}x less CPU\nvs {names[arm]}",
+        color=INK,
+        fontsize=13,
+        va="center",
+    )
+    arm, lat = worst["latency_p95"]
+    y = ly / 1.4
+    ax.annotate("", (lx, y), xytext=(lx * lat, y), arrowprops=style, zorder=4)
+    ax.text(
+        lx * lat**0.5,
+        y / 1.08,
+        f"{lat:.1f}x lower p95 latency vs {names[arm]}",
+        color=INK,
+        fontsize=13,
+        ha="center",
+        va="top",
+    )
+    left, right = ax.get_xlim()
+    ax.set_xlim(min(left, lx / 2), right)
+    bottom, top = ax.get_ylim()
+    ax.set_ylim(min(bottom, ly / 2), top)
+
+
 def main(csv_path, out_dir):
     rows = list(csv.DictReader(open(csv_path)))
     by_set = defaultdict(list)
@@ -53,16 +99,10 @@ def main(csv_path, out_dir):
             for r in rows
         ]
     )
-    names = {key: label for key, label, *_ in SYSTEMS}
     fig, axes = plt.subplots(
-        1,
-        2 * len(sets),
-        figsize=(9.5 * len(sets), 6),
-        facecolor=SURFACE,
-        squeeze=False,
-        gridspec_kw={"width_ratios": [3, 1.3] * len(sets)},
+        1, len(sets), figsize=(7 * len(sets), 6), facecolor=SURFACE, squeeze=False
     )
-    for ax, bar_ax, set_name in zip(axes[0][::2], axes[0][1::2], sets):
+    for ax, set_name in zip(axes[0], sets):
         ax.set_facecolor(SURFACE)
         workloads = sorted({r["workload"] for r in by_set[set_name]})
         for key, label, color, marker in SYSTEMS:
@@ -106,43 +146,15 @@ def main(csv_path, out_dir):
         ax.tick_params(colors=MUTED, labelsize=13)
         for spine in ax.spines.values():
             spine.set_color("#d4d3cf")
-        bars = []
-        for metric, what in (("cpu_secs", "CPU"), ("latency_p95", "p95 latency")):
-            arm, m = max(
-                ((arm, m) for (s, arm), m in improvement.items() if s == set_name),
-                key=lambda am: am[1][metric],
-            )
-            bars.append((what, names[arm], m[metric]))
-        whats, worst, heights = zip(*bars)
-        # One worst baseline goes in the title; two go under their bars.
-        one = len(set(worst)) == 1
-        labels = whats if one else [f"{w}\n{b}" for w, b in zip(whats, worst)]
-        bar_ax.set_facecolor(SURFACE)
-        bar_ax.bar(labels, heights, width=0.5, color=SYSTEMS[0][2], zorder=3)
-        for i, h in enumerate(heights):
-            bar_ax.annotate(
-                f"{h:.1f}x",
-                (i, h),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                color=INK,
-                fontsize=13,
-            )
-        bar_ax.set_ylim(0, max(heights) * 1.15)
-        bar_ax.set_ylabel("LiteOlly improvement, geomean (x)", color=MUTED, fontsize=14)
-        bar_ax.set_title(
-            "vs worst baseline" + (f":\n{worst[0]}" if one else ""),
-            color=INK,
-            fontsize=14,
-            loc="left",
-        )
-        bar_ax.grid(True, axis="y", color="#e6e5e1", linewidth=0.8)
-        bar_ax.tick_params(colors=MUTED, labelsize=12)
-        for spine in bar_ax.spines.values():
-            spine.set_color("#d4d3cf")
-    axes[0][0].legend(frameon=False, fontsize=13, loc="best")
-    fig.tight_layout()
+        arrows(ax, by_set[set_name], improvement, set_name)
+    fig.legend(
+        *axes[0][0].get_legend_handles_labels(),
+        frameon=False,
+        fontsize=13,
+        loc="lower center",
+        ncol=len(SYSTEMS),
+    )
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = Path(out_dir) / f"cost_latency_{'+'.join(sets)}_{stamp}.png"
     with open(out_path, "xb") as f:
