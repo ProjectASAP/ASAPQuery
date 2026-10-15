@@ -140,6 +140,8 @@ class PilotConfigsTest(unittest.TestCase):
         self.assertEqual(vm["monitoring"]["tool"], "victoriametrics")
         self.assertEqual(raw["experiment"][0]["mode"], sbw.BASELINE)
         self.assertEqual(mv["experiment"][0]["mode"], sbw.BASELINE_MV)
+        for config in (raw, mv):
+            self.assertEqual(config["dataset"]["clickhouse_image_tag"], "23.8")
         self.assertIn(
             "prebuilt_output_dir", yaml.safe_load(files["e2e.yaml"])["controller"]
         )

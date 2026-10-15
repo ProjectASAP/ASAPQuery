@@ -31,6 +31,9 @@ QUERY_FRESHNESS_DELAY_SECS = 10
 # Relative to EXPERIMENTS_DIR, where the runners read configs and SQL.
 CONFIG_DIR = "config/experiment_type/random_workload"
 VICTORIAMETRICS_URL = "http://localhost:8428"
+# 26.6 and later need AVX2, which CloudLab's Xeon E5-2450 nodes lack; the
+# ClickHouse SQL's semantics tests also pass on 23.8.
+CLICKHOUSE_IMAGE_TAG = "23.8"
 PROMQL_METRICS = ("data", "data_total")
 SQL_EVENTS_TABLE = {
     "name": "events",
@@ -215,6 +218,7 @@ def pilot_configs(workload, pilot_dir):
                 "name": "custom",
                 "init_sql_file": str(out_dir / init),
                 "paced_feeder": feeder,
+                "clickhouse_image_tag": CLICKHOUSE_IMAGE_TAG,
             },
             "query_groups": groups,
             "data_ingestion_interval_ms": workload["data_facts"]["scrape_interval_ms"],
