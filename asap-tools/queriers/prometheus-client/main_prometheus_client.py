@@ -491,6 +491,23 @@ def handle_query_group(
     return result
 
 
+# inference_config sections: per-query configs, and per-RQE-leaf configs
+# (an `--expr-only` plan has only the latter).
+INFERENCE_QUERIES_KEY = "queries"
+INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
+
+
+def required_aggregation_ids(query_engine_config: QueryEngineConfig) -> Set[int]:
+    """Aggregation ids read by any planned query or RQE leaf."""
+    configs = list(query_engine_config.get(INFERENCE_QUERIES_KEY) or [])
+    configs += (query_engine_config.get(INFERENCE_RQE_CONFIGS_KEY) or {}).values()
+    return {
+        int(aggregation["aggregation_id"])
+        for config in configs
+        for aggregation in config["aggregations"]
+    }
+
+
 def get_query_start_times(
     server_url: str, query_engine_config: QueryEngineConfig
 ) -> QueryStartTimes:
@@ -498,18 +515,8 @@ def get_query_start_times(
     query_aggregation_id_map = {}
     query_start_time_map = {}
 
-    required_aggregation_ids: Set[int] = set()
-    for query_yaml in query_engine_config["queries"]:
-        # add all aggregation IDs from the query YAML to the required_aggregation_ids set
-        required_aggregation_ids.update(
-            int(aggregation["aggregation_id"])
-            for aggregation in query_yaml["aggregations"]
-        )
-        # assert len(query_yaml["aggregations"]) == 1
-        # required_aggregation_ids.add(
-        #    int(query_yaml["aggregations"][0]["aggregation_id"])
-        # )
-    logger.debug("Required aggregation IDs: {}", required_aggregation_ids)
+    required_ids = required_aggregation_ids(query_engine_config)
+    logger.debug("Required aggregation IDs: {}", required_ids)
 
     # wait for all required aggregation IDs to be present; an unreachable
     # server or a bad response raises rather than being retried
@@ -525,12 +532,10 @@ def get_query_start_times(
             int(k): v for k, v in aggregation_id_start_time_map.items()
         }
 
-        if not set(aggregation_id_start_time_map.keys()).issuperset(
-            required_aggregation_ids
-        ):
+        if not set(aggregation_id_start_time_map.keys()).issuperset(required_ids):
             logger.debug(
                 "Waiting for aggregation IDs {} to be present",
-                required_aggregation_ids - set(aggregation_id_start_time_map.keys()),
+                required_ids - set(aggregation_id_start_time_map.keys()),
             )
             time.sleep(10)
         else:
@@ -540,7 +545,7 @@ def get_query_start_times(
     # different tumbling windows? How long do we wait here? What happens with multiple query groups?
 
     # get query to aggregate ID mapping from query_engine_config
-    for query_yaml in query_engine_config["queries"]:
+    for query_yaml in query_engine_config.get(INFERENCE_QUERIES_KEY) or []:
         # TODO: this assert will fail if there are multiple aggregations in a query YAML, including for DeltaSet, so commenting it out
         # assert len(query_yaml["aggregations"]) == 1
         # for now, just take the first aggregation ID

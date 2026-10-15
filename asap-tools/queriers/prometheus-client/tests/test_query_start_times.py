@@ -58,6 +58,46 @@ class GetQueryStartTimesTest(unittest.TestCase):
         with self.assertRaises(requests.ConnectionError):
             self.start_times(config, requests.ConnectionError("down"))
 
+    def test_expr_only_plan_waits_for_rqe_leaf_aggregations(self) -> None:
+        # An --expr-only plan: no per-query configs, so no per-query start time.
+        config = {
+            "rqe_configs": {
+                "t/sum_by_job/keys/1s": {
+                    "aggregations": [
+                        {"aggregation_id": 4, "num_aggregates_to_retain": 1}
+                    ],
+                    "query_time_aggregations": [],
+                },
+                "t/max_by_job/keys/1s": {
+                    "aggregations": [{"aggregation_id": 5, "read_count_threshold": 2}],
+                    "query_time_aggregations": [],
+                },
+            }
+        }
+        result = self.start_times(
+            config, runtime_info({4: 0}), runtime_info({4: 0, 5: 1_000})
+        )
+        self.assertEqual(result, {})
+        self.sleep.assert_called_once()
+
+    def test_waits_for_rqe_leaves_next_to_query_configs(self) -> None:
+        config = {
+            "queries": [{"query": QUERY, "aggregations": [{"aggregation_id": 3}]}],
+            "rqe_configs": {
+                "t/sum_by_job/keys/1s": {"aggregations": [{"aggregation_id": 4}]}
+            },
+        }
+        result = self.start_times(
+            config, runtime_info({3: 1_000}), runtime_info({3: 1_000, 4: 0})
+        )
+        self.assertEqual(result, {QUERY: 1.0})
+
+    def test_required_ids_with_empty_sections(self) -> None:
+        self.assertEqual(
+            self.main.required_aggregation_ids({"queries": None, "rqe_configs": {}}),
+            set(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
