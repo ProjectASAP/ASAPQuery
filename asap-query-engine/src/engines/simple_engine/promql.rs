@@ -126,7 +126,7 @@ impl SimpleEngine {
         }
         let aligned = (end_timestamp / interval_ms) * interval_ms;
         warn!(
-            "PromQL query end timestamp {} is not aligned with data ingestion interval of {} ms; \
+            "Query end timestamp {} is not aligned with data ingestion interval of {} ms; \
              aligning down to {}.",
             end_timestamp, interval_ms, aligned
         );
