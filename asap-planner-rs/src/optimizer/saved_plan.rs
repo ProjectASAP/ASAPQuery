@@ -5,7 +5,7 @@
 //! expression tree (`expr`) also gets each of its leaves an `rqe_configs`
 //! entry, so the engine can answer the tree without parsing PromQL or SQL.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -46,10 +46,13 @@ struct E2e {
     metrics: BTreeMap<String, E2eMetric>,
 }
 
-/// The time column of the `records` tables the e2e SQL queries read.
+/// The time column of the tables the e2e SQL queries read.
 const SQL_TIME_COLUMN: &str = "ts";
 
-/// The metric type whose metrics are SQL tables.
+/// The value column of a gauge's or counter's table.
+const SQL_SERIES_VALUE_COLUMN: &str = "value";
+
+/// The metric type whose value fields are its table's value columns.
 const RECORDS_METRIC_TYPE: &str = "records";
 
 /// One query: written in at most one of PromQL and SQL, and with an RQE
@@ -261,26 +264,52 @@ fn e2e_promql_config(
     Ok(serde_json::from_value(config)?)
 }
 
+/// The tables the queries read: each name right after a `FROM`.
+// ponytail: token scan, not a SQL parse; enough for sketch-bench's generated
+// SQL, whose FROM names a table or opens a subquery.
+fn sql_tables_read(selected: &[TextQuery]) -> HashSet<String> {
+    let mut tables = HashSet::new();
+    for q in selected {
+        let mut tokens = q.text.split_whitespace();
+        while let Some(token) = tokens.next() {
+            if token.eq_ignore_ascii_case("FROM") {
+                if let Some(table) = tokens.next() {
+                    tables.insert(table.trim_end_matches([',', ';', ')']).to_string());
+                }
+            }
+        }
+    }
+    tables
+}
+
 /// The SQL controller config of the selected queries: each `records` metric
-/// is a table, its labels the metadata columns and its values the value
-/// columns.
+/// and each other metric the queries read is a table, its labels the
+/// metadata columns. A `records` metric's value fields are its value
+/// columns; a gauge's or counter's is `value`. A metric only PromQL reads is
+/// no table: the planner refuses a table without labels, e.g. `up`.
 fn e2e_sql_config(
     selected: &[TextQuery],
     metrics: &BTreeMap<String, E2eMetric>,
 ) -> anyhow::Result<SQLControllerConfig> {
+    let read = sql_tables_read(selected);
     let mut tables = Vec::new();
-    for (name, m) in metrics
-        .iter()
-        .filter(|(_, m)| m.kind == RECORDS_METRIC_TYPE)
-    {
-        ensure!(
-            !m.values.is_empty(),
-            "records metric {name:?} has no values"
-        );
+    for (name, m) in metrics {
+        if m.kind != RECORDS_METRIC_TYPE && !read.contains(name) {
+            continue;
+        }
+        let value_columns = if m.kind == RECORDS_METRIC_TYPE {
+            ensure!(
+                !m.values.is_empty(),
+                "records metric {name:?} has no values"
+            );
+            m.values.keys().cloned().collect()
+        } else {
+            vec![SQL_SERIES_VALUE_COLUMN.to_string()]
+        };
         tables.push(TableDefinition {
             name: name.clone(),
             time_column: SQL_TIME_COLUMN.to_string(),
-            value_columns: m.values.keys().cloned().collect(),
+            value_columns,
             metadata_columns: m.labels.iter().map(|l| l.name.clone()).collect(),
         });
     }
@@ -1084,6 +1113,55 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// A SQL query over a gauge reads its table's one value column, `value`.
+    #[test]
+    fn writes_a_sql_query_over_a_gauge_table() {
+        let table = r#"{"workloads": [{"e2e": {
+            "queries": [
+                {"sql": "SELECT job, QUANTILE(0.9, value) FROM data WHERE ts BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job",
+                 "interval_secs": 60, "rqes": ["p90"]}
+            ],
+            "metrics": {
+                "data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}
+            }
+        }}]}"#;
+        let plan = json!({"plans": [{"method": "asap", "weights": "cpu", "kind": "cheapest",
+            "chosen": [pick("p90", 0, "dd", json!({"alpha": 0.01}), 300)]}]});
+        let output = run_in(table, plan.to_string().as_bytes(), None, QueryLanguage::sql).unwrap();
+
+        assert_eq!(output.inference_query_count(), 1);
+        let streaming = output.to_streaming_config(QueryLanguage::sql).unwrap();
+        let aggregations: Vec<_> = streaming
+            .aggregation_configs
+            .values()
+            .map(|a| (a.table_name.clone(), a.value_column.clone()))
+            .collect();
+        assert_eq!(
+            aggregations,
+            [(Some("data".to_string()), Some("value".to_string()))]
+        );
+    }
+
+    /// A gauge no SQL query reads is no table: as one, a label-less gauge
+    /// (here `up`) would fail the whole plan (`TableWithoutMetadataColumns`).
+    #[test]
+    fn a_gauge_only_promql_reads_is_no_sql_table() {
+        let table = MIXED_TABLE.replace(
+            r#""http": {"type": "records","#,
+            r#""up": {"type": "gauge", "labels": []},
+            "http": {"type": "records","#,
+        );
+        let output = run_in(
+            &table,
+            mixed_plan(1).to_string().as_bytes(),
+            None,
+            QueryLanguage::sql,
+        )
+        .unwrap();
+        let inference = output.to_inference_config(QueryLanguage::sql).unwrap();
+        assert_eq!(inference.query_configs.len(), 2);
     }
 
     /// The PromQL run of the same table skips its SQL queries.
