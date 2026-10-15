@@ -81,26 +81,26 @@ def arrows(ax, rows, improvement, set_name):
         )
 
     def vs(metric, word):
-        return "\n".join(
-            f"{improvement[(set_name, a)][metric]:.1f}x {word} than {names[a]}"
-            for a in ("prom", "ch")
+        """e.g. "6.2x cheaper vs. ClickHouse,\n4.9x vs. Prometheus", largest first."""
+        (a, ra), (b, rb) = sorted(
+            ((a, improvement[(set_name, a)][metric]) for a in ("prom", "ch")),
+            key=lambda ar: -ar[1],
         )
+        return f"{ra:.1f}x {word} vs. {names[a]},\n{rb:.1f}x vs. {names[b]}"
 
     style = dict(arrowstyle="<->", color=INK, linewidth=2, mutation_scale=22)
     arm, cpu = worst["cpu_secs"]
-    # Left of every LiteOlly point, so the label beside it clears them.
+    # Left of every LiteOlly point; its label sits above the arrow's top.
     x = leftmost / 1.3
     ax.annotate("", (x, ly), xytext=(x, ly * cpu), arrowprops=style, zorder=4)
     ax.text(
-        x / 1.1,
-        ly * cpu**0.5,
+        x,
+        ly * cpu * 1.12,
         vs("cpu_secs", "cheaper"),
         color=INK,
         fontsize=13,
-        rotation=90,
-        ha="right",
-        va="center",
-        multialignment="center",
+        ha="center",
+        va="bottom",
     )
     arm, lat = worst["latency_p95"]
     y = ly / 1.4
@@ -115,9 +115,9 @@ def arrows(ax, rows, improvement, set_name):
         va="top",
     )
     left, right = ax.get_xlim()
-    ax.set_xlim(min(left, x / 2), right)
+    ax.set_xlim(min(left, x / 2.5), right)
     bottom, top = ax.get_ylim()
-    ax.set_ylim(min(bottom, ly / 2.6), top)
+    ax.set_ylim(min(bottom, ly / 2.6), max(top, ly * cpu * 2.2))
 
 
 def main(csv_path, out_dir):
