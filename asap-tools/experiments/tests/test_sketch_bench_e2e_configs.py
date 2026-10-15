@@ -500,28 +500,37 @@ class BuildConfigTest(unittest.TestCase):
         ) as f:
             self.assertEqual(json.load(f), rqe_exprs)
 
-    def test_rqe_switch_on_the_command_line(self):
-        # A table whose queries all have expr runs under rqe without
-        # regenerating: the override alone switches the protocol.
-        config, notes, rqe_exprs = self.build(sql_queries_file=self.write_sql_file())
-        config["experiment_params"]["query_groups"] = [
-            g
-            for g in config["experiment_params"]["query_groups"]
-            if all(q in rqe_exprs for q in g["queries"])
-        ]
-        self.compose_and_validate(
-            (config, notes, rqe_exprs), overrides=["query_engine.frontend=rqe"]
-        )
-        (server,) = self.client_config("sketchdb")["servers"]
-        self.assertEqual(server["protocol"], "rqe")
+    def test_promql_config_has_no_side_file(self):
+        config, _, rqe_exprs = self.build()
+        output = os.path.join(self.tmp.name, "out", "t.yaml")
+        sbe.write_config(config, rqe_exprs, self.table, output)
+        self.assertFalse(os.path.exists(sbe.rqe_exprs_path(output)))
+        with open(output) as f:
+            self.assertNotIn("query_engine", yaml.safe_load(f))
+
+    def test_rqe_switch_on_a_promql_config_needs_a_side_file(self):
+        # A promql config has no side file, so it can't switch on the command
+        # line alone; this fails before any service.
+        with self.assertRaisesRegex(ValueError, "needs query_engine.rqe_exprs_file"):
+            self.compose_and_validate(
+                self.build(), overrides=["query_engine.frontend=rqe"]
+            )
 
     def test_rqe_switch_fails_on_a_query_without_expr(self):
         # The rqe querier has no fallback, so this fails before any service.
+        config, notes, rqe_exprs = self.build()
+        side_file = os.path.join(self.tmp.name, "exprs.json")
+        with open(side_file, "w") as f:
+            json.dump(rqe_exprs, f)
         with self.assertRaisesRegex(
             ValueError, r"no RQE expression for \['rate\(data_total\[15m\]\)'\]"
         ):
             self.compose_and_validate(
-                self.build(), overrides=["query_engine.frontend=rqe"]
+                (config, notes, rqe_exprs),
+                overrides=[
+                    "query_engine.frontend=rqe",
+                    f"query_engine.rqe_exprs_file={side_file}",
+                ],
             )
 
 
