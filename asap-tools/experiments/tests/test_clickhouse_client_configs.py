@@ -68,6 +68,21 @@ class ModeSqlFilesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No query group .* 'sketchdb'"):
             self.client_queries(groups)
 
+    def test_statement_count_mismatch_is_refused(self):
+        # sketchdb's later queries would be scored against the wrong
+        # baseline queries.
+        two = os.path.join(self.tmp.name, "two.sql")
+        with open(two, "w") as f:
+            f.write("SELECT 1;\nSELECT 2;\n")
+        groups = [{"sql_file": {"baseline": two, "sketchdb": self.sql("s")}}]
+        with self.assertRaisesRegex(ValueError, "different numbers of statements"):
+            self.client_queries(groups)
+
+    def test_plain_string_sql_file_is_refused_clearly(self):
+        groups = [{"sql_file": self.sql("b")}]
+        with self.assertRaisesRegex(ValueError, "must map mode name"):
+            self.client_queries(groups, {"baseline": URLS["baseline"]})
+
     def test_other_modes_need_every_group(self):
         groups = [
             {"sql_file": {"baseline": self.sql("b0")}},

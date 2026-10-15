@@ -160,7 +160,8 @@ def _mode_sql_files(query_groups: Any, mode: str) -> List[Tuple[int, Any, str]]:
     sketchdb). Every mode but sketchdb needs an entry in every group.
     sketchdb skips the groups without one (e.g. queries ASAPQuery has no SQL
     for), but only trailing groups: results are matched across modes by
-    global query index, so sketchdb's queries must be a prefix of baseline's.
+    global query index, so sketchdb's queries must be a prefix of baseline's,
+    and each file it runs must hold as many statements as baseline's.
     """
     runs = []
     for idx, group in enumerate(query_groups):
@@ -168,6 +169,11 @@ def _mode_sql_files(query_groups: Any, mode: str) -> List[Tuple[int, Any, str]]:
         sql_file = group.get("sql_file")
         if not sql_file:
             raise ValueError(f"Query group {idx} ({name!r}) missing 'sql_file'")
+        if not hasattr(sql_file, "get"):
+            raise ValueError(
+                f"Query group {idx} ({name!r}) sql_file must map mode name to "
+                f"SQL file, e.g. {{baseline: {sql_file}}}; got {sql_file!r}"
+            )
         path = sql_file.get(mode)
         if path:
             if len(runs) != idx:
@@ -175,6 +181,20 @@ def _mode_sql_files(query_groups: Any, mode: str) -> List[Tuple[int, Any, str]]:
                     f"Query group {idx} ({name!r}) has a sql_file for mode "
                     f"{mode!r} after a group without one; a mode may skip "
                     "only trailing groups, so its query indices match baseline's"
+                )
+            baseline_path = sql_file.get(constants.BASELINE_EXPERIMENT_NAME)
+            if (
+                mode != constants.BASELINE_EXPERIMENT_NAME
+                and baseline_path
+                and os.path.exists(path)
+                and os.path.exists(baseline_path)
+                and len(_load_sql_queries(path))
+                != len(_load_sql_queries(baseline_path))
+            ):
+                raise ValueError(
+                    f"Query group {idx} ({name!r}): mode {mode!r}'s {path!r} and "
+                    f"baseline's {baseline_path!r} hold different numbers of "
+                    "statements, so their query indices would not match"
                 )
             runs.append((idx, group, path))
         elif mode != constants.SKETCHDB_EXPERIMENT_NAME:
