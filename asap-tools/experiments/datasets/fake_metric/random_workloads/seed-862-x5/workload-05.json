@@ -1,0 +1,361 @@
+{
+  "data_facts": {
+    "backfill_history_ms": 1200000,
+    "events": {
+      "assignment": "deterministic_rotating_pool_with_cross_leaf_overlap",
+      "distinct_key": "user_id",
+      "table": "events",
+      "time_column": "ts",
+      "user_id_universe_size": 10000,
+      "user_ids_per_leaf": 1000
+    },
+    "feeder_seed": 862,
+    "metrics": {
+      "data": {
+        "kind": "gauge",
+        "pareto_shape": 2.0,
+        "value_shape": "rank_scaled_pareto"
+      },
+      "data_total": {
+        "increment_shape": "rank_scaled_positive_deterministic",
+        "kind": "counter",
+        "resets": "none"
+      }
+    },
+    "scrape_interval_ms": 100,
+    "series": {
+      "leaf_count": 50000,
+      "ranking": {
+        "exponent": 1.1,
+        "kind": "deterministic_zipf_like",
+        "rank_scope": "leaf_series"
+      }
+    }
+  },
+  "id": "workload-05",
+  "labels": [
+    {
+      "cardinality": 4,
+      "name": "region"
+    },
+    {
+      "cardinality": 5,
+      "child_of": "region",
+      "name": "service"
+    },
+    {
+      "cardinality": 10,
+      "child_of": "service",
+      "name": "job"
+    },
+    {
+      "cardinality": 250,
+      "child_of": "job",
+      "name": "label_0"
+    }
+  ],
+  "queries": [
+    {
+      "clickhouse_sql": "SELECT region, service, job, sum(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 10) * 10 - 300, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 10) * 10, 3) GROUP BY region, service, job",
+      "grouping": [
+        "region",
+        "service",
+        "job"
+      ],
+      "id": "q01-sum-fine",
+      "interval_ms": 10000,
+      "lookback_ms": 300000,
+      "output_groups": 200,
+      "output_series_upper_bound": 200,
+      "promql": "sum by (region, service, job) (sum_over_time(data[5m]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "sum",
+          "grouping_labels": [
+            "region",
+            "service",
+            "job"
+          ],
+          "id": "q01-sum-fine/rqe",
+          "interval_ms": 10000,
+          "lookback_ms": 300000,
+          "metric": "data"
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, sum(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 10) * 10 - 300, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 10) * 10, 3) GROUP BY region, service",
+      "grouping": [
+        "region",
+        "service"
+      ],
+      "id": "q02-sum-coarse",
+      "interval_ms": 10000,
+      "lookback_ms": 300000,
+      "output_groups": 20,
+      "output_series_upper_bound": 20,
+      "promql": "sum by (region, service) (sum_over_time(data[5m]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "sum",
+          "grouping_labels": [
+            "region",
+            "service"
+          ],
+          "id": "q02-sum-coarse/rqe",
+          "interval_ms": 10000,
+          "lookback_ms": 300000,
+          "metric": "data"
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, avg(value) AS value FROM (SELECT region, service, job, label_0, quantileExactInclusive(0.99)(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 1) * 1 - 100, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 1) * 1, 3) GROUP BY region, service, job, label_0) GROUP BY region, service",
+      "grouping": [
+        "region",
+        "service"
+      ],
+      "id": "q03-quantile",
+      "interval_ms": 1000,
+      "lookback_ms": 100000,
+      "output_groups": 20,
+      "output_series_upper_bound": 20,
+      "promql": "avg by (region, service) (quantile_over_time(0.99, data[100s]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "quantile",
+          "grouping_labels": [
+            "region",
+            "service"
+          ],
+          "id": "q03-quantile/rqe",
+          "interval_ms": 1000,
+          "lookback_ms": 100000,
+          "metric": "data",
+          "phi": 0.99
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, job, avg(value) AS value FROM (SELECT region, service, job, label_0, quantileExactInclusive(0.50)(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 1) * 1 - 100, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 1) * 1, 3) GROUP BY region, service, job, label_0) GROUP BY region, service, job",
+      "grouping": [
+        "region",
+        "service",
+        "job"
+      ],
+      "id": "q04-quantile",
+      "interval_ms": 1000,
+      "lookback_ms": 100000,
+      "output_groups": 200,
+      "output_series_upper_bound": 200,
+      "promql": "avg by (region, service, job) (quantile_over_time(0.50, data[100s]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "quantile",
+          "grouping_labels": [
+            "region",
+            "service",
+            "job"
+          ],
+          "id": "q04-quantile/rqe",
+          "interval_ms": 1000,
+          "lookback_ms": 100000,
+          "metric": "data",
+          "phi": 0.5
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, avg(value) AS value FROM (SELECT region, service, job, label_0, quantileExactInclusive(0.90)(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 1) * 1 - 100, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 1) * 1, 3) GROUP BY region, service, job, label_0) GROUP BY region",
+      "grouping": [
+        "region"
+      ],
+      "id": "q05-quantile",
+      "interval_ms": 1000,
+      "lookback_ms": 100000,
+      "output_groups": 4,
+      "output_series_upper_bound": 4,
+      "promql": "avg by (region) (quantile_over_time(0.90, data[100s]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "quantile",
+          "grouping_labels": [
+            "region"
+          ],
+          "id": "q05-quantile/rqe",
+          "interval_ms": 1000,
+          "lookback_ms": 100000,
+          "metric": "data",
+          "phi": 0.9
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, job, label_0, sum(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 1) * 1 - 60, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 1) * 1, 3) GROUP BY region, service, job, label_0 ORDER BY value DESC, region, service, job, label_0 LIMIT 8 BY region, service",
+      "grouping": [
+        "region",
+        "service"
+      ],
+      "id": "q06-topk-sum",
+      "interval_ms": 1000,
+      "lookback_ms": 60000,
+      "output_groups": 20,
+      "output_series_upper_bound": 160,
+      "promql": "topk by (region, service) (8, sum_over_time(data[1m]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "topk_by_value",
+          "grouping_labels": [
+            "region",
+            "service"
+          ],
+          "id": "q06-topk-sum/rqe",
+          "interval_ms": 1000,
+          "k": 8,
+          "lookback_ms": 60000,
+          "metric": "data"
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, job, label_0, sum(value) AS value FROM data WHERE ts >= toDateTime64(intDiv({{ end_time }}, 60) * 60 - 1200, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 60) * 60, 3) GROUP BY region, service, job, label_0 ORDER BY value DESC, region, service, job, label_0 LIMIT 4 BY region",
+      "grouping": [
+        "region"
+      ],
+      "id": "q07-topk-sum",
+      "interval_ms": 60000,
+      "lookback_ms": 1200000,
+      "output_groups": 4,
+      "output_series_upper_bound": 16,
+      "promql": "topk by (region) (4, sum_over_time(data[20m]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "topk_by_value",
+          "grouping_labels": [
+            "region"
+          ],
+          "id": "q07-topk-sum/rqe",
+          "interval_ms": 60000,
+          "k": 4,
+          "lookback_ms": 1200000,
+          "metric": "data"
+        }
+      ],
+      "sql": null,
+      "support": "common-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, job, label_0, delta * (sampled + to_start + to_end) / sampled AS value FROM (SELECT region, service, job, label_0, last_v - first_v AS delta, first_v, last_t - first_t AS sampled, sampled / (n - 1) AS avg_step, if(first_t - (intDiv({{ end_time }}, 10) * 10 - 300) >= 1.1 * avg_step, avg_step / 2, first_t - (intDiv({{ end_time }}, 10) * 10 - 300)) AS to_start_clamped, if(delta > 0 AND first_v >= 0, least(to_start_clamped, sampled * first_v / delta), to_start_clamped) AS to_start, if(intDiv({{ end_time }}, 10) * 10 - last_t >= 1.1 * avg_step, avg_step / 2, intDiv({{ end_time }}, 10) * 10 - last_t) AS to_end FROM (SELECT region, service, job, label_0, argMin(value, ts) AS first_v, argMax(value, ts) AS last_v, toFloat64(min(ts)) AS first_t, toFloat64(max(ts)) AS last_t, count() AS n FROM data_total WHERE ts >= toDateTime64(intDiv({{ end_time }}, 10) * 10 - 300, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 10) * 10, 3) GROUP BY region, service, job, label_0 HAVING n >= 2)) ORDER BY value DESC, region, service, job, label_0 LIMIT 8 BY region, service",
+      "grouping": [
+        "region",
+        "service"
+      ],
+      "id": "q08-topk-count",
+      "interval_ms": 10000,
+      "lookback_ms": 300000,
+      "output_groups": 20,
+      "output_series_upper_bound": 160,
+      "promql": "topk by (region, service) (8, increase(data_total[5m]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "topk_by_count",
+          "grouping_labels": [
+            "region",
+            "service"
+          ],
+          "id": "q08-topk-count/rqe",
+          "interval_ms": 10000,
+          "k": 8,
+          "lookback_ms": 300000,
+          "metric": "data_total"
+        }
+      ],
+      "sql": null,
+      "support": "counter-gated-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, job, label_0, delta * (sampled + to_start + to_end) / sampled / 1200 AS value FROM (SELECT region, service, job, label_0, last_v - first_v AS delta, first_v, last_t - first_t AS sampled, sampled / (n - 1) AS avg_step, if(first_t - (intDiv({{ end_time }}, 60) * 60 - 1200) >= 1.1 * avg_step, avg_step / 2, first_t - (intDiv({{ end_time }}, 60) * 60 - 1200)) AS to_start_clamped, if(delta > 0 AND first_v >= 0, least(to_start_clamped, sampled * first_v / delta), to_start_clamped) AS to_start, if(intDiv({{ end_time }}, 60) * 60 - last_t >= 1.1 * avg_step, avg_step / 2, intDiv({{ end_time }}, 60) * 60 - last_t) AS to_end FROM (SELECT region, service, job, label_0, argMin(value, ts) AS first_v, argMax(value, ts) AS last_v, toFloat64(min(ts)) AS first_t, toFloat64(max(ts)) AS last_t, count() AS n FROM data_total WHERE ts >= toDateTime64(intDiv({{ end_time }}, 60) * 60 - 1200, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 60) * 60, 3) GROUP BY region, service, job, label_0 HAVING n >= 2)) ORDER BY value DESC, region, service, job, label_0 LIMIT 8 BY region",
+      "grouping": [
+        "region"
+      ],
+      "id": "q09-rate",
+      "interval_ms": 60000,
+      "lookback_ms": 1200000,
+      "output_groups": 4,
+      "output_series_upper_bound": 32,
+      "promql": "topk by (region) (8, rate(data_total[20m]))",
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "rate",
+          "grouping_labels": [
+            "region"
+          ],
+          "id": "q09-rate/rqe",
+          "interval_ms": 60000,
+          "k": 8,
+          "lookback_ms": 1200000,
+          "metric": "data_total"
+        }
+      ],
+      "sql": null,
+      "support": "counter-gated-promql"
+    },
+    {
+      "clickhouse_sql": "SELECT region, service, job, uniqExact(user_id) AS value FROM events WHERE ts > toDateTime64(intDiv({{ end_time }}, 10) * 10 - 300, 3) AND ts <= toDateTime64(intDiv({{ end_time }}, 10) * 10, 3) GROUP BY region, service, job",
+      "grouping": [
+        "region",
+        "service",
+        "job"
+      ],
+      "id": "q10-cardinality",
+      "interval_ms": 10000,
+      "lookback_ms": 300000,
+      "output_groups": 200,
+      "output_series_upper_bound": 200,
+      "promql": null,
+      "rqes": [
+        {
+          "accuracy_sla": 0.95,
+          "capability": "cardinality",
+          "grouping_labels": [
+            "region",
+            "service",
+            "job"
+          ],
+          "id": "q10-cardinality/rqe",
+          "interval_ms": 10000,
+          "lookback_ms": 300000,
+          "metric": "events",
+          "value": "user_id"
+        }
+      ],
+      "sql": "SELECT region, service, job, COUNT(DISTINCT user_id) FROM events WHERE ts BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY region, service, job",
+      "support": "sql-only"
+    }
+  ],
+  "samples_per_sec_per_series": 10,
+  "seed": 862,
+  "variant": "x5",
+  "version": 1
+}
