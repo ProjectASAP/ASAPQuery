@@ -12,6 +12,7 @@ import math
 import random
 from pathlib import Path
 
+from sketch_bench_workloads import Query, raw_sql
 
 WORKLOAD_COUNT = 10
 QUERIES_PER_WORKLOAD = 10
@@ -53,6 +54,11 @@ QUANTILES = (0.50, 0.75, 0.90, 0.95, 0.99)
 TOPK_VALUES = (4, 8)
 BACKFILL_HISTORY_MS = 20 * MINUTE_MS
 LEAF_SERIES_COUNT = math.prod(LABEL_CARDINALITIES.values())
+LEAF_LABELS = tuple(name for name, _, _ in LABEL_HIERARCHY)
+# Every ClickHouse table has the leaf labels (sketch_bench_workloads' tables).
+CLICKHOUSE_LABELS = {
+    table: list(LEAF_LABELS) for table in ("data", "data_total", "events")
+}
 ZIPF_EXPONENT = 1.1
 USER_ID_UNIVERSE_SIZE = 10_000
 USER_IDS_PER_LEAF = 1_000
@@ -67,33 +73,56 @@ def grouping_text(grouping):
     return ", ".join(grouping)
 
 
-def clickhouse_time_filter(lookback_ms):
-    return f"ts BETWEEN NOW() - INTERVAL {lookback_ms // SECOND_MS} SECOND AND NOW()"
-
-
-def clickhouse_sum(grouping, lookback_ms):
-    group = grouping_text(grouping)
-    return f"SELECT {group}, SUM(value) AS value FROM data WHERE {clickhouse_time_filter(lookback_ms)} GROUP BY {group}"
-
-
-def clickhouse_quantile(grouping, phi):
-    group = grouping_text(grouping)
-    leaves = grouping_text(tuple(label["name"] for label in METRIC_LABELS))
-    return (
-        f"SELECT {group}, AVG(series_quantile) AS value FROM "
-        f"(SELECT {leaves}, quantileExact({phi:.2f})(value) AS series_quantile FROM data "
-        f"WHERE {clickhouse_time_filter(QUANTILE_LOOKBACK_MS)} GROUP BY {leaves}) GROUP BY {group}"
-    )
-
-
-def clickhouse_topk(grouping, lookback_ms, k, table="data", score="SUM(value)"):
-    group = grouping_text(grouping)
-    leaves = grouping_text(tuple(label["name"] for label in METRIC_LABELS))
-    return (
-        f"SELECT {leaves}, score FROM (SELECT *, row_number() OVER (PARTITION BY {group} "
-        f"ORDER BY score DESC) AS rank FROM (SELECT {leaves}, {score} AS score FROM {table} "
-        f"WHERE {clickhouse_time_filter(lookback_ms)} GROUP BY {leaves})) WHERE rank <= {k}"
-    )
+def rqe_query(rqe):
+    """The ClickHouse renderers' Query for one RQE, built from its fields,
+    never from its PromQL. Raw and MV ClickHouse SQL both render it."""
+    capability, grouping = rqe["capability"], tuple(rqe["grouping_labels"])
+    common = {
+        "table": rqe["metric"],
+        "interval_secs": rqe["interval_ms"] // SECOND_MS,
+        "window_secs": rqe["lookback_ms"] // SECOND_MS,
+    }
+    if capability == "sum":
+        return Query(**common, grouping=grouping, series_fn=None, agg="sum")
+    if capability == "quantile":
+        quantile = f"{rqe['phi']:.2f}"
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn="quantile",
+            agg="avg",
+            quantile=quantile,
+        )
+    if capability == "topk_by_value":
+        return Query(
+            **common,
+            grouping=LEAF_LABELS,
+            series_fn=None,
+            agg="sum",
+            topk=rqe["k"],
+            topk_by=grouping,
+        )
+    if capability in ("topk_by_count", "rate"):
+        series_fn = "increase" if capability == "topk_by_count" else "rate"
+        return Query(
+            **common,
+            grouping=LEAF_LABELS,
+            series_fn=series_fn,
+            agg=None,
+            topk=rqe["k"],
+            topk_by=grouping,
+        )
+    if capability == "cardinality":
+        # Planner SQL windows are left-open, (E - W, E].
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn=None,
+            agg="cardinality",
+            value=rqe["value"],
+            left_open=True,
+        )
+    raise ValueError(f"unknown capability {capability!r}")
 
 
 def choose_temporal_time(rng):
@@ -146,14 +175,18 @@ def query(
     interval_ms,
     rendered,
     support,
-    clickhouse_sql=None,
     **params,
 ):
     """Create one manifest query and its single optimizer-facing RQE."""
+    metrics = {
+        "rate": "data_total",
+        "topk_by_count": "data_total",
+        "cardinality": "events",
+    }
     rqe = {
         "id": f"{query_id}/rqe",
         "capability": capability,
-        "metric": "data_total" if capability in ("rate", "topk_by_count") else "data",
+        "metric": metrics.get(capability, "data"),
         "grouping_labels": list(grouping),
         "lookback_ms": lookback_ms,
         "interval_ms": interval_ms,
@@ -170,8 +203,7 @@ def query(
         "interval_ms": interval_ms,
         "promql": rendered if support != "sql-only" else None,
         "sql": rendered if support == "sql-only" else None,
-        "clickhouse_sql": clickhouse_sql
-        or (rendered if support == "sql-only" else None),
+        "clickhouse_sql": raw_sql(rqe_query(rqe), CLICKHOUSE_LABELS),
         "rqes": [rqe],
     }
 
@@ -186,7 +218,6 @@ def sum_query(query_id, grouping, lookback_ms, interval_ms):
         interval_ms,
         rendered,
         "common-promql",
-        clickhouse_sql=clickhouse_sum(grouping, lookback_ms),
     )
 
 
@@ -200,7 +231,6 @@ def quantile_query(query_id, grouping, phi):
         QUANTILE_INTERVAL_MS,
         rendered,
         "common-promql",
-        clickhouse_sql=clickhouse_quantile(grouping, phi),
         phi=phi,
     )
 
@@ -216,7 +246,6 @@ def topk_sum_query(query_id, grouping, lookback_ms, interval_ms, k):
         rendered,
         "common-promql",
         k=k,
-        clickhouse_sql=clickhouse_topk(grouping, lookback_ms, k),
     )
 
 
@@ -231,7 +260,6 @@ def topk_count_query(query_id, grouping, lookback_ms, interval_ms, k):
         rendered,
         "counter-gated-promql",
         k=k,
-        clickhouse_sql=clickhouse_topk(grouping, lookback_ms, k, "data_total"),
     )
 
 

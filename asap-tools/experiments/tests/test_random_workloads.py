@@ -48,10 +48,16 @@ class GenerateWorkloadsTest(unittest.TestCase):
                     self.assertIsNotNone(query["clickhouse_sql"])
 
     def test_grouped_quantiles_use_average_of_per_series_quantiles(self):
+        # The SQL each Query renders is checked against Prometheus in
+        # test_sketch_bench_workloads.
         for query in workloads.generate_workloads(seed=4)[0]["queries"]:
-            if query["rqes"][0]["capability"] == "quantile":
+            rqe = query["rqes"][0]
+            if rqe["capability"] == "quantile":
                 self.assertIn("avg by", query["promql"])
-                self.assertIn("AVG(series_quantile)", query["clickhouse_sql"])
+                q = workloads.rqe_query(rqe)
+                self.assertEqual((q.series_fn, q.agg), ("quantile", "avg"))
+                self.assertEqual(q.grouping, tuple(query["grouping"]))
+                self.assertEqual(q.window_secs, 100)
 
     def test_visible_query_outputs_stay_bounded(self):
         for workload in workloads.generate_workloads(seed=4):
