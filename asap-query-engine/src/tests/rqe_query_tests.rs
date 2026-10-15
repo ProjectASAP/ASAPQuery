@@ -39,6 +39,9 @@ mod tests {
     const HLL_AGG: u64 = 3;
     const TOPK_AGG: u64 = 4;
     const MULTI_SUM_AGG: u64 = 5;
+    /// One heap per `job`, keyed by `srcip`: serves `topk by (job)`.
+    const TOPK_BY_JOB_AGG: u64 = 6;
+    const TOPK_BY_JOB_QUERY: &str = "topk by (job) (2, sum_over_time(flows[1s]))";
 
     type Row = (Vec<String>, f64);
 
@@ -158,6 +161,13 @@ mod tests {
                     &[],
                     &["instance", "job"],
                 ),
+                aggregation(
+                    TOPK_BY_JOB_AGG,
+                    AggregationType::CountMinSketchWithHeap,
+                    "flows",
+                    &["job"],
+                    &["srcip"],
+                ),
             ]),
         });
         let store = Arc::new(SimpleMapStore::new(
@@ -227,6 +237,16 @@ mod tests {
         }
         insert(TOPK_AGG, QUERY_TIME_MS, None, Box::new(heap));
 
+        // `api`'s smallest sources outweigh `web`'s largest, so a global
+        // ranking would keep only `api` rows.
+        for (job, sums) in [("api", [100.0, 200.0, 300.0]), ("web", [10.0, 20.0, 30.0])] {
+            let mut heap = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+            for (i, sum) in sums.into_iter().enumerate() {
+                heap.inner.update(&format!("10.0.0.{}", i + 1), sum);
+            }
+            insert(TOPK_BY_JOB_AGG, QUERY_TIME_MS, Some(&[job]), Box::new(heap));
+        }
+
         insert(
             MULTI_SUM_AGG,
             previous_window_ms,
@@ -257,6 +277,10 @@ mod tests {
             .add_metric(
                 "events".to_string(),
                 KeyByLabelNames::new(strings(&["instance", "job"])),
+            )
+            .add_metric(
+                "flows".to_string(),
+                KeyByLabelNames::new(strings(&["job", "srcip"])),
             );
         let inference_config = InferenceConfig {
             schema: SchemaConfig::PromQL(schema),
@@ -265,6 +289,7 @@ mod tests {
                 query_config("sum by (job) (sum_over_time(http_requests[2s]))", SUM_AGG),
                 query_config("quantile_over_time(0.9, latency[2s])", DDSKETCH_AGG),
                 query_config("topk(3, sum_over_time(transfers[1s]))", TOPK_AGG),
+                query_config(TOPK_BY_JOB_QUERY, TOPK_BY_JOB_AGG),
                 QueryConfig::with_plan(
                     "sum by (job) (sum_over_time(events[2s]))".to_string(),
                     "sum by (instance, job) (sum_over_time(events[2s]))".to_string(),
@@ -280,6 +305,10 @@ mod tests {
                 ("p90".to_string(), rqe_config(DDSKETCH_AGG, vec![])),
                 ("distinct".to_string(), rqe_config(HLL_AGG, vec![])),
                 ("top3".to_string(), rqe_config(TOPK_AGG, vec![])),
+                (
+                    "top2_by_job".to_string(),
+                    rqe_config(TOPK_BY_JOB_AGG, vec![]),
+                ),
                 (
                     "rolled_up".to_string(),
                     rqe_config(MULTI_SUM_AGG, vec![sum_by_job()]),
@@ -334,6 +363,22 @@ mod tests {
     fn topk_leaf() -> Value {
         let mut topk = leaf("top3", "transfers", "topk_by_value", WINDOW_MS, &["srcip"]);
         topk["rqe"]["k"] = json!(3);
+        topk
+    }
+
+    /// `topk by (job) (2, sum_over_time(flows[1s]))`, or with other buckets.
+    fn topk_by_job_leaf(topk_by: Option<&[&str]>) -> Value {
+        let mut topk = leaf(
+            "top2_by_job",
+            "flows",
+            "topk_by_value",
+            WINDOW_MS,
+            &["job", "srcip"],
+        );
+        topk["rqe"]["k"] = json!(2);
+        if let Some(topk_by) = topk_by {
+            topk["rqe"]["topk_by"] = json!(topk_by);
+        }
         topk
     }
 
@@ -487,6 +532,43 @@ mod tests {
             sorted(labels, result),
             promql(&engine, "topk(3, sum_over_time(transfers[1s]))")
         );
+    }
+
+    #[test]
+    fn topk_by_leaf_ranks_within_each_bucket_and_equals_promql_topk_by() {
+        let engine = engine();
+        let answer = rqe(&engine, topk_by_job_leaf(Some(&["job"])));
+        assert_eq!(
+            answer,
+            (
+                strings(&["job", "srcip"]),
+                vec![
+                    row(&["api", "10.0.0.2"], 200.0),
+                    row(&["api", "10.0.0.3"], 300.0),
+                    row(&["web", "10.0.0.2"], 20.0),
+                    row(&["web", "10.0.0.3"], 30.0),
+                ]
+            ),
+            "each job keeps its own top 2"
+        );
+        assert_eq!(answer, promql(&engine, TOPK_BY_JOB_QUERY));
+    }
+
+    /// The buckets are the aggregation's heaps: a leaf ranking other buckets
+    /// than its aggregation keeps fails instead of answering another ranking.
+    #[test]
+    fn a_topk_leaf_whose_buckets_are_not_its_heaps_fails_loudly() {
+        let engine = engine();
+        for tree in [topk_by_job_leaf(None), topk_by_job_leaf(Some(&["srcip"]))] {
+            let error = rqe_error(&engine, tree, QUERY_TIME_S);
+            assert!(matches!(&error, RqeQueryError::Execution(_)), "{error:?}");
+            assert!(error.to_string().contains("top2_by_job"), "{error}");
+            assert!(error.to_string().contains("topk_by"), "{error}");
+        }
+        let mut global = topk_leaf();
+        global["rqe"]["topk_by"] = json!(["srcip"]);
+        let error = rqe_error(&engine, global, QUERY_TIME_S);
+        assert!(error.to_string().contains("top3"), "{error}");
     }
 
     #[test]

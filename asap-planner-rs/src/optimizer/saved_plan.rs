@@ -523,8 +523,8 @@ pub fn saved_plan_output(
 }
 
 /// The optimizer item of an RQE leaf, read every `interval_ms`: what a
-/// PromQL or SQL leaf with the same capability, metric, lookback and grouping
-/// needs. It has no query string, so it gets no `query_configs` entry.
+/// PromQL or SQL leaf with the same capability, metric, lookback, grouping
+/// and top-k buckets needs. It has no query string, so it gets no `query_configs` entry.
 fn leaf_item(
     leaf: &RqeLeaf,
     interval_ms: u64,
@@ -579,7 +579,9 @@ fn leaf_item(
             grouping_labels: KeyByLabelNames::new(leaf.grouping.clone()),
             spatial_filter_normalized: normalize_spatial_filter(""),
             topk_count_events,
-            topk_by_labels: None,
+            // As a PromQL `topk by`: the Raqe is grouped by these buckets,
+            // as the plan's top-k RQE is.
+            topk_by_labels: leaf.topk_by.clone().map(KeyByLabelNames::new),
         },
         query_strings: Vec::new(),
         query_frequency_hz: 1000.0 / interval_ms as f64,
@@ -1588,6 +1590,38 @@ mod tests {
             "expr": quantile_leaf("unplanned", 0.5, 1000, &["job"])}));
         let err = tree_refusal(&table);
         assert!(err.contains(r#"doesn't serve RQE "unplanned""#), "{err}");
+    }
+
+    /// A `topk_by` leaf is a Raqe grouped by its buckets: one heap per `job`,
+    /// keyed by the remaining series label.
+    #[test]
+    fn writes_a_tree_only_topk_by_leaf_as_one_heap_per_bucket() {
+        let table = json!({"workloads": [{"e2e": {
+            "queries": [{"interval_secs": 60, "expr": {"rqe": {"id": "top", "metric": "data",
+                "capability": "topk_by_value", "k": 5, "lookback_ms": 300_000,
+                "grouping": ["job", "label_0"], "topk_by": ["job"]}}}],
+            "metrics": {"data": {"type": "gauge", "labels": [{"name": "job"}, {"name": "label_0"}]}}
+        }}]});
+        let top = pick(
+            "top",
+            0,
+            "cms-heap-topk-fastpath-vector2d",
+            json!({"rows": 3, "cols": 1024, "heap": 50}),
+            300,
+        );
+        let plan = json!({"plans": [
+            {"method": "asap", "weights": "cpu", "kind": "cheapest", "chosen": [top]},
+        ]});
+        let output = run_table(&table, &plan, QueryLanguage::promql).unwrap();
+        let inference = inference_of(&output, QueryLanguage::promql);
+        let [(id, _)] = rqe_aggregations(&inference, "top")[..] else {
+            panic!("{:?}", inference.rqe_configs);
+        };
+        assert_eq!(stages(&inference, "top"), json!([]));
+        let streaming = output.to_streaming_config(QueryLanguage::promql).unwrap();
+        let heap = streaming.get_aggregation_config(id).unwrap();
+        assert_eq!(heap.grouping_labels.labels, ["job"]);
+        assert_eq!(heap.aggregated_labels.labels, ["label_0"]);
     }
 
     /// A topk deployment can't roll up, for an RQE as for a query.
