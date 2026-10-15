@@ -76,6 +76,8 @@ class BatchPlanningTest(unittest.TestCase):
         self.assertIn(
             "experiment_params.experiment=[{mode:baseline,server:prometheus}]", cmd
         )
+        # A pooled config's frontend=rqe needs the sketchdb mode left out here.
+        self.assertIn("query_engine.frontend=promql", cmd)
 
 
 if __name__ == "__main__":

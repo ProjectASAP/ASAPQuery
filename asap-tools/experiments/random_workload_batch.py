@@ -57,7 +57,12 @@ ARMS = {
     "prom": (
         "experiment_run_e2e.py",
         "e2e",
-        ["experiment_params.experiment=[{mode:baseline,server:prometheus}]"],
+        [
+            "experiment_params.experiment=[{mode:baseline,server:prometheus}]",
+            # Prometheus runs the PromQL text, even when ASAPQuery's mode of
+            # the same config reads RQE trees.
+            "query_engine.frontend=promql",
+        ],
         "baseline",
     ),
     "vm": ("experiment_run_e2e.py", "victoriametrics", [], "baseline"),
