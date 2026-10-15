@@ -79,8 +79,7 @@ def _copy_rqe_exprs(
             "queries for query_engine.frontend=rqe (sketch_bench_e2e_configs.py "
             "--frontend rqe does)"
         )
-    with open(os.path.join(output_dir, RQE_EXPRS_FILENAME), "w") as f:
-        json.dump(exprs, f, indent=1)
+    shutil.copyfile(rqe_exprs_file, os.path.join(output_dir, RQE_EXPRS_FILENAME))
 
 
 def validate_basic_config(
