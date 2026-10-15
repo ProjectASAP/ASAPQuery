@@ -92,9 +92,9 @@ Baseline + sketchdb:
 A sketch-bench workload table (sketch_bench_workloads.py configs) is fed in
 real time instead, one paced feeder per metric table, when
 experiment_params.dataset.paced_feeder is set. Each mode then recreates the
-tables and starts its own feed; sketchdb's feed goes to the engine's
-remote-write ingest as well as ClickHouse (which answers forwarded queries),
-from one start, and needs controller.prebuilt_output_dir.
+tables and starts its own feed. sketchdb's feed goes only to the engine's
+remote-write ingest, so it forwards no queries to ClickHouse, and it needs
+controller.prebuilt_output_dir.
 """
 
 import atexit
@@ -102,7 +102,7 @@ import functools
 import json
 import os
 import time
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import hydra
@@ -336,7 +336,7 @@ def _check_clickhouse_paced_feeder(
     experiment_modes: List[str],
     client_config: dict,
     minimum_experiment_running_time: int,
-    controller_prebuilt_output_dir: Optional[str],
+    controller_prebuilt_output_dir: Optional[str] = None,
 ) -> int:
     """Fail before ClickHouse starts on a feeder config the run can't serve;
     returns the seconds the feeders' start must align to."""
@@ -358,7 +358,18 @@ def _check_clickhouse_paced_feeder(
     return aligned_interval_lcm(client_config)
 
 
-def _start_clickhouse_feed(
+def _feed_sinks(
+    experiment_mode: str, clickhouse_url: str, query_engine_url: str
+) -> Dict[str, str]:
+    """The sinks a mode's feed writes to. sketchdb feeds only ASAPQuery: it
+    forwards no queries, and ClickHouse ingesting a copy would load the node
+    its CPU and latency are measured on. Every other mode reads ClickHouse."""
+    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        return {SINK_QUERY_ENGINE: query_engine_url}
+    return {SINK_CLICKHOUSE: clickhouse_url}
+
+
+def _start_feed(
     *,
     provider,
     node_offset: int,
@@ -368,20 +379,14 @@ def _start_clickhouse_feed(
     feeder_align_secs: int,
     dataset_name: str,
     init_sql_file: str,
-    clickhouse_http_port: int,
+    sinks: Dict[str, str],
     experiment_mode: str,
     experiment_root_output_dir: str,
     local_experiment_root_dir: str,
-    query_engine_url: Optional[str] = None,
 ) -> int:
     """Recreate the metric tables, start one feeder per (sink, metric), and
     point the mode's aligned query groups at the feed's start; returns that
-    start in epoch ms.
-
-    ClickHouse is always fed; with `query_engine_url` (sketchdb) so is
-    ASAPQuery's remote-write ingest, from the same start and seed, so the
-    queries it forwards to ClickHouse read the same data.
-    """
+    start in epoch ms; `sinks` from _feed_sinks."""
     # An earlier mode's feeders (left running by no_teardown, or with an
     # INSERT in flight) would write into the recreated tables.
     feeder_service.stop()
@@ -392,13 +397,6 @@ def _start_clickhouse_feed(
         )
     # Before any data arrives: views only see rows inserted after they exist.
     data_loader.run_init_sql(dataset_name, init_sql_file)
-    sinks = {
-        # The feeder runs on the next node (see main()).
-        SINK_CLICKHOUSE: f"http://{provider.get_node_ip(node_offset)}:"
-        f"{clickhouse_http_port}/?database={CLICKHOUSE_DATABASE}"
-    }
-    if query_engine_url is not None:
-        sinks[SINK_QUERY_ENGINE] = query_engine_url
     start_ms = feeder_service.start(
         config=feeder_config,
         sinks=sinks,
@@ -714,7 +712,7 @@ def main(cfg: DictConfig) -> None:
     remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
     if paced_feeder_service is not None:
         start_feed = functools.partial(
-            _start_clickhouse_feed,
+            _start_feed,
             provider=provider,
             node_offset=node_offset,
             data_loader=data_loader,
@@ -723,9 +721,18 @@ def main(cfg: DictConfig) -> None:
             feeder_align_secs=paced_feeder_align_secs,
             dataset_name=dataset_name,
             init_sql_file=init_sql_file,
-            clickhouse_http_port=clickhouse_http_port,
             experiment_root_output_dir=experiment_root_output_dir,
             local_experiment_root_dir=local_experiment_root_dir,
+        )
+        # The feeder runs on the next node, so it reaches both by node1's IP.
+        feed_target_ip = provider.get_node_ip(node_offset)
+        clickhouse_feed_url = (
+            f"http://{feed_target_ip}:{clickhouse_http_port}/"
+            f"?database={CLICKHOUSE_DATABASE}"
+        )
+        query_engine_url = (
+            f"http://{feed_target_ip}:{int(cfg.streaming.remote_write.base_port)}"
+            f"{cfg.streaming.remote_write.path}"
         )
     else:
         ingest_mode = _ingest_mode(experiment_modes)
@@ -873,7 +880,9 @@ def main(cfg: DictConfig) -> None:
                     "type": "clickhouse",
                     "url": clickhouse_url,
                     "database": CLICKHOUSE_DATABASE,
-                    "forward_unsupported_queries": True,
+                    # A fed run feeds ClickHouse only in the baseline modes,
+                    # so it would answer a forwarded query from no data.
+                    "forward_unsupported_queries": paced_feeder_service is None,
                 },
                 http_port=asap_http_port,
                 spill=cfg.query_engine.spill,
@@ -892,9 +901,9 @@ def main(cfg: DictConfig) -> None:
                 # arrive.
                 start_feed(
                     experiment_mode=experiment_mode,
-                    # The feeder runs on the next node (see main()).
-                    query_engine_url=f"http://{provider.get_node_ip(node_offset)}:"
-                    f"{remote_write_port}{cfg.streaming.remote_write.path}",
+                    sinks=_feed_sinks(
+                        experiment_mode, clickhouse_feed_url, query_engine_url
+                    ),
                 )
                 pre_query_wait_seconds = 0
             else:
@@ -952,7 +961,12 @@ def main(cfg: DictConfig) -> None:
         else:
             # --- baseline mode ---
             if paced_feeder_service is not None:
-                start_feed(experiment_mode=experiment_mode)
+                start_feed(
+                    experiment_mode=experiment_mode,
+                    sinks=_feed_sinks(
+                        experiment_mode, clickhouse_feed_url, query_engine_url
+                    ),
+                )
             controller_client_config = os.path.join(
                 experiment_root_output_dir,
                 "controller_client_configs",
