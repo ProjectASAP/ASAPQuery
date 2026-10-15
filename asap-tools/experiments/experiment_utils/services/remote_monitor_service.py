@@ -90,7 +90,7 @@ class RemoteMonitorService(BaseService):
                 else:
                     keywords = [constants.QUERY_ENGINE_RS_PROCESS_KEYWORD]
             else:
-                keywords = ["clickhouse"]
+                keywords = [constants.CLICKHOUSE_SERVER_PROCESS_KEYWORD]
         else:
             keywords = list(config_keywords)
 
@@ -258,7 +258,7 @@ class RemoteMonitorService(BaseService):
         (``constants.INGEST_MONITOR_STOP_FILE``) is created, or SIGTERM/SIGINT,
         then writes ``monitor_output_file`` under ``remote_monitor_output/``.
         """
-        keywords = ["clickhouse"]
+        keywords = [constants.CLICKHOUSE_SERVER_PROCESS_KEYWORD]
         cmd = (
             "python3 -u remote_monitor.py "
             "--execution_mode ingest "

@@ -23,8 +23,14 @@ pub enum QueryError {
     IllegalAggregationFn,
     SpatialDurationSmall,
     NestedQueryUnsupported,
+    /// A two-layer query whose outer layer is not a query-time aggregation
+    /// over its inner layer's output.
+    InvalidNestedQuery,
     MissingTimeRange,
 }
+
+/// Aggregations an outer layer can apply to its inner layer's rows.
+pub const QUERY_TIME_AGGREGATIONS: [&str; 6] = ["SUM", "COUNT", "AVG", "MIN", "MAX", "QUANTILE"];
 
 #[derive(Debug)]
 pub struct SQLQuery {
@@ -293,5 +299,44 @@ impl SQLPatternMatcher {
         }
 
         sql_query
+    }
+
+    /// Matches a two-layer query whose outer layer aggregates its inner
+    /// layer's rows, e.g. `SELECT job, SUM(v) FROM (<inner>) GROUP BY job`.
+    /// Returns the inner layer's pattern; the outer layer runs at query time.
+    pub fn nested_query_to_pattern(&self, query: &SQLQueryData) -> SQLQuery {
+        let invalid = |msg: String| {
+            SQLQuery::new(Vec::new(), Some(QueryError::InvalidNestedQuery), Some(msg))
+        };
+        let Some(inner) = query.subquery.as_deref() else {
+            return invalid("query has no inner layer".to_string());
+        };
+
+        if !query.order_by.is_empty() || query.limit.is_some() {
+            return invalid("ORDER BY / LIMIT on the outer layer is not supported".to_string());
+        }
+
+        let outer_aggregation = query.aggregation_info.get_name();
+        if !QUERY_TIME_AGGREGATIONS.contains(&outer_aggregation) {
+            return invalid(format!(
+                "outer aggregation {outer_aggregation} cannot run over the inner layer"
+            ));
+        }
+
+        let outer_column = query.aggregation_info.get_value_column_name();
+        if inner.aggregation_alias.as_deref() != Some(outer_column) {
+            return invalid(format!(
+                "outer aggregation reads {outer_column}, which is not the inner aggregate's alias"
+            ));
+        }
+
+        if !query.labels.is_subset(&inner.labels) {
+            let missing: HashSet<_> = query.labels.difference(&inner.labels).collect();
+            return invalid(format!(
+                "outer layer groups by {missing:?}, which the inner layer does not output"
+            ));
+        }
+
+        self.query_info_to_pattern(inner)
     }
 }

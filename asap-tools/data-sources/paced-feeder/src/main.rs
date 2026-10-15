@@ -139,7 +139,7 @@ struct RunStats {
     rows_sent: usize,
     bytes_sent: usize,
     /// Rows sent divided by wall-clock time from the first tick's schedule to
-    /// the later of the last tick's end and the run's nominal end.
+    /// the later of the last tick's end and the end of its second.
     achieved_rows_per_sec: f64,
     /// Ticks whose work took longer than one second.
     overrun_ticks: usize,
@@ -455,6 +455,17 @@ async fn main() -> Result<()> {
         workload.rows_per_tick(),
     );
 
+    // SIGTERM ends the feed at the next tick, still writing its stats: a run
+    // stops its feeders when its queries are done, before their duration.
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let on_sigterm = Arc::clone(&stop);
+    tokio::spawn(async move {
+        sigterm.recv().await;
+        // Stores a permit, so a tick already sending stops at the next one.
+        on_sigterm.notify_one();
+    });
+
     let base = wait_for_wall_clock(start_ms).await;
     let mut ticks = Vec::with_capacity(duration_secs as usize);
     let mut errors: Vec<String> = Vec::new();
@@ -462,7 +473,13 @@ async fn main() -> Result<()> {
 
     for tick in 0..duration_secs {
         let scheduled = base + Duration::from_secs(tick);
-        tokio::time::sleep_until(scheduled.into()).await;
+        tokio::select! {
+            _ = tokio::time::sleep_until(scheduled.into()) => {}
+            _ = stop.notified() => {
+                eprintln!("SIGTERM: stopping after {tick} ticks");
+                break;
+            }
+        }
         let started = Instant::now();
 
         let (mut rows, mut bytes) = (0, 0);
@@ -532,9 +549,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    // A run that keeps up still spans the full duration, even though the last
-    // tick's work ends before its second does.
-    let wall_secs = base.elapsed().as_secs_f64().max(duration_secs as f64);
+    // A run that keeps up still spans its ticks' seconds, even though the last
+    // tick's work ends before its second does. A SIGTERM'd run spans the
+    // ticks it sent, not its duration.
+    let wall_secs = base.elapsed().as_secs_f64().max(ticks.len() as f64);
     let rows_sent: usize = ticks.iter().map(|t| t.rows).sum();
     let grouped = args.workload_table.is_none();
     let run = RunStats {
