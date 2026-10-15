@@ -5,7 +5,6 @@ import sys
 import unittest
 from copy import deepcopy
 
-
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "datasets", "fake_metric")
 )
@@ -100,6 +99,49 @@ class GenerateWorkloadsTest(unittest.TestCase):
                         self.assertEqual(vq_rqe.get("phi"), bq_rqe.get("phi"))
                         self.assertEqual(vq_rqe.get("k"), bq_rqe.get("k"))
         self.assertNotIn("variant", base[0])
+
+    def test_pooled_workloads_pair_with_the_base_query_for_query(self):
+        # Only the quantile and sum top-k shapes change; every random choice
+        # stays the base's.
+        base = workloads.generate_workloads(seed=862)
+        for b, p in zip(base, workloads.generate_workloads(seed=862, pooled=True)):
+            with self.subTest(workload=b["id"]):
+                self.assertTrue(p["pooled"])
+                for bq, pq in zip(b["queries"], p["queries"]):
+                    b_rqe, p_rqe = bq["rqes"][0], pq["rqes"][0]
+                    for key in ("capability", "lookback_ms", "interval_ms"):
+                        self.assertEqual(p_rqe[key], b_rqe[key])
+                    self.assertEqual(p_rqe.get("phi"), b_rqe.get("phi"))
+                    self.assertEqual(p_rqe.get("k"), b_rqe.get("k"))
+                    if b_rqe["capability"] not in ("quantile", "topk_by_value"):
+                        self.assertEqual(pq, bq)
+        self.assertNotIn("pooled", base[0])
+
+    def test_a_pooled_quantile_is_one_over_each_groups_samples(self):
+        # PromQL keeps the avg-of-series stand-in; the RQE and ClickHouse
+        # take the quantile of the group's raw samples.
+        q = workloads.quantile_query("q", ("region",), 0.95, pooled=True)
+        self.assertEqual(
+            q["promql"], "avg by (region) (quantile_over_time(0.95, data[100s]))"
+        )
+        self.assertTrue(q["rqes"][0]["pooled"])
+        self.assertIn("quantileExactInclusive(0.95)(value)", q["clickhouse_sql"])
+        self.assertIn("GROUP BY region", q["clickhouse_sql"])
+        self.assertNotIn("label_0", q["clickhouse_sql"])
+
+    def test_a_pooled_topk_ranks_groups_globally(self):
+        q = workloads.topk_sum_query(
+            "q", ("region", "service", "job"), 60_000, 1_000, 4, pooled=True
+        )
+        self.assertEqual(
+            q["promql"],
+            "topk(4, sum by (region, service, job) (sum_over_time(data[1m])))",
+        )
+        self.assertEqual(q["output_series_upper_bound"], 4)
+        sql = q["clickhouse_sql"]
+        self.assertIn("GROUP BY region, service, job ORDER BY value DESC", sql)
+        self.assertTrue(sql.endswith("LIMIT 4"))
+        self.assertNotIn("label_0", sql)
 
     def test_manifest_declares_deterministic_feeder_facts(self):
         facts = workloads.generate_workloads(seed=4)[0]["data_facts"]

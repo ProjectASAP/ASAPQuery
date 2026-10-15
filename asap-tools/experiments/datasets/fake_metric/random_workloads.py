@@ -96,6 +96,14 @@ def rqe_query(rqe):
     }
     if capability == "sum":
         return Query(**common, grouping=grouping, series_fn=None, agg="sum")
+    if capability == "quantile" and rqe.get("pooled"):
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn=None,
+            agg="quantile",
+            quantile=f"{rqe['phi']:.2f}",
+        )
     if capability == "quantile":
         quantile = f"{rqe['phi']:.2f}"
         return Query(
@@ -104,6 +112,10 @@ def rqe_query(rqe):
             series_fn="quantile",
             agg="avg",
             quantile=quantile,
+        )
+    if capability == "topk_by_value" and rqe.get("pooled"):
+        return Query(
+            **common, grouping=grouping, series_fn=None, agg="sum", topk=rqe["k"]
         )
     if capability == "topk_by_value":
         return Query(
@@ -247,7 +259,12 @@ def sum_query(query_id, grouping, lookback_ms, interval_ms):
     )
 
 
-def quantile_query(query_id, grouping, phi, lookback_ms=QUANTILE_LOOKBACK_MS):
+def quantile_query(
+    query_id, grouping, phi, lookback_ms=QUANTILE_LOOKBACK_MS, pooled=False
+):
+    """A quantile by `grouping`. Pooled, its RQE is the quantile of all of a
+    group's samples; PromQL can't say that, so the PromQL is the avg of
+    per-series quantiles either way, a stand-in when pooled."""
     rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[{lookback_ms // SECOND_MS}s]))"
     return query(
         query_id,
@@ -258,12 +275,18 @@ def quantile_query(query_id, grouping, phi, lookback_ms=QUANTILE_LOOKBACK_MS):
         rendered,
         "common-promql",
         phi=phi,
+        **({"pooled": True} if pooled else {}),
     )
 
 
-def topk_sum_query(query_id, grouping, lookback_ms, interval_ms, k):
-    rendered = f"topk by ({grouping_text(grouping)}) ({k}, sum_over_time(data[{duration(lookback_ms)}]))"
-    return query(
+def topk_sum_query(query_id, grouping, lookback_ms, interval_ms, k, pooled=False):
+    """The k largest windowed sums: per series within each `grouping` group,
+    or pooled, of `grouping`'s groups over all series."""
+    if pooled:
+        rendered = f"topk({k}, sum by ({grouping_text(grouping)}) (sum_over_time(data[{duration(lookback_ms)}])))"
+    else:
+        rendered = f"topk by ({grouping_text(grouping)}) ({k}, sum_over_time(data[{duration(lookback_ms)}]))"
+    item = query(
         query_id,
         "topk_by_value",
         grouping,
@@ -272,7 +295,11 @@ def topk_sum_query(query_id, grouping, lookback_ms, interval_ms, k):
         rendered,
         "common-promql",
         k=k,
+        **({"pooled": True} if pooled else {}),
     )
+    if pooled:
+        item["output_groups"], item["output_series_upper_bound"] = 1, k
+    return item
 
 
 def topk_count_query(query_id, grouping, lookback_ms, interval_ms, k):
@@ -323,9 +350,11 @@ def cardinality_query(query_id, grouping, lookback_ms, interval_ms):
     )
 
 
-def generate_workload(seed, index, variant="base"):
+def generate_workload(seed, index, variant="base", pooled=False):
     """Return one validated ten-query workload for `seed` and one-based
-    `index`, stretched as VARIANTS[`variant`] says."""
+    `index`, stretched as VARIANTS[`variant`] says. `pooled` makes its
+    quantiles pooled and its sum top-k rank the fine grouping's groups; its
+    random choices stay the base's, so its queries pair with them."""
     scale, label_0_cardinality = VARIANTS[variant]
     rng = random.Random(f"{seed}/{index}")
     fine, coarse = GROUPINGS[2], GROUPINGS[1]
@@ -334,28 +363,36 @@ def generate_workload(seed, index, variant="base"):
     short_w, short_t = scale * MINUTE_MS, rng.choice((SECOND_MS, 2 * SECOND_MS))
     long_w, long_t = scale * 20 * MINUTE_MS, rng.choice((30 * SECOND_MS, MINUTE_MS))
     quantile_w = scale * QUANTILE_LOOKBACK_MS
+
+    def topk_grouping():
+        # Drawn either way, so later draws match the base's.
+        drawn = rng.choice(GROUPINGS[:2])
+        return fine if pooled else drawn
+
     quantile_specs = rng.sample(
         [(grouping, phi) for grouping in GROUPINGS for phi in QUANTILES], 3
     )
     queries = [
         sum_query("q01-sum-fine", fine, rollup_w, rollup_t),
         sum_query("q02-sum-coarse", coarse, rollup_w, rollup_t),
-        quantile_query("q03-quantile", *quantile_specs[0], quantile_w),
-        quantile_query("q04-quantile", *quantile_specs[1], quantile_w),
-        quantile_query("q05-quantile", *quantile_specs[2], quantile_w),
+        quantile_query("q03-quantile", *quantile_specs[0], quantile_w, pooled),
+        quantile_query("q04-quantile", *quantile_specs[1], quantile_w, pooled),
+        quantile_query("q05-quantile", *quantile_specs[2], quantile_w, pooled),
         topk_sum_query(
             "q06-topk-sum",
-            rng.choice(GROUPINGS[:2]),
+            topk_grouping(),
             short_w,
             short_t,
             rng.choice(TOPK_VALUES),
+            pooled,
         ),
         topk_sum_query(
             "q07-topk-sum",
-            rng.choice(GROUPINGS[:2]),
+            topk_grouping(),
             long_w,
             long_t,
             rng.choice(TOPK_VALUES),
+            pooled,
         ),
         topk_count_query(
             "q08-topk-count",
@@ -389,6 +426,8 @@ def generate_workload(seed, index, variant="base"):
     }
     if variant != "base":
         workload["variant"] = variant
+    if pooled:
+        workload["pooled"] = True
     validate_workload(workload)
     return workload
 
@@ -421,6 +460,7 @@ def validate_workload(workload):
             rqe["interval_ms"],
             rqe.get("phi"),
             rqe.get("k"),
+            rqe.get("pooled", False),
         )
         for item in queries
         for rqe in item["rqes"]
@@ -448,10 +488,12 @@ def validate_workload(workload):
         raise ValueError("a workload must contain the fine side of a roll-up chain")
 
 
-def generate_workloads(seed, workload_count=WORKLOAD_COUNT, variant="base"):
+def generate_workloads(
+    seed, workload_count=WORKLOAD_COUNT, variant="base", pooled=False
+):
     """Generate the deterministic workload suite for one experiment seed."""
     return [
-        generate_workload(seed, index, variant)
+        generate_workload(seed, index, variant, pooled)
         for index in range(1, workload_count + 1)
     ]
 
@@ -461,9 +503,14 @@ def main():
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--variant", choices=sorted(VARIANTS), default="base")
+    parser.add_argument(
+        "--pooled", action="store_true", help="pooled quantiles and top-k"
+    )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    for workload in generate_workloads(args.seed, variant=args.variant):
+    for workload in generate_workloads(
+        args.seed, variant=args.variant, pooled=args.pooled
+    ):
         path = args.out / f"{workload['id']}.json"
         path.write_text(json.dumps(workload, indent=2, sort_keys=True) + "\n")
         print(path)
