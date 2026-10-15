@@ -676,11 +676,6 @@ def main(args: Any) -> None:
                 disable_ssl=True,
                 retry=debug_retry,
             )
-
-            # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name)
-            client.session.mount("http://", debug_adapter)
-            client.session.mount("https://", debug_adapter)
         elif protocol == RQE_PROTOCOL:
             assert server.rqe_exprs_file is not None
             client = QueryClientFactory.create(
@@ -691,11 +686,6 @@ def main(args: Any) -> None:
                     args.config_file, server.rqe_exprs_file
                 ),
             )
-
-            # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name)
-            client.session.mount("http://", debug_adapter)
-            client.session.mount("https://", debug_adapter)
         else:
             # ClickHouse or other protocols
             client = QueryClientFactory.create(
@@ -707,11 +697,10 @@ def main(args: Any) -> None:
                 password=server.password if server.password else "",
             )
 
-            # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name)
-            client.session.mount("http://", debug_adapter)
-            client.session.mount("https://", debug_adapter)
-
+        # Mount debug adapter for HTTP request logging
+        debug_adapter = DebugHTTPAdapter(server.name)
+        client.session.mount("http://", debug_adapter)
+        client.session.mount("https://", debug_adapter)
         servers[server.name] = client
         logger.debug(
             "Connected to server {} ({}) with HTTP debug logging enabled",
