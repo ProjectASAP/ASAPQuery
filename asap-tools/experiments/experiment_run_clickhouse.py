@@ -650,12 +650,17 @@ def main(cfg: DictConfig) -> None:
         paced_feeder_config["workload_table"] = os.path.abspath(
             paced_feeder_config["workload_table"]
         )
-        # Every mode's client config has the same query timing.
+        # Every mode but sketchdb runs every query group (sketchdb may skip
+        # trailing ones), so any other mode's client config has them all.
+        all_groups_mode = next(
+            (m for m in experiment_modes if m != constants.SKETCHDB_EXPERIMENT_NAME),
+            experiment_modes[0],
+        )
         with open(
             os.path.join(
                 local_experiment_root_dir,
                 "controller_client_configs",
-                f"{experiment_modes[0]}.yaml",
+                f"{all_groups_mode}.yaml",
             )
         ) as f:
             paced_feeder_align_secs = _check_clickhouse_paced_feeder(
@@ -776,7 +781,8 @@ def main(cfg: DictConfig) -> None:
         os.makedirs(local_experiment_dir, exist_ok=True)
 
         if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-            # --- sketchdb mode: precompute engine + JSON ingest + ClickHouse fallback ---
+            # --- sketchdb mode: precompute engine + ClickHouse fallback, ingesting
+            # the paced feed (remote write) or local_data_file (JSON) ---
             asap_http_port = urlparse(mode_server_urls[experiment_mode]).port
             # Kill any leftover query_engine_rust from a previous run (mirrors
             # query_engine_service.stop() at the top of the e2e mode loop).
