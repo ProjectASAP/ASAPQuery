@@ -227,6 +227,12 @@ def main():
         "--set", action="append", required=True, metavar="SET:WORKLOADS"
     )
     parser.add_argument("--stop-launching-after-hours", type=float)
+    parser.add_argument(
+        "--skip-slots",
+        type=lambda s: {int(x) for x in s.split(",")},
+        default=set(),
+        help="slots to leave alone, e.g. 3,15,16 (their nodes are busy)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -236,8 +242,17 @@ def main():
     if state.exists():
         jobs = json.loads(state.read_text())
         for j in jobs:
-            if j["status"] == "running":  # the driver died under it
-                j["status"] = "queued"
+            if j["status"] == "running":
+                # A run the earlier driver left behind keeps going on its own;
+                # this driver neither reruns nor watches it.
+                alive = (
+                    subprocess.run(
+                        ["pgrep", "-f", f"experiment.name={j['names'][-1]}( |$)"],
+                        stdout=subprocess.DEVNULL,
+                    ).returncode
+                    == 0
+                )
+                j["status"] = "orphaned" if alive else "queued"
     else:
         jobs = make_jobs([parse_set(s) for s in args.set])
     save(batch_dir, jobs)
@@ -288,7 +303,7 @@ def main():
             time.time() - started < args.stop_launching_after_hours * 3600
         )
         for slot in range(args.slots):
-            if slot in running or not launching:
+            if slot in running or slot in args.skip_slots or not launching:
                 continue
             # Retries first, then the longest queued job.
             queued = [j for j in jobs if j["status"] == "queued"]
