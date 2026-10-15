@@ -28,18 +28,18 @@ def normalize_vector(raw_result: list) -> Dict[frozenset, float]:
     return result
 
 
-def fetch_runtime_info(server_url: str) -> Optional[Dict[str, Any]]:
-    """Query SketchDB/Prometheus runtime info endpoint."""
-    try:
-        response = requests.get(
-            f"{server_url}/api/v1/status/runtimeinfo",
-            timeout=10,
-        )
-        if response.status_code == 200:
-            return response.json().get("data", {})
-    except Exception:
-        pass
-    return None
+RUNTIME_INFO_PATH = "/api/v1/status/runtimeinfo"
+RUNTIME_INFO_TIMEOUT_SECS = 10
+
+
+def fetch_runtime_info(server_url: str) -> Dict[str, Any]:
+    """Query SketchDB/Prometheus runtime info endpoint. Raises on a connection
+    error, a non-200 status or a body without `data`."""
+    response = requests.get(
+        f"{server_url}{RUNTIME_INFO_PATH}", timeout=RUNTIME_INFO_TIMEOUT_SECS
+    )
+    response.raise_for_status()
+    return response.json()["data"]
 
 
 class PrometheusQueryClient(QueryClient):

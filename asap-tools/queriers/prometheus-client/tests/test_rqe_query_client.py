@@ -11,7 +11,7 @@ from unittest import mock
 import requests
 
 from classes.config import ServerConfig
-from classes.prometheus_query_client import normalize_vector
+from classes.prometheus_query_client import fetch_runtime_info, normalize_vector
 from classes.query_client_factory import QueryClientFactory
 from classes.rqe_query_client import (
     RQE_QUERY_PATH,
@@ -151,6 +151,37 @@ class RqeQueryClientTest(unittest.TestCase):
         )
         self.assertIsInstance(client, RqeQueryClient)
         self.assertEqual(client.protocol_name, "rqe")
+
+
+class RuntimeInfoTest(unittest.TestCase):
+    def get(self, r: Any) -> Any:
+        return mock.patch("classes.prometheus_query_client.requests.get", **r)
+
+    def test_returns_the_data(self) -> None:
+        info: Dict[str, Any] = {"earliest_timestamp_per_aggregation_id": {}}
+        r = response(200, {"status": "success", "data": info})
+        r.raise_for_status.return_value = None
+        with self.get({"return_value": r}):
+            self.assertEqual(fetch_runtime_info(URL), info)
+
+    def test_unreachable_server_raises(self) -> None:
+        with self.get({"side_effect": requests.exceptions.ConnectionError("x")}):
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                fetch_runtime_info(URL)
+
+    def test_error_status_raises(self) -> None:
+        r = response(503, "down")
+        r.raise_for_status.side_effect = requests.exceptions.HTTPError("503")
+        with self.get({"return_value": r}):
+            with self.assertRaises(requests.exceptions.HTTPError):
+                fetch_runtime_info(URL)
+
+    def test_malformed_body_raises(self) -> None:
+        r = response(200, {"status": "success"})
+        r.raise_for_status.return_value = None
+        with self.get({"return_value": r}):
+            with self.assertRaises(KeyError):
+                fetch_runtime_info(URL)
 
 
 class RqeServerConfigTest(unittest.TestCase):
