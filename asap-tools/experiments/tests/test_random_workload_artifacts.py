@@ -91,19 +91,38 @@ class RenderArtifactsTest(unittest.TestCase):
             {"universe_keys": 10_000, "keys_per_series": 1_000},
         )
 
-    def test_archived_pilot_plan_reads_the_manifest_s_pilot_queries(self):
-        # The archived plan is only valid for the queries it was solved for.
-        workload = workloads.generate_workloads(seed=862)[0]
-        with open(PILOT_DIR / "eval_table.json") as f:
-            e2e = json.load(f)["workloads"][0]["e2e"]
-        self.assertEqual(
-            [(q["promql"], q["interval_secs"] * 1000) for q in e2e["queries"]],
-            [
-                (q["promql"], q["interval_ms"])
-                for q in workload["queries"]
-                if q["support"] == "common-promql"
-            ],
-        )
+    def test_archived_pilot_plans_read_the_manifests_pilot_queries(self):
+        # An archived plan is only valid for the queries it was solved for.
+        for workload in workloads.generate_workloads(seed=862):
+            with self.subTest(workload=workload["id"]):
+                pilot_dir = PILOT_DIR.parent / f"{workload['id']}-pilot"
+                with open(pilot_dir / "eval_table.json") as f:
+                    e2e = json.load(f)["workloads"][0]["e2e"]
+                self.assertEqual(
+                    [(q["promql"], q["interval_secs"] * 1000) for q in e2e["queries"]],
+                    [
+                        (q["promql"], q["interval_ms"])
+                        for q in workload["queries"]
+                        if q["support"] == "common-promql"
+                    ],
+                )
+                # The planner's configs answer every pilot query.
+                inference = yaml.safe_load(
+                    (pilot_dir / "inference_config.yaml").read_text()
+                )
+                self.assertEqual(
+                    sorted(q["query"] for q in inference["queries"]),
+                    sorted(q["promql"] for q in e2e["queries"]),
+                )
+
+    def test_every_workload_renders_its_pilot_configs(self):
+        for workload in workloads.generate_workloads(seed=862):
+            with self.subTest(workload=workload["id"]):
+                pilot_dir = PILOT_DIR.parent / f"{workload['id']}-pilot"
+                files = artifacts.pilot_configs(workload, pilot_dir)
+                self.assertEqual(
+                    sum(path.suffix == ".yaml" for path in files), 4, sorted(files)
+                )
 
 
 class PilotConfigsTest(unittest.TestCase):

@@ -14,6 +14,9 @@ roll-up) and the three quantiles from one per-series DDSketch. Top-k heaps
 over 500 series read the curves at their first 1,000 keys (the table's
 `assumptions`).
 
+`../workload-NN-pilot/` hold workloads 02-10's plans, made the same way
+(sketch-bench f885d7e: queries reading the same RQE share it).
+
 Regenerate, with `SB` a sketch-bench checkout at the table's
 `sketch_bench_revision`, from this repository's root:
 
