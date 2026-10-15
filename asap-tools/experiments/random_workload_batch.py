@@ -207,6 +207,34 @@ def summarize(batch_dir, jobs, set_name, workload):
         subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=EXPERIMENTS_DIR)
 
 
+def alive(name):
+    """Whether a runner for experiment `name` runs on this machine."""
+    pattern = f"experiment.name={name}( |$)"
+    return (
+        subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL).returncode
+        == 0
+    )
+
+
+def settle_orphans(jobs, is_alive=alive):
+    """The slots of orphaned jobs (runs an earlier driver left going) that
+    still run, so nothing launches over them. A finished orphan becomes done,
+    or queued for its retry."""
+    busy = set()
+    for j in jobs:
+        if j["status"] != "orphaned":
+            continue
+        if "slot" not in j:
+            raise SystemExit(f"{j['names'][-1]} has no recorded slot")
+        if is_alive(j["names"][-1]):
+            busy.add(j["slot"])
+        elif succeeded(j, j["names"][-1]):
+            j["status"] = "done"
+        else:
+            j["status"] = "queued" if j["attempts"] < MAX_ATTEMPTS else "failed"
+    return busy
+
+
 def save(batch_dir, jobs):
     tmp = batch_dir / "state.json.tmp"
     tmp.write_text(json.dumps(jobs, indent=1))
@@ -259,16 +287,9 @@ def main():
         jobs = json.loads(state.read_text())
         for j in jobs:
             if j["status"] == "running":
-                # A run the earlier driver left behind keeps going on its own;
-                # this driver neither reruns nor watches it.
-                alive = (
-                    subprocess.run(
-                        ["pgrep", "-f", f"experiment.name={j['names'][-1]}( |$)"],
-                        stdout=subprocess.DEVNULL,
-                    ).returncode
-                    == 0
-                )
-                j["status"] = "orphaned" if alive else "queued"
+                # A run the earlier driver left behind keeps going on its own
+                # and keeps its slot until it ends.
+                j["status"] = "orphaned" if alive(j["names"][-1]) else "queued"
     else:
         jobs = make_jobs(
             [parse_set(s) for s in args.set],
@@ -323,8 +344,14 @@ def main():
         launching = args.stop_launching_after_hours is None or (
             time.time() - started < args.stop_launching_after_hours * 3600
         )
+        orphan_slots = settle_orphans(jobs)
         for slot in range(args.slots):
-            if slot in running or slot in args.skip_slots or not launching:
+            if (
+                slot in running
+                or slot in args.skip_slots
+                or slot in orphan_slots
+                or not launching
+            ):
                 continue
             # Retries first, then the longest queued job.
             queued = [j for j in jobs if j["status"] == "queued"]
@@ -336,6 +363,7 @@ def main():
             name = experiment_name(job)
             job["names"].append(name)
             job["status"] = "running"
+            job["slot"] = slot
             save(batch_dir, jobs)
             logs = batch_dir / "logs"
             logs.mkdir(exist_ok=True)

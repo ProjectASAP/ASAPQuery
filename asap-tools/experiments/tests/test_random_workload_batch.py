@@ -50,6 +50,19 @@ class BatchPlanningTest(unittest.TestCase):
             batch.command(job, "n", 0, Args),
         )
 
+    def test_a_live_orphan_keeps_its_slot(self):
+        # A resumed driver once cleaned and reused the slots of runs it
+        # had left going, wrecking them.
+        jobs = [
+            {"status": "orphaned", "names": ["a"], "slot": 9, "attempts": 1},
+            {"status": "orphaned", "names": ["b"], "slot": 10, "attempts": 1},
+            {"status": "queued", "names": [], "attempts": 0},
+        ]
+        with mock.patch.object(batch, "succeeded", return_value=False):
+            busy = batch.settle_orphans(jobs, is_alive=lambda name: name == "a")
+        self.assertEqual(busy, {9})
+        self.assertEqual([j["status"] for j in jobs], ["orphaned", "queued", "queued"])
+
     def test_each_job_runs_on_its_slots_two_nodes(self):
         job = {"set": "seed-862", "workload": "workload-01", "arm": "prom"}
 
