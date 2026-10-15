@@ -19,7 +19,9 @@ differences for the end-to-end run:
 
 - `inputs/tables/`: the tables, `export_autosketch_eval_table.py --synthetic
   --samples-per-sec 10` (classic, all, multigroup at shared = 1). Each one's
-  `workloads[0].e2e` holds the queries and metrics to generate.
+  `workloads[0].e2e` holds the queries and metrics to generate. Each query
+  but `rate` carries `expr`, its RQE expression tree (leaves name the plans'
+  RQE ids), added after planning: the RQEs and plans are unchanged.
 - `plans/<table>.plans.json.gz`: each method's chosen plans, in the format of
   `../autosketch-vs-asap-hydra/README.md`, "Plans" (`--runs 1`, kept, then
   `scripts/extract_autosketch_plans.py`).
