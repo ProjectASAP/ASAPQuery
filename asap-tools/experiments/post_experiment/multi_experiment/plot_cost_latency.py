@@ -10,6 +10,8 @@ Two arrows from LiteOlly's geometric-mean point show its improvement in CPU
 metric: collate_batch.py's geometric mean of baseline / LiteOlly over
 workloads where both are valid. Arrow lengths are those ratios.
 
+An oval encloses each baseline's valid runs (all its runs if none is valid).
+
 Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
 
 Usage: python3 plot_cost_latency.py collated.csv out_dir
@@ -23,9 +25,11 @@ from pathlib import Path
 from collections import defaultdict
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib import ticker  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from collate_batch import ratios  # noqa: E402
@@ -42,6 +46,22 @@ SYSTEMS = [
 SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#52514e"
 
 
+def oval(ax, xs, ys, color):
+    """Ellipse in log space along the points' covariance, scaled to enclose
+    them all with a fixed margin (in decades) for the markers."""
+    pts = np.log10(np.column_stack([xs, ys]))
+    center = pts.mean(axis=0)
+    # The small diagonal keeps one or collinear points drawable.
+    cov = np.cov(pts.T, bias=True) + np.eye(2) * 1e-4
+    inv = np.linalg.inv(cov)
+    d = pts - center
+    reach = np.sqrt(np.einsum("ij,jk,ik->i", d, inv, d).max())
+    vals, vecs = np.linalg.eigh(cov)
+    t = np.linspace(0, 2 * np.pi, 200)
+    ring = (vecs * (np.sqrt(vals) * reach + 0.05)) @ np.vstack([np.cos(t), np.sin(t)])
+    ax.plot(*10 ** (ring + center[:, None]), color=color, linewidth=1.5, zorder=2)
+
+
 def arrows(ax, rows, improvement, set_name):
     """LiteOlly's improvement over the worst baseline per metric, drawn from
     LiteOlly's geometric-mean point (over its valid runs, else all)."""
@@ -56,7 +76,7 @@ def arrows(ax, rows, improvement, set_name):
             ((arm, m[metric]) for (s, arm), m in improvement.items() if s == set_name),
             key=lambda am: am[1],
         )
-    style = dict(arrowstyle="->", color=INK, linewidth=2, mutation_scale=22)
+    style = dict(arrowstyle="<->", color=INK, linewidth=2, mutation_scale=22)
     arm, cpu = worst["cpu_secs"]
     x = lx / 1.5
     ax.annotate("", (x, ly), xytext=(x, ly * cpu), arrowprops=style, zorder=4)
@@ -131,22 +151,32 @@ def main(csv_path, out_dir):
                 linewidths=2.5,
                 zorder=3,
             )
+            # Invalid runs don't stand for the system, so they don't stretch its oval.
+            fit = [(x, y) for x, y, v in zip(xs, ys, valid) if v] or list(zip(xs, ys))
+            if key != "asap" and fit:
+                oval(ax, *zip(*fit), color)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("p95 query latency (s)", color=MUTED, fontsize=14)
-        ax.set_ylabel(
-            "total CPU (CPU-seconds, warm-up + queries)", color=MUTED, fontsize=14
-        )
+        ax.set_ylabel("total compute cost", color=MUTED, fontsize=14)
+        for axis in (ax.xaxis, ax.yaxis):
+            axis.set_major_locator(ticker.LogLocator(subs=(1, 2, 5)))
+            axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+            axis.set_minor_formatter(ticker.NullFormatter())
         title = (
             f"{set_name}: {len(workloads)} workload(s), lower left is better"
             "\nhollow: invalid run (failed queries or wrong answers)"
         )
         ax.set_title(title, color=INK, fontsize=14, loc="left")
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
-        ax.tick_params(colors=MUTED, labelsize=13)
+        ax.tick_params(colors=MUTED, labelsize=13, width=2)
         for spine in ax.spines.values():
-            spine.set_color("#d4d3cf")
+            spine.set_color(INK)
+            spine.set_linewidth(2)
         arrows(ax, by_set[set_name], improvement, set_name)
+    fig.suptitle(
+        "Cost-latency tradeoffs of LiteOlly vs. baselines", color=INK, fontsize=16
+    )
     fig.legend(
         *axes[0][0].get_legend_handles_labels(),
         frameon=False,
