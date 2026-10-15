@@ -1,89 +1,86 @@
 # ASAPQuery accelerated random E2E handoff
 
-*Updated 2026-10-15 (session `2578ec80-4c3a-4ede-9be0-ad5eca70b852`, peer name `asapquery-random-e2e-11`).*
+*Updated 2026-10-15 ~09:30 (session `2578ec80-4c3a-4ede-9be0-ad5eca70b852`, peer name `asapquery-random-e2e-11`).*
 
-## Repositories and working copies
+## Repositories and branches
 
 - **ASAPQuery worktree:** `.../code/ASAPQuery-random-e2e`. Don't use the shared `.../code/ASAPQuery`.
-  - **Merged:** #879 (the pilot) and #902 (ClickHouse run and CPU-measurement fixes).
-  - **Merged:** #903 (the long and x5 variants and the VictoriaMetrics pin).
+  - **Merged:** #879 (pilot), #902 (ClickHouse runs and clean CPU), #903 (long and x5 variants, VictoriaMetrics pin).
+  - **Open:** `codex/random-e2e-batch`, the batch driver and analysis scripts, not yet in a PR. #904 (this doc) is a draft.
 - **sketch-bench worktree:** `.../code/sketch-bench-random-e2e`, detached at `main` (`a3753f2`).
-  - #226 (`--random-manifest` exporter) and #228 (RQE `expr` trees) are merged.
-  - Don't use `.../code/sketch-bench`: another session has uncommitted work there.
+  - #226 (`--random-manifest`) and #228 (`expr` trees) are merged.
+- **Cluster:** CloudLab `scratch4.cloudmigration-PG0.apt.emulab.net`, `node0`–`node41`, all Xeon E5-2450: 8 cores / 16 threads, 15 GB RAM, no AVX2.
+  - A run uses 2 nodes: `num_nodes=1`, `node_offset=2k`.
+  - Deploy with `asap-tools/deploy_changes.sh 42 milindsr <suffix>` from **one** checkout. It compares timestamps, so alternating checkouts rebuilds everything.
 - **RQE = repeating query expression.**
 
 ## Design (`.design_docs/accelerated-random-workload-eval.md`)
 
-- **Workloads:** seed 862, 10 workloads × 10 queries. The five-system pilot uses each workload's 7 `common-promql` queries: 2 sums, 3 quantiles, 2 top-k.
-- **Labels:** `region:4 → service:5 → job:10 → label_0:50`, giving 10,000 series at 10 samples/s.
-- **Quantile class:** 100s lookback (each series has 1,000 samples), repeat 1s.
-- **Rendering:** the manifest is the source of truth. PromQL and ClickHouse SQL are both rendered from the RQEs (`random_workloads.rqe_query` → `sketch_bench_workloads.Query`). PromQL is never translated to SQL.
-- **Quantile semantics today:** the average of per-series quantiles on every system. ASAPQuery uses a per-series sketch and a query-time avg (`--planner saved`, per-series avg support).
-- **Variants** (`random_workloads.py --variant`) keep every random choice, so results pair query for query with the base:
-  - `long`: lookbacks ×3, max 60 min; quantiles 300s.
-  - `x5`: `label_0` 250, so 50k series and 500k samples/s.
-- **Archive:** each frozen set lives in `random_workloads/seed-862[-long|-x5]/` with `workload-NN.json` and `workload-NN-pilot/` (eval table, plans, ASAPQuery planner configs). Tests check every archive against its manifest.
+- **Sets:** seed 862, 10 workloads; the pilot runs each workload's 7 `common-promql` queries.
+  - `base`: 10,000 series at 10 samples/s = 100k samples/s. Quantiles over 100s every 1s, other windows 1–20 min.
+  - `long` (`--variant long`): every lookback ×3, max 60 min.
+  - `x5` (`--variant x5`): 50,000 series, 500k samples/s.
+  - The variants keep every random choice, so they pair query for query with the base.
+- **Quantile semantics today:** the average of per-series quantiles, on every system. The user's intent is a pooled quantile per group; see Next.
+- **Rendering:** PromQL and ClickHouse SQL are both rendered from the RQEs (`random_workloads.rqe_query` → `sketch_bench_workloads.Query`). ASAPQuery uses `--planner saved` plans from sketch-bench `autosketch_vs_asap`, archived in `random_workloads/<set>/workload-NN-pilot/`.
+- **Arms:**
+  - ASAPQuery `sketchdb` and Prometheus 2.53.2 run through `experiment_run_e2e.py` (`e2e.yaml`, one mode each).
+  - VictoriaMetrics v1.154.0 also runs through `experiment_run_e2e.py`, with `latencyOffset=0s` and the cache on.
+  - Raw ClickHouse and ClickHouse+MV (exact views) run through `experiment_run_clickhouse.py`, pinned to ClickHouse 23.8: 26.6+ needs AVX2.
+  - Every run warms up for the longest lookback + 10s, then runs a 10-minute aligned query schedule. It ends when its queries finish. The feeder runs on the second node and stops on SIGTERM.
 
-## Run configs and runners
+## Tools
 
-- **Render:** `random_workload_artifacts.py --manifest <set>/workload-NN.json --out <tmp> --pilot-dir <set>/workload-NN-pilot` writes `config/experiment_type/random_workload/<set>/workload-NN/` (git-ignored).
+- **Driver:** `asap-tools/experiments/random_workload_batch.py` runs one job per arm per workload on two-node slots, longest first.
+  - It cleans each slot first and retries once under a new name.
+  - Its state is in `experiment_outputs/<batch>/state.json`. It resumes, leaving runs still in flight alone (`--skip-slots`).
+  - **Gap:** it counts a job done if it recorded results; it doesn't check validity.
+- **Per-workload comparison:** `post_experiment/multi_experiment/compare_arms.py` reports latency, agreement and CPU (warm-up + queries).
+- **Collation:** `collate_batch.py <batch> --csv` writes one row per run: CPU, memory, latency p50/p95/sum, failed queries, ingest lag, and **valid** (no failed queries, answers agreeing with Prometheus). It prints ratios over valid pairs.
+  - It needs the feeder stats copied back from each run's feeder node: `<mode>/paced_feeder_output/*_stats.json`. They aren't synced automatically yet.
+- **Plot:** `plot_cost_latency.py collated.csv out.png` draws p95 latency against total CPU, log–log, one panel per set, with invalid runs hollow.
 
-  | Config | Runner | Systems |
-  |---|---|---|
-  | `e2e.yaml` | `experiment_run_e2e.py` | ASAPQuery `sketchdb` + Prometheus `baseline`. To run one, override `'experiment_params.experiment=[{mode:sketchdb,server:sketchdb}]'` |
-  | `victoriametrics.yaml` | `experiment_run_e2e.py` | VictoriaMetrics |
-  | `clickhouse.yaml`, `clickhouse_mv.yaml` | `experiment_run_clickhouse.py` | Raw ClickHouse, ClickHouse+MV |
+## Overnight batch `experiment_outputs/overnight-1015/`
 
-- **Every arm:**
-  - feeds the eval table's `data` metric with seed 862;
-  - warms up for the longest lookback + 10s (1,210s base, 3,610s long);
-  - then runs a 10-minute query schedule aligned to each interval.
-- **Run end:** runs end when their queries finish. The feed's duration (warm-up + 10× the query phase) only bounds a hung run. Feeders stop on SIGTERM and still write their stats.
-- **Nodes:** each run takes 2 nodes (`providers.cloudlab.num_nodes=1`, `node_offset=2k`). The database is on the first node, the feeder on the second, for both runners.
-- **Pins:**
-  - ClickHouse 23.8: 26.6+ crashes with an illegal instruction on the CloudLab E5-2450 nodes (no AVX2).
-  - VictoriaMetrics v1.154.0, with `-search.latencyOffset=0s`. The result cache is on.
-  - Prometheus is 2.53.2, bare metal.
-- **Analysis:** `post_experiment/multi_experiment/compare_arms.py --reference <arm> --arm name=<exp_dir>/<mode> ...` reports:
-  - latency, and the share answered within the interval;
-  - agreement (relative error or precision@k);
-  - CPU-seconds as whole run = warm-up + queries, plus peak memory.
+- **Coverage:** base 01–10 and long 01–10, all 5 arms. x5 was cancelled; its raw ClickHouse couldn't keep up, with ingest 9 minutes behind.
+- **Outputs:**
+  - `runs_table.md` and `collated.csv`: per-run status and numbers;
+  - `cost_latency.png`: the scatter plot;
+  - `summaries/`: per-workload comparisons.
+- **ASAPQuery's improvement, long (valid pairs, geometric mean):**
 
-## Workload 01 pilot results (base, seed 862)
+  | vs | Pairs | CPU | p50 | p95 | Latency sum |
+  |---|---|---|---|---|---|
+  | Prometheus | 6 | 5.6× | 17× | 13× | 16× |
+  | VictoriaMetrics | 6 | 3.1× | 2.8× | 3.1× | 3.6× |
+  | Raw ClickHouse | 5 | 12× | 12× | 14× | 15× |
+  | ClickHouse+MV | 1 | 3.7× | 2.1× | 3.4× | 4.1× |
 
-- **Exact baselines agree:** Prometheus, raw ClickHouse and ClickHouse+MV agree to about 1e-15 on every shared window.
-- **Latency:**
-  - The 1s-interval quantiles run at p50 0.33–0.63s on ASAPQuery, 0.79s on ClickHouse+MV, about 1.05s on VictoriaMetrics, 2.5s on raw ClickHouse and 3.5s on Prometheus.
-  - ASAPQuery and ClickHouse+MV keep up with every interval; Prometheus and raw ClickHouse fall behind.
-  - On 10–20m windows, Prometheus takes 8–16s and ASAPQuery 0.3–0.4s.
-- **Accuracy:** ASAPQuery's quantiles are off by about 2%. Its sums and top-k are exact apart from the window boundary: Prometheus 2.53 includes the sample at t−w.
-- **CPU-s (warm-up + queries):** ASAPQuery 2,717 = 1,684 + 1,033; Prometheus 11,249; VictoriaMetrics 10,817.
-  - The two ClickHouse numbers predate #902: they include the feeder's CPU, and raw ClickHouse was cut off.
+  Base workload 01: 5.4×, 4.4×, 17× and 3.2× in CPU versus Prometheus, VictoriaMetrics, ClickHouse and ClickHouse+MV. Base 02–10 still need collating once their last jobs finish.
+- **Problems found in long:**
+  1. **ASAPQuery failed 22–35% of queries in workloads 04, 06, 08 and 09.** Confirmed from the stats:
+     - **Too late:** the query arrived more than ~15s after its evaluation time, and the circular buffer had already evicted the windows it needed (`retention_slack_ms=21000`).
+     - **Too early:** ingest lag exceeded the send delay, so the windows weren't closed yet.
+     - With store advance between 0 and 15s, 1 of 22,084 queries failed.
+     - The root cause is load: the per-series DDSketch (30s window sliding 1s) updates 30 windows per sample.
+  2. **ClickHouse+MV gave wrong sums (2–36% low) in 9 of 10 long workloads.** It saturates the node, ingest falls 3–6 minutes behind, and its fast on-time queries read incomplete windows.
+  3. **Raw ClickHouse, long 02:** returned empty results (bad run on node6–7).
+  4. **The optimizer's predictions are far off:** for long 04 it predicts 41 ms, 0.19 CPU and 1.0 GiB, against p50 0.6s, ~4.5 cores and 5.5 GiB measured. So its latency SLAs at 100 ms and above never change the plan.
+- **Raw ClickHouse slowness:** its table is `ORDER BY (labels…, ts)`, which can't prune by time, so every query reads all stored rows. A local test with 60M rows confirmed full scans; `ORDER BY ts` reads only the window.
 
-## Tonight's plan (pending launch)
+## One-off runs in flight (long workload, results ~10:30–11:40)
 
-- **Capacity:** 42 nodes = 21 slots, about 8 hours.
-- **Jobs:**
-  - base: 10 workloads × 5 arms;
-  - long: 10 × 5;
-  - x5 probe: workload 01 × 5.
-  - That's 105 jobs, about 145 slot-hours.
-- **Still to do before launch:**
-  - the driver script (longest-first queue, retry once, `compare_arms` per workload with ClickHouse+MV as the reference);
-  - `flow.skip_copy_prometheus_data=true`;
-  - a hardware check of the 42 nodes;
-  - deploying this branch.
-- **Risks:**
-  - ASAPQuery's x5 memory is an estimated 12 GB on 15 GB nodes.
-  - Prometheus and raw ClickHouse may hit the 10× bound on long and x5.
+| Name | Nodes | What |
+|---|---|---|
+| `s862long_w01_ch_tdigest`, `s862long_w01_chmv_tdigest` | node22–23, node26–27 | `quantileTDigest` instead of exact quantiles (`config/.../seed-862-long/workload-01-approx/`) |
+| `s862long_w01_ch_timesort`, `s862long_w01_chmv_timesort` | node28–29, node30–31 | Base table `ORDER BY ts` (`workload-01-timesort/`) |
+| `s862long_w04_asap_sla20`, `s862long_w04_asap_sla10` | node12–13, node18–19 | ASAPQuery plans with 20 ms / 10 ms SLAs: quantile windows 60s / 100s, sliding 1s (`experiment_outputs/sla-trial/`) |
 
 ## Next
 
-1. **Pooled quantiles** (your intent: `quantile by (G)` over 100s). Wait for ASAPQuery #887–#890, the RQE-tree query route. Then:
-   - generate pooled quantile RQEs at grouping G, with the ClickHouse SQL pooled too;
-   - update the exporter tree for the quantiles;
-   - run ASAPQuery with `--frontend rqe`, while Prometheus and VictoriaMetrics keep the `avg by` workaround.
-   - The fallback is ASAPQuery's SQL arm (#899–#901), which needs a planner fix (gauges as SQL tables) and two runs.
-2. **Accelerated backfill:** removes the 20–60 minute warm-up of every run.
-3. **The SQL-only cardinality arm.**
-4. **Held review comments on sketch-bench #226** about the quantile shape, phi and window checks, and splitting the shared stream. They get resolved by the pooled rework.
+1. Finish base 02–10. Then copy back the feeder stats, re-run `collate_batch.py` and `plot_cost_latency.py` for the 10-workload base scatter.
+2. Decide on raw ClickHouse's schema (`ORDER BY ts`?) and ClickHouse+MV's ingest problem from the one-off results. Rerun those arms if needed.
+3. **ASAPQuery's keep-up:** a cheaper per-series quantile plan (the cost model under-prices ingest) and/or more retention slack. Check the SLA trials.
+4. **Driver:** copy feeder stats back, and validate runs (agreement, ingest lag) before marking them done.
+5. **Pooled quantiles:** use the RQE-tree route once ASAPQuery #887–#890 merge. #906 now plans gauges as SQL tables, as a fallback.
+6. Then: accelerated backfill, the SQL-only cardinality arm, and the held #226 review comments.
