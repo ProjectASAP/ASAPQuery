@@ -5,7 +5,7 @@
 //! expression tree (`expr`) also gets each of its leaves an `rqe_configs`
 //! entry, so the engine can answer the tree without parsing PromQL or SQL.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -264,15 +264,39 @@ fn e2e_promql_config(
     Ok(serde_json::from_value(config)?)
 }
 
-/// The SQL controller config of the selected queries: each metric is a
-/// table, its labels the metadata columns. A `records` metric's value fields
-/// are its value columns; a gauge's or counter's is `value`.
+/// The tables the queries read: each name right after a `FROM`.
+// ponytail: token scan, not a SQL parse; enough for sketch-bench's generated
+// SQL, whose FROM names a table or opens a subquery.
+fn sql_tables_read(selected: &[TextQuery]) -> HashSet<String> {
+    let mut tables = HashSet::new();
+    for q in selected {
+        let mut tokens = q.text.split_whitespace();
+        while let Some(token) = tokens.next() {
+            if token.eq_ignore_ascii_case("FROM") {
+                if let Some(table) = tokens.next() {
+                    tables.insert(table.trim_end_matches([',', ';', ')']).to_string());
+                }
+            }
+        }
+    }
+    tables
+}
+
+/// The SQL controller config of the selected queries: each `records` metric
+/// and each other metric the queries read is a table, its labels the
+/// metadata columns. A `records` metric's value fields are its value
+/// columns; a gauge's or counter's is `value`. A metric only PromQL reads is
+/// no table: the planner refuses a table without labels, e.g. `up`.
 fn e2e_sql_config(
     selected: &[TextQuery],
     metrics: &BTreeMap<String, E2eMetric>,
 ) -> anyhow::Result<SQLControllerConfig> {
+    let read = sql_tables_read(selected);
     let mut tables = Vec::new();
     for (name, m) in metrics {
+        if m.kind != RECORDS_METRIC_TYPE && !read.contains(name) {
+            continue;
+        }
         let value_columns = if m.kind == RECORDS_METRIC_TYPE {
             ensure!(
                 !m.values.is_empty(),
@@ -1118,6 +1142,26 @@ mod tests {
             aggregations,
             [(Some("data".to_string()), Some("value".to_string()))]
         );
+    }
+
+    /// A gauge no SQL query reads is no table: as one, a label-less gauge
+    /// (here `up`) would fail the whole plan (`TableWithoutMetadataColumns`).
+    #[test]
+    fn a_gauge_only_promql_reads_is_no_sql_table() {
+        let table = MIXED_TABLE.replace(
+            r#""http": {"type": "records","#,
+            r#""up": {"type": "gauge", "labels": []},
+            "http": {"type": "records","#,
+        );
+        let output = run_in(
+            &table,
+            mixed_plan(1).to_string().as_bytes(),
+            None,
+            QueryLanguage::sql,
+        )
+        .unwrap();
+        let inference = output.to_inference_config(QueryLanguage::sql).unwrap();
+        assert_eq!(inference.query_configs.len(), 2);
     }
 
     /// The PromQL run of the same table skips its SQL queries.
