@@ -8,7 +8,8 @@ drawn hollow: its latency and CPU don't stand for a correct answer.
 Two arrows from LiteOlly's geometric-mean point show its improvement in CPU
 (vertical) and p95 latency (horizontal) over the worst baseline for that
 metric: collate_batch.py's geometric mean of baseline / LiteOlly over
-workloads where both are valid. Arrow lengths are those ratios.
+workloads where both are valid. Arrow lengths are those ratios; labels give
+the ratios against Prometheus and ClickHouse.
 
 An oval encloses each baseline's valid runs (all its runs if none is valid).
 
@@ -64,9 +65,11 @@ def oval(ax, xs, ys, color):
 
 def arrows(ax, rows, improvement, set_name):
     """LiteOlly's improvement over the worst baseline per metric, drawn from
-    LiteOlly's geometric-mean point (over its valid runs, else all)."""
+    LiteOlly's geometric-mean point (over its valid runs, else all) and
+    labelled with its ratios against Prometheus and ClickHouse."""
     names = {key: label for key, label, *_ in SYSTEMS}
     lite = [r for r in rows if r["arm"] == "asap"]
+    leftmost = min(float(r["latency_p95"]) for r in lite)
     lite = [r for r in lite if r["valid"] == "True"] or lite
     lx = statistics.geometric_mean(float(r["latency_p95"]) for r in lite)
     ly = statistics.geometric_mean(float(r["cpu_secs"]) for r in lite)
@@ -76,17 +79,28 @@ def arrows(ax, rows, improvement, set_name):
             ((arm, m[metric]) for (s, arm), m in improvement.items() if s == set_name),
             key=lambda am: am[1],
         )
+
+    def vs(metric, word):
+        return "\n".join(
+            f"{improvement[(set_name, a)][metric]:.1f}x {word} than {names[a]}"
+            for a in ("prom", "ch")
+        )
+
     style = dict(arrowstyle="<->", color=INK, linewidth=2, mutation_scale=22)
     arm, cpu = worst["cpu_secs"]
-    x = lx / 1.5
+    # Left of every LiteOlly point, so the label beside it clears them.
+    x = leftmost / 1.3
     ax.annotate("", (x, ly), xytext=(x, ly * cpu), arrowprops=style, zorder=4)
     ax.text(
-        x * 1.08,
-        ly * cpu**0.75,
-        f"{cpu:.1f}x less CPU\nvs {names[arm]}",
+        x / 1.1,
+        ly * cpu**0.5,
+        vs("cpu_secs", "cheaper"),
         color=INK,
         fontsize=13,
+        rotation=90,
+        ha="right",
         va="center",
+        multialignment="center",
     )
     arm, lat = worst["latency_p95"]
     y = ly / 1.4
@@ -94,16 +108,16 @@ def arrows(ax, rows, improvement, set_name):
     ax.text(
         lx * lat**0.5,
         y / 1.08,
-        f"{lat:.1f}x lower p95 latency vs {names[arm]}",
+        vs("latency_p95", "faster"),
         color=INK,
         fontsize=13,
         ha="center",
         va="top",
     )
     left, right = ax.get_xlim()
-    ax.set_xlim(min(left, lx / 2), right)
+    ax.set_xlim(min(left, x / 2), right)
     bottom, top = ax.get_ylim()
-    ax.set_ylim(min(bottom, ly / 2), top)
+    ax.set_ylim(min(bottom, ly / 2.6), top)
 
 
 def main(csv_path, out_dir):
