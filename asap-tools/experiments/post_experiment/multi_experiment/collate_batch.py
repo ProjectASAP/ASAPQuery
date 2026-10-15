@@ -148,7 +148,7 @@ def rows(batch_dir):
             why = []
             if len(recorded) != len(latencies):
                 why.append(f"{len(recorded) - len(latencies)} failed queries")
-            pooled = set_name.endswith("-pooled")
+            pooled = set_name.endswith(("-pooled", "-dashboard"))
             if arm_name != reference:
                 why += disagreements(
                     arm_name,

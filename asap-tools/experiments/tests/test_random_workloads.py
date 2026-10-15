@@ -146,6 +146,46 @@ class GenerateWorkloadsTest(unittest.TestCase):
         self.assertTrue(sql.endswith("LIMIT 4"))
         self.assertNotIn("label_0", sql)
 
+    def test_dashboard_workloads_follow_their_template(self):
+        for w in workloads.generate_workloads(seed=862, dashboard=True):
+            with self.subTest(workload=w["id"]):
+                qs = w["queries"]
+                self.assertEqual(len(qs), 10)
+                self.assertTrue(w["pooled"])
+                # A sum roll-up chain: one window at every grouping.
+                sums = qs[:3]
+                self.assertEqual(
+                    [tuple(q["grouping"]) for q in sums], list(workloads.GROUPINGS)
+                )
+                self.assertEqual(len({q["lookback_ms"] for q in sums}), 1)
+                # A p50/p90/p99 panel: one grouping and window.
+                panel = qs[3:6]
+                self.assertEqual(
+                    [q["rqes"][0]["phi"] for q in panel],
+                    list(workloads.DASHBOARD_PANEL_PHIS),
+                )
+                self.assertEqual(
+                    len({(tuple(q["grouping"]), q["lookback_ms"]) for q in panel}), 1
+                )
+                # The other quantiles cover the other groupings.
+                self.assertEqual(
+                    {tuple(q["grouping"]) for q in qs[3:8]}, set(workloads.GROUPINGS)
+                )
+                for q in qs:
+                    rqe = q["rqes"][0]
+                    if rqe["capability"] != "sum":
+                        self.assertTrue(rqe["pooled"])
+                    if q["lookback_ms"] == workloads.SECOND_MS:
+                        # PromQL's closed 1 s window holds one more sample than
+                        # ASAPQuery's left-open one: a tenth of a sum.
+                        self.assertNotEqual(rqe["capability"], "sum")
+                        if rqe["capability"] == "quantile":
+                            self.assertIn(
+                                tuple(q["grouping"]),
+                                workloads.DASHBOARD_ONE_SECOND_GROUPINGS,
+                            )
+                    self.assertLessEqual(q["lookback_ms"], 20 * workloads.MINUTE_MS)
+
     def test_manifest_declares_deterministic_feeder_facts(self):
         facts = workloads.generate_workloads(seed=4)[0]["data_facts"]
 

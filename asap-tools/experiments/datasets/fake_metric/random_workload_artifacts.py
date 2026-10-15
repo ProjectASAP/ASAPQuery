@@ -137,8 +137,12 @@ def workload_set(workload):
     """The directory of `workload`'s seed, variant and query style:
     seed-862, seed-862-long, seed-862-x2-pooled."""
     variant = workload.get("variant")
-    pooled = "-pooled" if workload.get("pooled") else ""
-    return f"seed-{workload['seed']}" + (f"-{variant}" if variant else "") + pooled
+    style = (
+        f"-{workload['style']}"
+        if "style" in workload
+        else "-pooled" if workload.get("pooled") else ""
+    )
+    return f"seed-{workload['seed']}" + (f"-{variant}" if variant else "") + style
 
 
 def as_dashboards(groups, dashboards, key):

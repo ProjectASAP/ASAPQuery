@@ -36,11 +36,15 @@ CLICKHOUSE = shutil.which("clickhouse")
 
 
 def all_workloads():
-    return [
-        w
-        for variant in workloads.VARIANTS
-        for w in workloads.generate_workloads(seed=862, variant=variant)
-    ] + workloads.generate_workloads(seed=862, pooled=True)
+    return (
+        [
+            w
+            for variant in workloads.VARIANTS
+            for w in workloads.generate_workloads(seed=862, variant=variant)
+        ]
+        + workloads.generate_workloads(seed=862, pooled=True)
+        + workloads.generate_workloads(seed=862, dashboard=True)
+    )
 
 
 def pilot_dir_of(workload):
