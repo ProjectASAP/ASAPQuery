@@ -57,9 +57,32 @@ class RqeExprsMountsTest(unittest.TestCase):
                 },
             ]
         )
+        open(os.path.join(self.tmp.name, "rqe_exprs.json"), "w").close()
         self.assertIn(
             f"{self.tmp.name}/rqe_exprs.json:/app/rqe_exprs.json:ro", self.render()
         )
+
+    def test_missing_side_file_of_an_rqe_server_is_an_error(self):
+        self.write_config(
+            [
+                {
+                    "name": "sketchdb",
+                    "url": "http://s",
+                    "protocol": "rqe",
+                    "rqe_exprs_file": "rqe_exprs.json",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(FileNotFoundError, "rqe server 'sketchdb'"):
+            gen.rqe_exprs_mounts(self.config_file)
+
+    def test_no_mount_without_servers(self):
+        with open(self.config_file, "w") as f:
+            yaml.safe_dump({"query_groups": []}, f)
+        self.assertEqual(gen.rqe_exprs_mounts(self.config_file), [])
+
+    def test_no_mount_without_a_config_file(self):
+        self.assertEqual(gen.rqe_exprs_mounts(self.config_file), [])
 
     def test_no_mount_without_rqe_servers(self):
         self.write_config([{"name": "sketchdb", "url": "http://s"}])
