@@ -138,9 +138,10 @@ class QueryClientService(BaseService):
         if profile_prometheus_time is not None:
             gen_compose_cmd += f" --profile-prometheus-time {profile_prometheus_time}"
 
-        cmd = f"mkdir -p {output_dir}; {gen_compose_cmd}; docker compose -f {remote_compose_file} up --no-build -d"
+        # `&&`: a failed step (e.g. compose generation) stops the start.
+        cmd = f"mkdir -p {output_dir} && {gen_compose_cmd} && docker compose -f {remote_compose_file} up --no-build -d"
         try:
-            utils.run_cmd(f"cd {prometheus_client_dir}; {cmd}", popen=False)
+            utils.run_cmd(f"cd {prometheus_client_dir} && {cmd}", popen=False)
         except Exception as e:
             print(f"Failed to start PrometheusClient container: {e}")
             raise

@@ -175,7 +175,7 @@ def pilot_configs(workload, pilot_dir, dashboards=1):
     variant = f"-dash{dashboards}" if dashboards > 1 else ""
     out_dir = Path(CONFIG_DIR) / workload_set(workload) / (workload["id"] + variant)
 
-    e2e, _ = build_config(
+    e2e, _, _ = build_config(
         str(table),
         seed,
         starting_delay,

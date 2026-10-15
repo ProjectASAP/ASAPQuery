@@ -14,8 +14,15 @@ use std::time::Instant;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
-use crate::drivers::query::adapters::{create_http_adapter, AdapterConfig, HttpProtocolAdapter};
-use crate::engines::{QueryExecutionError, SimpleEngine};
+use crate::drivers::query::adapters::{
+    create_http_adapter, AdapterConfig, HttpProtocolAdapter, PrometheusResponse,
+};
+use crate::engines::{QueryExecutionError, RqeQueryError, SimpleEngine};
+use crate::utils::http::convert_query_result_to_prometheus;
+use asap_types::rqe_expr::RqeExpr;
+
+/// Answers an RQE expression tree, whatever the adapter's query language.
+pub const RQE_QUERY_ENDPOINT: &str = "/api/v1/rqe_query";
 use crate::query_tracker::QueryTracker;
 use crate::stores::Store;
 
@@ -106,6 +113,7 @@ impl HttpServer {
             .route(range_query_endpoint, post(handle_range_query_post))
             .route(runtime_info_path, get(handle_runtime_info))
             .route(runtime_info_path, post(handle_runtime_info))
+            .route(RQE_QUERY_ENDPOINT, post(handle_rqe_query))
             .route("/metrics", get(handle_metrics))
             .with_state(app_state);
 
@@ -143,6 +151,7 @@ impl HttpServer {
             .route(range_query_endpoint, get(handle_range_query))
             .route(range_query_endpoint, post(handle_range_query_post))
             .route(runtime_info_path, get(handle_runtime_info))
+            .route(RQE_QUERY_ENDPOINT, post(handle_rqe_query))
             .with_state(app_state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -443,6 +452,75 @@ async fn handle_instant_query_post(
     );
 
     result
+}
+
+/// Body of an RQE query: the tree and its evaluation time in unix seconds.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RqeQueryRequest {
+    expr: RqeExpr,
+    time: f64,
+}
+
+/// A Prometheus-format error response with an explicit HTTP status.
+fn prometheus_error(status: StatusCode, error_type: &str, error: &str) -> Response {
+    (status, Json(PrometheusResponse::error(error_type, error))).into_response()
+}
+
+/// `POST /api/v1/rqe_query`: answers with Prometheus instant-vector JSON. Never
+/// forwards to a fallback backend: an invalid request is a 400, a failed
+/// execution a 500, and a window without data yet an empty result. With
+/// request handling disabled it answers 500 `internal`, as the instant route
+/// does when it has no fallback either.
+async fn handle_rqe_query(State(state): State<AppState>, body: Bytes) -> Response {
+    if !state.config.handle_http_requests {
+        debug!("HTTP request handling is disabled; RQE queries have no fallback");
+        return prometheus_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "RQE query handling is disabled",
+        );
+    }
+    let start_time = Instant::now();
+    let request: RqeQueryRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return prometheus_error(
+                StatusCode::BAD_REQUEST,
+                "bad_data",
+                &format!("invalid RQE query body: {error}"),
+            );
+        }
+    };
+    match state
+        .query_engine
+        .handle_rqe_query(&request.expr, request.time)
+    {
+        Ok((labels, result)) => {
+            info!(
+                "rqe_query time={} destination=asap total_latency_ms={:.2}",
+                request.time,
+                start_time.elapsed().as_secs_f64() * 1000.0
+            );
+            match convert_query_result_to_prometheus(&result, &labels) {
+                Ok(data) => Json(PrometheusResponse::success(data)).into_response(),
+                Err(error) => {
+                    prometheus_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", error)
+                }
+            }
+        }
+        Err(RqeQueryError::BadRequest(error)) => {
+            prometheus_error(StatusCode::BAD_REQUEST, "bad_data", &error)
+        }
+        Err(RqeQueryError::Execution(error)) => {
+            warn!(error = %error, "RQE query execution failed");
+            prometheus_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &error.to_string(),
+            )
+        }
+    }
 }
 
 async fn handle_runtime_info(

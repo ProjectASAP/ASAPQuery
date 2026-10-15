@@ -8,8 +8,9 @@ import os
 import re
 import shutil
 import copy
+import json
 import yaml
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import hydra.utils
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -19,6 +20,70 @@ from experiment_utils.providers.factory import create_provider
 
 # Keys the planner's `ControllerOptions` accepts.
 CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
+
+# `query_engine.frontend`: how the querier sends queries to ASAPQuery.
+QUERY_FRONTEND_PROMQL = "promql"
+QUERY_FRONTEND_RQE = "rqe"
+# The side file's name next to the client configs, which the querier resolves
+# relative to its config.
+RQE_EXPRS_FILENAME = "rqe_exprs.json"
+# inference_config.yaml sections: per-query configs and per-RQE-leaf configs
+# (an `--expr-only` plan has only the latter, keyed by leaf id).
+INFERENCE_QUERIES_KEY = "queries"
+INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
+
+
+def rqe_exprs_file_for_frontend(query_engine_cfg: Any) -> Optional[str]:
+    """The side file (query text -> RQE expression tree) the sketchdb server's
+    querier reads under `query_engine.frontend=rqe`; None under promql."""
+    frontend = query_engine_cfg.frontend
+    if frontend == QUERY_FRONTEND_PROMQL:
+        return None
+    if frontend != QUERY_FRONTEND_RQE:
+        raise ValueError(
+            f"query_engine.frontend must be {QUERY_FRONTEND_PROMQL!r} or "
+            f"{QUERY_FRONTEND_RQE!r}, got {frontend!r}"
+        )
+    path = query_engine_cfg.get("rqe_exprs_file")
+    if not path:
+        raise ValueError(
+            "query_engine.frontend=rqe needs query_engine.rqe_exprs_file "
+            "(written by sketch_bench_e2e_configs.py)"
+        )
+    return str(path)
+
+
+def require_promql_frontend(query_engine_cfg: Any, script_name: str) -> None:
+    """Fail unless `query_engine.frontend` is promql, for runners that only
+    send PromQL: an rqe run would otherwise measure the PromQL frontend."""
+    frontend = query_engine_cfg.frontend
+    if frontend != QUERY_FRONTEND_PROMQL:
+        raise ValueError(
+            f"{script_name} supports only query_engine.frontend="
+            f"{QUERY_FRONTEND_PROMQL!r}, got {frontend!r}; run "
+            "experiment_run_e2e.py for the rqe frontend"
+        )
+
+
+def _copy_rqe_exprs(
+    rqe_exprs_file: str, query_groups: List[Dict[str, Any]], output_dir: str
+) -> None:
+    """Copy the side file next to the client configs after checking it has a
+    tree for every query: the rqe querier has no PromQL/SQL fallback."""
+    with open(rqe_exprs_file) as f:
+        exprs = json.load(f)
+    if not isinstance(exprs, dict):
+        raise ValueError(
+            f"{rqe_exprs_file}: expected a JSON object of query text -> expr"
+        )
+    missing = [q for g in query_groups for q in g["queries"] if q not in exprs]
+    if missing:
+        raise ValueError(
+            f"{rqe_exprs_file} has no RQE expression for {missing}; drop these "
+            "queries for query_engine.frontend=rqe (sketch_bench_e2e_configs.py "
+            "--frontend rqe does)"
+        )
+    shutil.copyfile(rqe_exprs_file, os.path.join(output_dir, RQE_EXPRS_FILENAME))
 
 
 def validate_basic_config(
@@ -88,27 +153,58 @@ def _is_clickhouse_experiment(experiment_params: DictConfig) -> bool:
     return "dataset" in experiment_params
 
 
-def _resolve_sql_file(sql_file: Any, mode: str, idx: int, group_name: str) -> str:
-    """Resolve the sql_file path for one query group and mode.
+def _mode_sql_files(query_groups: Any, mode: str) -> List[Tuple[int, Any, str]]:
+    """(index, group, sql_file path) of each query group `mode` runs.
 
-    ``sql_file`` is a dict keyed by mode name (e.g.
-    baseline/baseline_sketch/baseline_mv/...). sketchdb always resolves
-    through baseline's entry — ASAP's SQL-mode query engine must see the
-    exact same SQL text as baseline to pattern-match it against available
-    sketches, so it never gets its own dict entry.
+    ``sql_file`` is a dict keyed by mode name (e.g. baseline/baseline_mv/
+    sketchdb). Every mode but sketchdb needs an entry in every group.
+    sketchdb skips the groups without one (e.g. queries ASAPQuery has no SQL
+    for), but only trailing groups: results are matched across modes by
+    global query index, so sketchdb's queries must be a prefix of baseline's,
+    and each file it runs must hold as many statements as baseline's.
     """
-    lookup_mode = (
-        constants.BASELINE_EXPERIMENT_NAME
-        if mode == constants.SKETCHDB_EXPERIMENT_NAME
-        else mode
-    )
-    path = sql_file.get(lookup_mode)
-    if not path:
-        raise ValueError(
-            f"Query group {idx} ({group_name!r}) missing sql_file entry for "
-            f"mode {lookup_mode!r}"
-        )
-    return path
+    runs = []
+    for idx, group in enumerate(query_groups):
+        name = group.get("name", str(idx))
+        sql_file = group.get("sql_file")
+        if not sql_file:
+            raise ValueError(f"Query group {idx} ({name!r}) missing 'sql_file'")
+        if not hasattr(sql_file, "get"):
+            raise ValueError(
+                f"Query group {idx} ({name!r}) sql_file must map mode name to "
+                f"SQL file, e.g. {{baseline: {sql_file}}}; got {sql_file!r}"
+            )
+        path = sql_file.get(mode)
+        if path:
+            if len(runs) != idx:
+                raise ValueError(
+                    f"Query group {idx} ({name!r}) has a sql_file for mode "
+                    f"{mode!r} after a group without one; a mode may skip "
+                    "only trailing groups, so its query indices match baseline's"
+                )
+            baseline_path = sql_file.get(constants.BASELINE_EXPERIMENT_NAME)
+            if (
+                mode != constants.BASELINE_EXPERIMENT_NAME
+                and baseline_path
+                and os.path.exists(path)
+                and os.path.exists(baseline_path)
+                and len(_load_sql_queries(path))
+                != len(_load_sql_queries(baseline_path))
+            ):
+                raise ValueError(
+                    f"Query group {idx} ({name!r}): mode {mode!r}'s {path!r} and "
+                    f"baseline's {baseline_path!r} hold different numbers of "
+                    "statements, so their query indices would not match"
+                )
+            runs.append((idx, group, path))
+        elif mode != constants.SKETCHDB_EXPERIMENT_NAME:
+            raise ValueError(
+                f"Query group {idx} ({name!r}) missing sql_file entry for "
+                f"mode {mode!r}"
+            )
+    if not runs:
+        raise ValueError(f"No query group has a sql_file entry for mode {mode!r}")
+    return runs
 
 
 def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> None:
@@ -174,7 +270,6 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
             "At least one mode must be defined in experiment_params.experiment."
         )
     experiment_modes = {m["mode"] for m in experiment_params.experiment}
-    experiment_modes.discard(constants.SKETCHDB_EXPERIMENT_NAME)
 
     for i, group in enumerate(experiment_params.query_groups):
         sql_file = group.get("sql_file")
@@ -183,9 +278,8 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
                 f"Query group {i} missing 'sql_file'. "
                 "Generate SQL files with benchmark/generate_queries.py first."
             )
-        group_name = group.get("name", str(i))
-        for mode in experiment_modes:
-            path = _resolve_sql_file(sql_file, mode, i, group_name)
+    for mode in sorted(experiment_modes):
+        for i, _, path in _mode_sql_files(experiment_params.query_groups, mode):
             if not os.path.exists(path):
                 raise ValueError(
                     f"Query group {i} sql_file for mode {mode!r} "
@@ -370,8 +464,13 @@ def generate_controller_client_configs(
     aggregate_cleanup: DictConfig = None,
     sketch_parameters: DictConfig = None,
     windowing: DictConfig = None,
+    rqe_exprs_file: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
-    """Generate controller client configurations from experiment parameters."""
+    """Generate controller client configurations from experiment parameters.
+
+    With `rqe_exprs_file` (see `rqe_exprs_file_for_frontend`), the sketchdb
+    mode's server uses the rqe protocol and a copy of that side file.
+    """
     # experiment_params is already loaded by Hydra
     experiment_config = OmegaConf.to_container(experiment_params, resolve=True)
     assert experiment_config is not None and isinstance(experiment_config, dict)
@@ -413,6 +512,16 @@ def generate_controller_client_configs(
         "existing_streaming_config",
     }
 
+    if rqe_exprs_file is not None:
+        if not any(
+            m["mode"] == constants.SKETCHDB_EXPERIMENT_NAME for m in experiment_modes
+        ):
+            raise ValueError(
+                "query_engine.frontend=rqe needs a "
+                f"{constants.SKETCHDB_EXPERIMENT_NAME!r} experiment mode"
+            )
+        _copy_rqe_exprs(rqe_exprs_file, experiment_config["query_groups"], output_dir)
+
     for experiment_mode in experiment_modes:
         full_config = copy.deepcopy(experiment_config)
         del full_config["experiment"]
@@ -428,6 +537,23 @@ def generate_controller_client_configs(
             and experiment_mode["query_prometheus_too"]
         ):
             full_config["servers"] = servers_config
+
+        if (
+            rqe_exprs_file is not None
+            and experiment_mode["mode"] == constants.SKETCHDB_EXPERIMENT_NAME
+        ):
+            full_config["servers"] = [
+                (
+                    {
+                        **server,
+                        "protocol": constants.RQE_PROTOCOL,
+                        "rqe_exprs_file": RQE_EXPRS_FILENAME,
+                    }
+                    if server["name"] == experiment_mode["server"]
+                    else server
+                )
+                for server in full_config["servers"]
+            ]
 
         # Full config — used by prometheus_client (needs "servers", etc.)
         with open(
@@ -603,6 +729,22 @@ def _is_planned(query, planned):
     return re.fullmatch(r"[\s()+\-*/0-9.]*", query) is not None
 
 
+# A quoted time literal the query client renders, e.g.
+# '{{ end_datetime[:17] }}{{ "%02d" | format(end_time % 60 // 60 * 60) }}'.
+_SQL_TEMPLATED_TIME_LITERAL = re.compile(r"'\{\{[^']*\}\}[^']*'")
+
+
+def _comparable_sql(sql):
+    """`sql` without comment lines or a trailing ';', with each templated time
+    literal as NOW(): a saved plan holds the workload's SQL on NOW(), the
+    client config the same SQL on the literal the client fills in."""
+    # ponytail: textual; any templated literal reads as NOW(). The engine
+    # matches queries to the plan structurally, this only catches a wrong plan.
+    lines = [line for line in sql.splitlines() if not line.lstrip().startswith("--")]
+    sql = _SQL_TEMPLATED_TIME_LITERAL.sub("NOW()", "\n".join(lines))
+    return sql.strip().rstrip(";").strip()
+
+
 def _validate_sql_inference_config(inference_config):
     """Raise a clear error unless `inference_config` has the SQL schema shape."""
     if not isinstance(inference_config, dict):
@@ -627,15 +769,58 @@ def _validate_sql_inference_config(inference_config):
             )
 
 
+def rqe_leaf_ids(expr):
+    """Ids of the `rqe` leaves of an RQE expression tree, e.g.
+    {"agg": "sum", "by": [], "of": {"rqe": {"id": "a", ...}}} -> ["a"]."""
+    if not isinstance(expr, dict):
+        raise ValueError(f"not an RQE expression node: {expr!r}")
+    if "rqe" in expr:
+        return [expr["rqe"]["id"]]
+    if "of" in expr:
+        return rqe_leaf_ids(expr["of"])
+    if "lhs" in expr and "rhs" in expr:
+        return rqe_leaf_ids(expr["lhs"]) + rqe_leaf_ids(expr["rhs"])
+    if "scalar" in expr:
+        return []
+    raise ValueError(f"not an RQE expression node: {expr!r}")
+
+
+def _check_rqe_leaves_planned(inference_config, rqe_exprs_file):
+    """Raise unless every leaf of every tree in the side file has an
+    `rqe_configs` entry: ASAPQuery answers a leaf only from its plan."""
+    with open(rqe_exprs_file) as f:
+        exprs = json.load(f)
+    rqe_configs = (
+        inference_config.get(INFERENCE_RQE_CONFIGS_KEY)
+        if isinstance(inference_config, dict)
+        else None
+    ) or {}
+    missing = sorted(
+        {i for e in exprs.values() for i in rqe_leaf_ids(e) if i not in rqe_configs}
+    )
+    if missing:
+        raise ValueError(
+            "controller.prebuilt_output_dir inference_config.yaml has no "
+            f"{INFERENCE_RQE_CONFIGS_KEY} entry for these RQE leaves of "
+            f"{rqe_exprs_file}: {missing}; plan with "
+            "`asap-planner --planner saved --expr-only`"
+        )
+
+
 def copy_prebuilt_controller_output(
     src,
     dest,
     controller_input_config,
     scrape_interval_ms,
     query_language=QUERY_LANGUAGE_PROMQL,
+    rqe_exprs_file=None,
 ):
     """Replaces `dest` with the planner configs in `src`, after checking they
-    plan every query of `controller_input_config` at this scrape interval."""
+    plan every query of `controller_input_config` at this scrape interval.
+
+    With `rqe_exprs_file` (query_engine.frontend=rqe) the querier sends those
+    trees instead of the queries' text, so every tree leaf must be planned
+    under `rqe_configs` instead."""
     check_prebuilt_controller_output(src)
     src_real, dest_real = os.path.realpath(src), os.path.realpath(dest)
     if os.path.commonpath([src_real, dest_real]) in (src_real, dest_real):
@@ -647,20 +832,31 @@ def copy_prebuilt_controller_output(
         inference_config = yaml.safe_load(f)
     if query_language == QUERY_LANGUAGE_SQL:
         _validate_sql_inference_config(inference_config)
-    if not isinstance(inference_config, dict) or not isinstance(
-        inference_config.get("queries"), list
-    ):
-        raise ValueError(
-            "controller.prebuilt_output_dir inference_config.yaml has invalid queries"
-        )
-    planned = {q["query"] for q in inference_config["queries"]}
-    with open(controller_input_config) as f:
-        groups = yaml.safe_load(f)["query_groups"]
-    unplanned = [q for g in groups for q in g["queries"] if not _is_planned(q, planned)]
-    if unplanned:
-        raise ValueError(
-            f"controller.prebuilt_output_dir doesn't plan these queries: {unplanned}"
-        )
+    if rqe_exprs_file is not None:
+        _check_rqe_leaves_planned(inference_config, rqe_exprs_file)
+    else:
+        if not isinstance(inference_config, dict) or not isinstance(
+            inference_config.get("queries"), list
+        ):
+            raise ValueError(
+                "controller.prebuilt_output_dir inference_config.yaml has invalid "
+                "queries"
+            )
+        comparable = _comparable_sql if query_language == QUERY_LANGUAGE_SQL else str
+        planned = {comparable(q["query"]) for q in inference_config["queries"]}
+        with open(controller_input_config) as f:
+            groups = yaml.safe_load(f)["query_groups"]
+        unplanned = [
+            q
+            for g in groups
+            for q in g["queries"]
+            if not _is_planned(comparable(q), planned)
+        ]
+        if unplanned:
+            raise ValueError(
+                "controller.prebuilt_output_dir doesn't plan these queries: "
+                f"{unplanned}"
+            )
     with open(os.path.join(src, "streaming_config.yaml")) as f:
         aggregations = yaml.safe_load(f)["aggregations"]
     bad = [
@@ -941,18 +1137,10 @@ def generate_clickhouse_client_configs(
     modes = list(mode_server_urls.keys())
     for mode, url in mode_server_urls.items():
         # Each mode may target a different sql_file (e.g. baseline_mv queries a
-        # materialized view, baseline_sketch swaps in a sketch function) — see
-        # _resolve_sql_file for the sketchdb-falls-back-to-baseline rule.
+        # materialized view) and sketchdb may skip trailing groups — see
+        # _mode_sql_files.
         built_groups = []
-        for idx, group in enumerate(query_groups_list):
-            sql_file = group.get("sql_file")
-            if not sql_file:
-                name = group.get("name", str(idx))
-                raise ValueError(f"Query group {idx!r} ({name!r}) missing 'sql_file'")
-            sql_file = _resolve_sql_file(
-                sql_file, mode, idx, group.get("name", str(idx))
-            )
-
+        for idx, group, sql_file in _mode_sql_files(query_groups_list, mode):
             queries = _load_sql_queries(sql_file)
             if not queries:
                 raise ValueError(f"No SQL statements found in {sql_file!r}")
@@ -1067,7 +1255,10 @@ def generate_sql_planner_input(
         groups_list = list(query_groups)
 
     planner_query_groups = []
-    for idx, group in enumerate(groups_list):
+    # The planner plans the SQL text the engine receives, i.e. sketchdb's.
+    for idx, group, sql_file in _mode_sql_files(
+        groups_list, constants.SKETCHDB_EXPERIMENT_NAME
+    ):
         ctrl_opts = dict(group.get("controller_options") or {})
         # Dropping an unknown key here would hide it from the planner's strict parse.
         unknown = set(ctrl_opts) - CONTROLLER_OPTION_KEYS
@@ -1077,16 +1268,6 @@ def generate_sql_planner_input(
                 f"{sorted(unknown)}; allowed: {sorted(CONTROLLER_OPTION_KEYS)}"
             )
 
-        sql_file = group.get("sql_file")
-        if not sql_file:
-            raise ValueError(f"query_groups[{idx}] missing 'sql_file'")
-        # sketchdb always plans against baseline's SQL text (see _resolve_sql_file).
-        sql_file = _resolve_sql_file(
-            sql_file,
-            constants.SKETCHDB_EXPERIMENT_NAME,
-            idx,
-            group.get("name", str(idx)),
-        )
         queries = _load_sql_queries(sql_file)
         if not queries:
             raise ValueError(f"No SQL statements found in {sql_file!r}")

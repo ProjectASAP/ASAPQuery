@@ -16,7 +16,7 @@ class ControllerOptionKeysTest(unittest.TestCase):
         # planner's strict parse.
         groups = [
             {
-                "sql_file": "unused.sql",
+                "sql_file": {"sketchdb": "unused.sql"},
                 "repetition_delay_ms": 60000,
                 "controller_options": {"accuracy_sla": 0.99, "latency_sla": 1},
             }
@@ -45,7 +45,7 @@ class LatencySlaMsTest(unittest.TestCase):
                 f.write("SELECT 1;")
             groups = [
                 {
-                    "sql_file": {"baseline": sql_path},
+                    "sql_file": {"sketchdb": sql_path},
                     "repetition_delay_ms": 60000,
                     "controller_options": controller_options,
                 }
@@ -97,6 +97,41 @@ class LatencySlaMsTest(unittest.TestCase):
     def test_null_latency_sla_ms_means_no_limit(self):
         self.assertIsNone(
             self._planner_latency({"accuracy_sla": 0.99, "latency_sla_ms": None})
+        )
+
+
+class PlannedSqlTest(unittest.TestCase):
+    def test_plans_sketchdb_sql_not_baseline_sql(self):
+        # The engine receives sketchdb's SQL, so that is what must be planned.
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = {}
+            for mode in ("baseline", "sketchdb"):
+                paths[mode] = os.path.join(tmp, f"{mode}.sql")
+                with open(paths[mode], "w") as f:
+                    f.write(f"SELECT '{mode}';")
+            groups = [
+                {"sql_file": paths, "repetition_delay_ms": 60000},
+                # No sketchdb SQL: not planned.
+                {"sql_file": {"baseline": paths["baseline"]}},
+            ]
+            dataset_cfg = OmegaConf.create(
+                {
+                    "name": "t",
+                    "precompute": {
+                        "timestamp_col": "ts",
+                        "value_col": "v",
+                        "label_cols": ["job"],
+                    },
+                }
+            )
+            planner_input = yaml.safe_load(
+                generate_sql_planner_input(
+                    groups, dataset_cfg, cleanup_policy="circular_buffer"
+                )
+            )
+        self.assertEqual(
+            [g["queries"] for g in planner_input["query_groups"]],
+            [["SELECT 'sketchdb'"]],
         )
 
 

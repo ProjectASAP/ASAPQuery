@@ -36,6 +36,7 @@ def main(cfg: DictConfig):
     config.validate_config(cfg)
     # Validate experiment configuration (queries not required for ingest path experiments)
     config.validate_experiment_config(cfg.experiment_params, require_queries=False)
+    config.require_promql_frontend(cfg.query_engine, "experiment_only_ingest_path.py")
 
     # Check that experiment_duration is specified
     if not hasattr(cfg.experiment_params, "experiment_duration"):

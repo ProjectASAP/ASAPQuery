@@ -165,6 +165,32 @@ class SqlFidelityTest(unittest.TestCase):
 
         self.assertAlmostEqual(scores["mape"][GROUPED_QUERY], 20.0)
 
+    def test_only_the_estimate_modes_queries_are_scored(self):
+        # sketchdb may skip trailing query groups; baseline ran them all.
+        exact = _sql_results("clickhouse", ["api\ta:1\t10\n"])
+        estimate = _sql_results("asap", ["api\ta:1\t11\n"])
+
+        scores = get_timeseries_similarity_scores(
+            {0: exact, 1: exact},
+            {0: estimate},
+            [GROUPED_QUERY, "SELECT 'skipped'"],
+            [mape],
+            verbose=False,
+        )
+
+        self.assertEqual(scores["mape"], {GROUPED_QUERY: 10.0})
+
+    def test_a_query_missing_among_the_estimate_modes_fails(self):
+        exact = _sql_results("clickhouse", ["api\ta:1\t10\n"])
+        with self.assertRaises(KeyError):
+            get_timeseries_similarity_scores(
+                {0: exact, 1: exact},
+                {1: exact},
+                [GROUPED_QUERY, GROUPED_QUERY + " "],
+                [mape],
+                verbose=False,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

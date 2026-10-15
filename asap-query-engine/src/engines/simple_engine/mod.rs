@@ -1,12 +1,14 @@
 mod elastic;
 mod promql;
+mod rqe;
 mod sql;
 
 use promql::METRIC_NAME_LABEL;
+pub use rqe::RqeQueryError;
 
 use crate::data_model::{
-    AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
-    StreamingConfig,
+    AggregationIdInfo, AggregationReference, InferenceConfig, KeyByLabelValues, QueryBounds,
+    QueryConfig, QueryLanguage, StreamingConfig,
 };
 use crate::engines::query_plan::{
     NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode, QueryPlanRuntime,
@@ -689,6 +691,47 @@ impl SimpleEngine {
             do_merge,
             window_type,
         ))
+    }
+
+    /// Builds a `QueryExecutionContext` from already-resolved plain values:
+    /// plans the store reads and derives the grouping/aggregated labels from
+    /// the aggregation configs. Shared by the SQL and RQE context builders.
+    #[allow(clippy::too_many_arguments)]
+    fn build_execution_context_tail(
+        &self,
+        metric: &str,
+        timestamps: &QueryTimestamps,
+        metadata: QueryMetadata,
+        agg_info: AggregationIdInfo,
+        spatial_filter: String,
+        query_time: u64,
+    ) -> Result<QueryExecutionContext, String> {
+        let (query_plan, do_merge, value_window_type) =
+            self.create_store_query_plan(metric, timestamps, &agg_info)?;
+
+        let sc = self.streaming_config.read().unwrap().clone();
+        let grouping_labels = sc
+            .get_aggregation_config(agg_info.aggregation_id_for_value)
+            .map(|config| config.grouping_labels.clone())
+            .unwrap_or_else(|| metadata.query_output_labels.clone());
+
+        let aggregated_labels = sc
+            .get_aggregation_config(agg_info.aggregation_id_for_key)
+            .map(|config| config.aggregated_labels.clone())
+            .unwrap_or_else(KeyByLabelNames::empty);
+
+        Ok(QueryExecutionContext {
+            metric: metric.to_string(),
+            metadata,
+            store_plan: query_plan,
+            agg_info,
+            value_window_type,
+            do_merge,
+            spatial_filter,
+            query_time,
+            grouping_labels,
+            aggregated_labels,
+        })
     }
 
     /// The bucket-map grid width for scanning an aggregation's stored
@@ -1771,12 +1814,12 @@ impl SimpleEngine {
         stats.into_iter().next()
     }
 
+    /// Resolves the key and value aggregations a query reads. With two
+    /// aggregations, the set/delta-set one supplies keys and the other values.
     fn get_aggregation_id_info(
         &self,
-        query_config: &QueryConfig,
+        query_config_aggregations: &[AggregationReference],
     ) -> Result<AggregationIdInfo, String> {
-        let query_config_aggregations = &query_config.aggregations;
-
         if query_config_aggregations.is_empty() {
             return Err("Query config has no aggregations defined".to_string());
         }
@@ -5180,6 +5223,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(
@@ -5438,6 +5482,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -5586,6 +5631,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -5668,6 +5714,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -5792,6 +5839,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                     .add_aggregation(AggregationReference::new(2, None)),
             ],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,

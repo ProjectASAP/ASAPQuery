@@ -96,6 +96,7 @@ fn engine_no_query_configs(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![], // intentionally empty — forces capability matching
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(
@@ -143,6 +144,7 @@ fn engine_with_query_config(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![query_config],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(

@@ -112,6 +112,15 @@ def get_timeseries_similarity_scores(
     similarity_functions,
     verbose: bool,
 ):
+    # The estimate mode may run only the first queries (sketchdb skips
+    # trailing query groups it has no SQL for); a gap among them still fails
+    # on the lookup below.
+    if len(estimate_results) < len(queries):
+        print(
+            f"Scoring the first {len(estimate_results)} of {len(queries)} "
+            "queries: the estimate mode ran no others"
+        )
+        queries = queries[: len(estimate_results)]
     similarity_scores = {
         f.__name__: {q: 0 for q in queries} for f in similarity_functions
     }

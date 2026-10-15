@@ -128,6 +128,7 @@ pub fn create_engine_single_pop_with_aggregated(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![query_config],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(
@@ -258,6 +259,7 @@ pub fn create_engine_dual_input(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![query_config],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(
@@ -374,6 +376,7 @@ pub fn create_engine_two_metrics(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![query_config_a, query_config_b],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(
@@ -482,6 +485,7 @@ pub fn create_engine_three_metrics(
                 .add_aggregation(AggregationReference::new(3, None)),
         ],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(
@@ -556,6 +560,7 @@ pub fn create_engine_multi_timestamp(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![query_config],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(
@@ -689,6 +694,7 @@ pub fn create_engine_multi_timestamp_with_window(
         schema: SchemaConfig::PromQL(promql_schema),
         query_configs: vec![query_config],
         cleanup_policy: CleanupPolicy::NoCleanup,
+        rqe_configs: Default::default(),
     };
 
     SimpleEngine::new(

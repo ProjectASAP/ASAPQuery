@@ -391,6 +391,7 @@ mod tests {
             query_configs: vec![QueryConfig::new(query.to_string())
                 .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -492,6 +493,7 @@ mod tests {
                 .add_aggregation(AggregationReference::new(1, None))
                 .add_aggregation(AggregationReference::new(2, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -698,6 +700,7 @@ mod tests {
             schema: SchemaConfig::PromQL(promql_schema),
             query_configs: vec![query_config],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
 
         SimpleEngine::new(
@@ -814,6 +817,7 @@ mod tests {
                 .add_aggregation(AggregationReference::new(1, None))
                 .add_aggregation(AggregationReference::new(2, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,
@@ -922,6 +926,7 @@ mod tests {
                 .add_aggregation(AggregationReference::new(1, None))
                 .add_aggregation(AggregationReference::new(2, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
+            rqe_configs: Default::default(),
         };
         let engine = SimpleEngine::new(
             store,

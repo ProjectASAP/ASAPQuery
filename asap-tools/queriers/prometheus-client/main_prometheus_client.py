@@ -1,7 +1,6 @@
 import os
 import yaml
 import time
-import requests
 import argparse
 import datetime
 import logging
@@ -22,14 +21,16 @@ from type_aliases import (
 import threading
 import subprocess
 import concurrent.futures
-from requests.adapters import HTTPAdapter
+from requests.adapters import DEFAULT_POOLSIZE, HTTPAdapter
 from urllib3.util.retry import Retry
 
 from classes.config import Config
 from classes.QueryLatencyExporter import QueryLatencyExporter
 from classes.query_client import QueryClient
+from classes.prometheus_query_client import fetch_runtime_info
 from classes.query_client_factory import QueryClientFactory
 from classes.query_template import QueryTemplate
+from classes.rqe_query_client import RQE_PROTOCOL, resolve_rqe_exprs_file
 from classes.query_time import (
     aligned_eval_time,
     first_aligned_eval_time,
@@ -224,6 +225,7 @@ def execute_single_query(
         response = server_object.execute_query(
             query=rendered_query,
             query_time=query_unix_time,
+            config_query=query,
         )
         query_end_time = time.time()
 
@@ -489,6 +491,23 @@ def handle_query_group(
     return result
 
 
+# inference_config sections: per-query configs, and per-RQE-leaf configs
+# (an `--expr-only` plan has only the latter).
+INFERENCE_QUERIES_KEY = "queries"
+INFERENCE_RQE_CONFIGS_KEY = "rqe_configs"
+
+
+def required_aggregation_ids(query_engine_config: QueryEngineConfig) -> Set[int]:
+    """Aggregation ids read by any planned query or RQE leaf."""
+    configs = list(query_engine_config.get(INFERENCE_QUERIES_KEY) or [])
+    configs += (query_engine_config.get(INFERENCE_RQE_CONFIGS_KEY) or {}).values()
+    return {
+        int(aggregation["aggregation_id"])
+        for config in configs
+        for aggregation in config["aggregations"]
+    }
+
+
 def get_query_start_times(
     server_url: str, query_engine_config: QueryEngineConfig
 ) -> QueryStartTimes:
@@ -496,29 +515,15 @@ def get_query_start_times(
     query_aggregation_id_map = {}
     query_start_time_map = {}
 
-    required_aggregation_ids: Set[int] = set()
-    for query_yaml in query_engine_config["queries"]:
-        # add all aggregation IDs from the query YAML to the required_aggregation_ids set
-        required_aggregation_ids.update(
-            int(aggregation["aggregation_id"])
-            for aggregation in query_yaml["aggregations"]
-        )
-        # assert len(query_yaml["aggregations"]) == 1
-        # required_aggregation_ids.add(
-        #    int(query_yaml["aggregations"][0]["aggregation_id"])
-        # )
-    logger.debug("Required aggregation IDs: {}", required_aggregation_ids)
+    required_ids = required_aggregation_ids(query_engine_config)
+    logger.debug("Required aggregation IDs: {}", required_ids)
 
-    # wait for all required aggregation IDs to be present
+    # wait for all required aggregation IDs to be present; an unreachable
+    # server or a bad response raises rather than being retried
     while True:
-        server_response = requests.get(
-            server_url + "/api/v1/status/runtimeinfo",
-            headers={"Content-Type": "application/json"},
-        )
-        server_response.raise_for_status()
-        server_response_json = server_response.json()
-        logger.debug("Server response: {}", server_response_json)
-        aggregation_id_start_time_map = server_response_json["data"][
+        runtime_info = fetch_runtime_info(server_url)
+        logger.debug("Server runtime info: {}", runtime_info)
+        aggregation_id_start_time_map = runtime_info[
             "earliest_timestamp_per_aggregation_id"
         ]
 
@@ -527,12 +532,10 @@ def get_query_start_times(
             int(k): v for k, v in aggregation_id_start_time_map.items()
         }
 
-        if not set(aggregation_id_start_time_map.keys()).issuperset(
-            required_aggregation_ids
-        ):
+        if not set(aggregation_id_start_time_map.keys()).issuperset(required_ids):
             logger.debug(
                 "Waiting for aggregation IDs {} to be present",
-                required_aggregation_ids - set(aggregation_id_start_time_map.keys()),
+                required_ids - set(aggregation_id_start_time_map.keys()),
             )
             time.sleep(10)
         else:
@@ -542,7 +545,7 @@ def get_query_start_times(
     # different tumbling windows? How long do we wait here? What happens with multiple query groups?
 
     # get query to aggregate ID mapping from query_engine_config
-    for query_yaml in query_engine_config["queries"]:
+    for query_yaml in query_engine_config.get(INFERENCE_QUERIES_KEY) or []:
         # TODO: this assert will fail if there are multiple aggregations in a query YAML, including for DeltaSet, so commenting it out
         # assert len(query_yaml["aggregations"]) == 1
         # for now, just take the first aggregation ID
@@ -654,7 +657,7 @@ def main(args: Any) -> None:
     server_url_for_alignment = None
     # Every query of every group can be in flight at once; a smaller pool
     # opens a new connection per excess request, inside its latency.
-    pool_size = max(requests.adapters.DEFAULT_POOLSIZE, global_query_idx)
+    pool_size = max(DEFAULT_POOLSIZE, global_query_idx)
 
     servers: Dict[str, QueryClient] = {}
     for server in config.servers:
@@ -677,11 +680,16 @@ def main(args: Any) -> None:
                 disable_ssl=True,
                 retry=debug_retry,
             )
-
-            # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name, pool_maxsize=pool_size)
-            client.session.mount("http://", debug_adapter)
-            client.session.mount("https://", debug_adapter)
+        elif protocol == RQE_PROTOCOL:
+            assert server.rqe_exprs_file is not None
+            client = QueryClientFactory.create(
+                protocol=protocol,
+                server_url=server.url,
+                server_name=server.name,
+                rqe_exprs_file=resolve_rqe_exprs_file(
+                    args.config_file, server.rqe_exprs_file
+                ),
+            )
         else:
             # ClickHouse or other protocols
             client = QueryClientFactory.create(
@@ -693,11 +701,10 @@ def main(args: Any) -> None:
                 password=server.password if server.password else "",
             )
 
-            # Mount debug adapter for HTTP request logging
-            debug_adapter = DebugHTTPAdapter(server.name, pool_maxsize=pool_size)
-            client.session.mount("http://", debug_adapter)
-            client.session.mount("https://", debug_adapter)
-
+        # Mount debug adapter for HTTP request logging
+        debug_adapter = DebugHTTPAdapter(server.name, pool_maxsize=pool_size)
+        client.session.mount("http://", debug_adapter)
+        client.session.mount("https://", debug_adapter)
         servers[server.name] = client
         logger.debug(
             "Connected to server {} ({}) with HTTP debug logging enabled",

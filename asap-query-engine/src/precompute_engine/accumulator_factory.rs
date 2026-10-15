@@ -926,7 +926,7 @@ fn hydra_kll_params(config: &AggregationConfig) -> Result<(usize, usize, u16), S
 /// then falls back to the `row_num`/`col_num`/`heap_size` aliases. All three
 /// parameters are required — the planner always emits them and their absence
 /// indicates a malformed config.
-fn cms_heap_params(config: &AggregationConfig) -> Result<(usize, usize, usize), String> {
+pub(crate) fn cms_heap_params(config: &AggregationConfig) -> Result<(usize, usize, usize), String> {
     let read = |names: &[&str]| -> Result<usize, String> {
         names
             .iter()

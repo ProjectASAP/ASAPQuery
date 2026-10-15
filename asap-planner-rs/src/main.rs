@@ -87,6 +87,13 @@ struct Args {
     #[arg(long = "sla-ms")]
     sla_ms: Option<f64>,
 
+    /// Saved only. Plan only the tree leaves of the e2e queries that have an
+    /// RQE tree (`expr`): no query text is planned, so no `query_configs` are
+    /// written, only deployments and `rqe_configs`. Queries without a tree
+    /// (e.g. `rate`) are skipped.
+    #[arg(long = "expr-only")]
+    expr_only: bool,
+
     /// MILP only. YAML workload facts: per metric, positive `value_range` and
     /// `cardinality` per label set, including all labels (the series count),
     /// plus the `shape` of each grouping sketches may serve.
@@ -155,8 +162,10 @@ fn main() -> anyhow::Result<()> {
                 && args.workload_table.is_none()
                 && args.method.is_none()
                 && args.weights.is_none()
-                && args.sla_ms.is_none(),
-            "--plan, --workload-table, --method, --weights and --sla-ms require --planner saved"
+                && args.sla_ms.is_none()
+                && !args.expr_only,
+            "--plan, --workload-table, --method, --weights, --sla-ms and --expr-only require \
+             --planner saved"
         );
     }
     if args.planner != PlannerArg::Milp {
@@ -358,6 +367,7 @@ fn run_saved(args: &Args) -> anyhow::Result<()> {
         },
         args.query_language,
         scrape_interval_ms,
+        args.expr_only,
     )?
     .write_to_dir(&args.output_dir)?;
     Ok(())

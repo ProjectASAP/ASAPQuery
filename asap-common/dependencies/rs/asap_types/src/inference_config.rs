@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde_yaml::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 
@@ -21,11 +21,21 @@ pub enum SchemaConfig {
     ElasticSQL(SQLSchema),
 }
 
+/// How the engine answers one RQE leaf directly: the aggregations it reads
+/// and the query-time stages that regroup them to the RQE's grouping.
+#[derive(Debug, Clone)]
+pub struct RqeConfig {
+    pub aggregations: Vec<AggregationReference>,
+    pub query_time_aggregations: Vec<QueryTimeAggregation>,
+}
+
 #[derive(Debug, Clone)]
 pub struct InferenceConfig {
     pub schema: SchemaConfig,
     pub query_configs: Vec<QueryConfig>,
     pub cleanup_policy: CleanupPolicy,
+    /// RQE id -> how to answer that RQE leaf; empty unless planned from RQE trees.
+    pub rqe_configs: HashMap<String, RqeConfig>,
 }
 
 impl InferenceConfig {
@@ -42,6 +52,7 @@ impl InferenceConfig {
             schema,
             query_configs: Vec::new(),
             cleanup_policy,
+            rqe_configs: HashMap::new(),
         }
     }
 
@@ -75,11 +86,13 @@ impl InferenceConfig {
 
         let cleanup_policy = Self::parse_cleanup_policy(data)?;
         let query_configs = Self::parse_query_configs(data, cleanup_policy)?;
+        let rqe_configs = Self::parse_rqe_configs(data, cleanup_policy)?;
 
         Ok(Self {
             schema,
             query_configs,
             cleanup_policy,
+            rqe_configs,
         })
     }
 
@@ -263,43 +276,11 @@ impl InferenceConfig {
                             .map_err(anyhow::Error::from)
                     })?;
 
-                let aggregations = if let Some(aggregations_data) =
-                    query_data.get("aggregations").and_then(|v| v.as_sequence())
-                {
-                    let mut agg_refs = Vec::new();
-                    for agg_data in aggregations_data {
-                        let aggregation_id = agg_data
-                            .get("aggregation_id")
-                            .and_then(|v| v.as_u64())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("Missing aggregation_id in aggregation")
-                            })?;
-
-                        let agg_ref = match cleanup_policy {
-                            CleanupPolicy::CircularBuffer => {
-                                let num_aggregates_to_retain = agg_data
-                                    .get("num_aggregates_to_retain")
-                                    .and_then(|v| v.as_u64());
-                                AggregationReference::new(aggregation_id, num_aggregates_to_retain)
-                            }
-                            CleanupPolicy::ReadBased => {
-                                let read_count_threshold = agg_data
-                                    .get("read_count_threshold")
-                                    .and_then(|v| v.as_u64());
-                                AggregationReference::with_read_count_threshold(
-                                    aggregation_id,
-                                    read_count_threshold,
-                                )
-                            }
-                            CleanupPolicy::NoCleanup => {
-                                AggregationReference::new(aggregation_id, None)
-                            }
-                        };
-                        agg_refs.push(agg_ref);
+                let aggregations = match query_data.get("aggregations") {
+                    Some(aggregations) => {
+                        Self::parse_aggregation_refs(aggregations, cleanup_policy)?
                     }
-                    agg_refs
-                } else {
-                    Vec::new()
+                    None => Vec::new(),
                 };
 
                 let config =
@@ -316,11 +297,97 @@ impl InferenceConfig {
         };
         Ok(query_configs)
     }
+
+    /// A sequence of `{aggregation_id, num_aggregates_to_retain | read_count_threshold}`.
+    fn parse_aggregation_refs(
+        aggregations_data: &Value,
+        cleanup_policy: CleanupPolicy,
+    ) -> Result<Vec<AggregationReference>> {
+        let Some(aggregations_data) = aggregations_data.as_sequence() else {
+            return Ok(Vec::new());
+        };
+        let mut agg_refs = Vec::new();
+        for agg_data in aggregations_data {
+            let aggregation_id = agg_data
+                .get("aggregation_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow::anyhow!("Missing aggregation_id in aggregation"))?;
+
+            let agg_ref = match cleanup_policy {
+                CleanupPolicy::CircularBuffer => {
+                    let num_aggregates_to_retain = agg_data
+                        .get("num_aggregates_to_retain")
+                        .and_then(|v| v.as_u64());
+                    AggregationReference::new(aggregation_id, num_aggregates_to_retain)
+                }
+                CleanupPolicy::ReadBased => {
+                    let read_count_threshold = agg_data
+                        .get("read_count_threshold")
+                        .and_then(|v| v.as_u64());
+                    AggregationReference::with_read_count_threshold(
+                        aggregation_id,
+                        read_count_threshold,
+                    )
+                }
+                CleanupPolicy::NoCleanup => AggregationReference::new(aggregation_id, None),
+            };
+            agg_refs.push(agg_ref);
+        }
+        Ok(agg_refs)
+    }
+
+    /// The optional `rqe_configs` mapping: RQE id -> `{aggregations,
+    /// query_time_aggregations}`, both required.
+    fn parse_rqe_configs(
+        data: &Value,
+        cleanup_policy: CleanupPolicy,
+    ) -> Result<HashMap<String, RqeConfig>> {
+        let Some(rqe_configs) = data.get("rqe_configs") else {
+            return Ok(HashMap::new());
+        };
+        let rqe_configs = rqe_configs
+            .as_mapping()
+            .ok_or_else(|| anyhow::anyhow!("rqe_configs must map RQE ids to configs"))?;
+        let mut configs = HashMap::new();
+        for (id, config) in rqe_configs {
+            let id = id
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("rqe_configs key {id:?} is not a string"))?;
+            let aggregations = config
+                .get("aggregations")
+                .ok_or_else(|| anyhow::anyhow!("RQE {id:?}: missing aggregations"))
+                .and_then(|value| Self::parse_aggregation_refs(value, cleanup_policy))?;
+            if aggregations.is_empty() {
+                anyhow::bail!("RQE {id:?}: aggregations is empty");
+            }
+            let query_time_aggregations = config
+                .get("query_time_aggregations")
+                .ok_or_else(|| anyhow::anyhow!("RQE {id:?}: missing query_time_aggregations"))
+                .and_then(|value| {
+                    serde_yaml::from_value::<Vec<QueryTimeAggregation>>(value.clone())
+                        .map_err(anyhow::Error::from)
+                })?;
+            for stage in &query_time_aggregations {
+                stage
+                    .validate()
+                    .map_err(|error| anyhow::anyhow!("RQE {id:?}: {error}"))?;
+            }
+            configs.insert(
+                id.to_string(),
+                RqeConfig {
+                    aggregations,
+                    query_time_aggregations,
+                },
+            );
+        }
+        Ok(configs)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query_config::QueryTimeAggregationOperator;
 
     #[test]
     fn rejects_a_query_without_a_planned_subquery() {
@@ -389,5 +456,80 @@ queries:
             .expect_err("invalid pipeline parameters must fail during config loading");
 
         assert!(error.to_string().contains("quantile"));
+    }
+
+    #[test]
+    fn loads_rqe_configs_with_their_roll_up() {
+        let data: Value = serde_yaml::from_str(
+            r#"
+cleanup_policy:
+  name: circular_buffer
+metrics: {}
+queries: []
+rqe_configs:
+  sum_by_job:
+    aggregations:
+      - aggregation_id: 2
+        num_aggregates_to_retain: 5
+    query_time_aggregations:
+      - operator: sum
+        grouping:
+          mode: by
+          labels: [job]
+        parameter: null
+"#,
+        )
+        .unwrap();
+
+        let config = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql).unwrap();
+
+        let rqe = &config.rqe_configs["sum_by_job"];
+        let [aggregation] = rqe.aggregations.as_slice() else {
+            panic!("{:?}", rqe.aggregations);
+        };
+        assert_eq!(aggregation.aggregation_id, 2);
+        assert_eq!(aggregation.num_aggregates_to_retain, Some(5));
+        let [stage] = rqe.query_time_aggregations.as_slice() else {
+            panic!("{:?}", rqe.query_time_aggregations);
+        };
+        assert!(matches!(stage.operator, QueryTimeAggregationOperator::Sum));
+        assert_eq!(stage.grouping.labels, ["job"]);
+    }
+
+    #[test]
+    fn a_config_without_rqe_configs_has_none() {
+        let data: Value =
+            serde_yaml::from_str("cleanup_policy: {name: no_cleanup}\nmetrics: {}\n").unwrap();
+        let config = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql).unwrap();
+        assert!(config.rqe_configs.is_empty());
+    }
+
+    #[test]
+    fn rejects_an_rqe_config_missing_a_field_or_with_an_invalid_stage() {
+        for (rqe, reason) in [
+            ("{query_time_aggregations: []}", "missing aggregations"),
+            (
+                "{aggregations: [], query_time_aggregations: []}",
+                "aggregations is empty",
+            ),
+            (
+                "{aggregations: [{aggregation_id: 1}]}",
+                "missing query_time_aggregations",
+            ),
+            (
+                "{aggregations: [{aggregation_id: 1}], query_time_aggregations: \
+                 [{operator: sum, grouping: {mode: by, labels: []}, parameter: null}]}",
+                "by grouping must name at least one label",
+            ),
+        ] {
+            let yaml = format!(
+                "cleanup_policy: {{name: no_cleanup}}\nmetrics: {{}}\nrqe_configs: {{r: {rqe}}}\n"
+            );
+            let data: Value = serde_yaml::from_str(&yaml).unwrap();
+            let error =
+                InferenceConfig::from_yaml_data(&data, QueryLanguage::promql).expect_err("refused");
+            assert!(error.to_string().contains(reason), "{error}");
+            assert!(error.to_string().contains("\"r\""), "{error}");
+        }
     }
 }
