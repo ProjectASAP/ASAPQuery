@@ -33,7 +33,9 @@ def query_groups(queries, query_key):
             "queries": rendered,
             "controller_options": {"accuracy_sla": ACCURACY_SLA},
         }
-        for index, (interval_ms, rendered) in enumerate(sorted(grouped.items()), start=1)
+        for index, (interval_ms, rendered) in enumerate(
+            sorted(grouped.items()), start=1
+        )
     ]
 
 
@@ -44,7 +46,9 @@ def render(workload):
     return {
         "queries": queries,
         "promql_planner": {
-            "metrics": [{"metric": metric, "labels": labels} for metric in PROMQL_METRICS],
+            "metrics": [
+                {"metric": metric, "labels": labels} for metric in PROMQL_METRICS
+            ],
             "query_groups": query_groups(queries, "promql"),
             "aggregate_cleanup": {"policy": "read_based"},
         },
@@ -69,7 +73,9 @@ def main():
         path.write_text(yaml.safe_dump(rendered[name], sort_keys=False))
         print(path)
     schedule = args.out / "queries.json"
-    schedule.write_text(json.dumps(rendered["queries"], indent=2, sort_keys=True) + "\n")
+    schedule.write_text(
+        json.dumps(rendered["queries"], indent=2, sort_keys=True) + "\n"
+    )
     print(schedule)
 
 
