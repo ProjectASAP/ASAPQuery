@@ -14,6 +14,10 @@ QUERY_ENGINE_RS_PROCESS_KEYWORD = "query_engine_rust"
 QUERY_ENGINE_RS_BINARY_NAME = "query_engine_rust"
 QUERY_ENGINE_RS_FP_BINARY_NAME = "query_engine_rust_fp"
 QUERY_ENGINE_RS_CONTAINER_NAME = "sketchdb-queryengine-rust"
+# remote_monitor's grep -E pattern for the ClickHouse server: `clickhouse-server`
+# in Docker, `clickhouse server` bare metal. Plain "clickhouse" also matches a
+# paced feeder's `--sink clickhouse`, whose exit would end the run.
+CLICKHOUSE_SERVER_PROCESS_KEYWORD = "clickhouse.server"
 
 PROMETHEUS_THROUGHPUT_POLLING_INTERVAL = 5
 PROMETHEUS_HEALTH_POLLING_INTERVAL = 5

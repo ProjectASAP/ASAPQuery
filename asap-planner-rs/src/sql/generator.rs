@@ -96,8 +96,13 @@ pub fn generate_sql_plan(
                 config.windowing.clone(),
             );
 
+            let nested_plan = processor.nested_aggregation_plan(eval_time)?;
+            let planned_processor = match &nested_plan {
+                Some(plan) => processor.make_subquery_processor(plan.planned_subquery.clone()),
+                None => processor,
+            };
             let (configs, cleanup_param) =
-                match processor.get_streaming_aggregation_configs(eval_time) {
+                match planned_processor.get_streaming_aggregation_configs(eval_time) {
                     Ok(result) => result,
                     Err(ControllerError::Windowing(error)) => {
                         windowing_errors.push(format!("query '{query_string}': {error}"));
@@ -112,10 +117,15 @@ pub fn generate_sql_plan(
                 keys_for_query.push((key.clone(), cleanup_param));
                 dedup_map.entry(key).or_insert(config_item);
             }
-            query_plan_map.insert(
-                query_string.clone(),
-                QueryPlanEntry::fully_planned(query_string.clone(), keys_for_query),
-            );
+            let plan_entry = match nested_plan {
+                Some(plan) => QueryPlanEntry {
+                    aggregation_keys: keys_for_query,
+                    planned_subquery: plan.planned_subquery,
+                    query_time_aggregations: plan.query_time_aggregations,
+                },
+                None => QueryPlanEntry::fully_planned(query_string.clone(), keys_for_query),
+            };
+            query_plan_map.insert(query_string.clone(), plan_entry);
         }
     }
 

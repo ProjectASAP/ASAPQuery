@@ -172,8 +172,10 @@ class StartClickHouseFeedTest(unittest.TestCase):
             with open(config_path, "w") as f:
                 yaml.safe_dump(aligned_client_config(60), f)
 
+            provider = Mock()
+            provider.get_node_ip.return_value = "10.10.1.1"
             start_ms = _start_clickhouse_feed(
-                provider=Mock(),
+                provider=provider,
                 node_offset=0,
                 data_loader=calls.loader,
                 feeder_service=calls.feeder,
@@ -209,7 +211,8 @@ class StartClickHouseFeedTest(unittest.TestCase):
         self.assertEqual(start_kwargs["align_secs"], 60)
         self.assertEqual(
             start_kwargs["sinks"],
-            {"clickhouse": "http://localhost:8123/?database=default"},
+            # From the feeder's own node to ClickHouse's.
+            {"clickhouse": "http://10.10.1.1:8123/?database=default"},
         )
         self.assertEqual(start_kwargs["experiment_output_dir"], "/exp/baseline")
         self.assertEqual(
@@ -229,23 +232,14 @@ class StartClickHouseFeedTest(unittest.TestCase):
 
 
 class FinishClickHouseFeedTest(unittest.TestCase):
-    def finish(self, exited):
-        feeder = Mock()
-        feeder.wait_for_exit.return_value = exited
-        with patch("experiment_run_clickhouse.time.time", return_value=1700000600):
-            _finish_clickhouse_feed(feeder, 1700000000000, duration_secs=720)
-        return feeder
-
-    def test_waits_out_the_feed_so_feeders_write_their_stats(self):
-        # A killed feeder writes no stats; 120 s of feed remain.
-        feeder = self.finish(exited=True)
-        feeder.wait_for_exit.assert_called_once_with(
-            120 + PACED_FEEDER_STOP_TIMEOUT_SECS
-        )
-        feeder.stop.assert_not_called()
-
-    def test_stops_feeders_that_overstay(self):
-        self.finish(exited=False).stop.assert_called_once()
+    def test_stops_the_feed_once_the_queries_are_done(self):
+        # Waiting out the feed's duration let it, not the queries, end the run;
+        # SIGTERM still lets feeders write their stats.
+        calls = Mock()
+        calls.wait_for_exit.return_value = True
+        _finish_clickhouse_feed(calls)
+        self.assertEqual([c[0] for c in calls.mock_calls], ["stop", "wait_for_exit"])
+        calls.wait_for_exit.assert_called_once_with(PACED_FEEDER_STOP_TIMEOUT_SECS)
 
 
 class FedClickHouseConfigValidationTest(unittest.TestCase):

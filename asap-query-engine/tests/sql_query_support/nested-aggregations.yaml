@@ -16,19 +16,19 @@ repetition_delay_ms: 60000
 cases:
   - name: one-stage-sum
     query: SELECT job, SUM(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-count
     query: SELECT job, COUNT(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-avg
     query: SELECT job, AVG(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-min
     query: SELECT job, MIN(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-max
     query: SELECT job, MAX(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-topk-3
     query: SELECT job, instance, v FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) ORDER BY v DESC LIMIT 3 BY job
     expected: unsupported
@@ -37,13 +37,13 @@ cases:
     expected: unsupported
   - name: one-stage-quantile-0-5
     query: SELECT job, QUANTILE(0.5, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-quantile-0-75
     query: SELECT job, QUANTILE(0.75, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
   - name: one-stage-quantile-0-9
     query: SELECT job, QUANTILE(0.9, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
-    expected: unsupported
+    expected: supported
 
   # Middle stage: sum by (job)
   - name: two-stage-sum-then-sum

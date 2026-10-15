@@ -1,7 +1,10 @@
 """Tests that remote_monitor.py receives its keyword list as one clean argument."""
 
+import re
 import shlex
 import unittest
+
+import constants
 
 from experiment_utils.services.remote_monitor_service import RemoteMonitorService
 
@@ -71,13 +74,33 @@ class KeywordQuotingTest(unittest.TestCase):
 
     def test_clickhouse_ingest_local_provider_gets_unescaped_keywords(self):
         self.assertEqual(
-            clickhouse_ingest_keywords_seen_by_monitor(remote=False), "clickhouse"
+            clickhouse_ingest_keywords_seen_by_monitor(remote=False),
+            "clickhouse.server",
         )
 
     def test_clickhouse_ingest_remote_provider_keeps_escaped_quotes_for_ssh(self):
         self.assertEqual(
-            clickhouse_ingest_keywords_seen_by_monitor(remote=True), "clickhouse"
+            clickhouse_ingest_keywords_seen_by_monitor(remote=True),
+            "clickhouse.server",
         )
+
+
+class ClickHouseKeywordTest(unittest.TestCase):
+    def test_matches_the_server_but_not_a_feeder_into_it(self):
+        # "clickhouse" also matched the paced feeder's `--sink clickhouse`;
+        # when the feed ended, the monitor took it for ClickHouse exiting and
+        # stopped the query client mid-run.
+        pattern = re.compile(constants.CLICKHOUSE_SERVER_PROCESS_KEYWORD)
+        for server in (
+            "/usr/bin/clickhouse-server --config-file=/etc/clickhouse-server/config.xml",
+            "/usr/bin/clickhouse server --config-file=/etc/clickhouse-server/config.xml",
+        ):
+            self.assertTrue(pattern.search(server), server)
+        feeder = (
+            "./target/release/paced_feeder --sink clickhouse "
+            "--url http://localhost:8123/?database=default --metric data"
+        )
+        self.assertIsNone(pattern.search(feeder))
 
 
 if __name__ == "__main__":
