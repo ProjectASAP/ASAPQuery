@@ -5,11 +5,15 @@ CPU-seconds, both log. Lower left is better. A run collate_batch.py marks
 invalid (failed queries, or answers that disagree with the reference) is
 drawn hollow: its latency and CPU don't stand for a correct answer.
 
-Usage: python3 plot_cost_latency.py collated.csv out.png
+Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
+
+Usage: python3 plot_cost_latency.py collated.csv out_dir
 """
 
 import csv
+import datetime
 import sys
+from pathlib import Path
 from collections import defaultdict
 
 import matplotlib
@@ -29,7 +33,7 @@ SYSTEMS = [
 SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#52514e"
 
 
-def main(csv_path, out_path):
+def main(csv_path, out_dir):
     rows = list(csv.DictReader(open(csv_path)))
     by_set = defaultdict(list)
     for r in rows:
@@ -93,7 +97,11 @@ def main(csv_path, out_path):
             spine.set_color("#d4d3cf")
     axes[0][0].legend(frameon=False, fontsize=9, loc="upper left")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, facecolor=SURFACE)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_path = Path(out_dir) / f"cost_latency_{'+'.join(sets)}_{stamp}.png"
+    with open(out_path, "xb") as f:
+        fig.savefig(f, dpi=150, facecolor=SURFACE, format="png")
+    print(out_path)
 
 
 if __name__ == "__main__":

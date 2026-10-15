@@ -41,6 +41,8 @@ REFERENCE = "prom"
 # queries' windows incomplete.
 MAX_INGEST_LAG_SECS = 10
 EXACT_REL_ERR = 1e-3
+# VictoriaMetrics may count a window-boundary sample Prometheus doesn't.
+VM_REL_ERR = 5e-3
 EXACT_TOPK_PRECISION = 0.99
 # ASAPQuery's sketches: quantiles at the 0.95 accuracy SLA; sums are exact
 # but for a window-boundary sample; top-k at its precision target.
@@ -104,7 +106,8 @@ def disagreements(arm_name, arm, ref):
                 else mean <= (ASAP_QUANTILE_REL_ERR if quantile else ASAP_SUM_REL_ERR)
             )
         else:
-            ok = mean >= EXACT_TOPK_PRECISION if topk else mean <= EXACT_REL_ERR
+            rel_err = VM_REL_ERR if arm_name == "vm" else EXACT_REL_ERR
+            ok = mean >= EXACT_TOPK_PRECISION if topk else mean <= rel_err
         if not ok:
             bad.append(f"{name}: {'precision' if topk else 'rel err'} {mean:.3g}")
     return bad
