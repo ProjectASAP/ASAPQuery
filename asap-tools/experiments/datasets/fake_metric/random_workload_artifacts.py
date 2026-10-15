@@ -127,6 +127,12 @@ def query_groups(queries, query_key):
     ]
 
 
+def workload_set(workload):
+    """The directory of `workload`'s seed and variant: seed-862, seed-862-long."""
+    variant = workload.get("variant")
+    return f"seed-{workload['seed']}" + (f"-{variant}" if variant else "")
+
+
 def pilot_configs(workload, pilot_dir):
     """The five-system pilot's run configs, {path under EXPERIMENTS_DIR:
     content}: ASAPQuery (the saved plan in `pilot_dir`) and Prometheus in
@@ -146,7 +152,7 @@ def pilot_configs(workload, pilot_dir):
     feed_secs = starting_delay + FEED_BOUND_QUERY_PHASES * duration
     seed = workload["data_facts"]["feeder_seed"]
     table = pilot_dir / "eval_table.json"
-    out_dir = Path(CONFIG_DIR) / workload["id"]
+    out_dir = Path(CONFIG_DIR) / workload_set(workload) / workload["id"]
 
     e2e, _ = build_config(
         str(table),

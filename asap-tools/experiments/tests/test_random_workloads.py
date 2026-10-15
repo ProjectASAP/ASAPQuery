@@ -81,6 +81,26 @@ class GenerateWorkloadsTest(unittest.TestCase):
                     self.assertIn("data[100s]", query["promql"])
                     self.assertEqual(query["interval_ms"], workloads.SECOND_MS)
 
+    def test_variants_pair_with_the_base_query_for_query(self):
+        # A variant stretches one dimension and keeps every random choice, so
+        # its results compare with the base's query for query.
+        base = workloads.generate_workloads(seed=862)
+        for variant, scale, series in (("long", 3, 10_000), ("x5", 1, 50_000)):
+            for b, v in zip(
+                base, workloads.generate_workloads(seed=862, variant=variant)
+            ):
+                with self.subTest(variant=variant, workload=b["id"]):
+                    self.assertEqual(v["variant"], variant)
+                    self.assertEqual(v["data_facts"]["series"]["leaf_count"], series)
+                    for bq, vq in zip(b["queries"], v["queries"]):
+                        self.assertEqual(vq["lookback_ms"], scale * bq["lookback_ms"])
+                        bq_rqe, vq_rqe = bq["rqes"][0], vq["rqes"][0]
+                        for key in ("capability", "grouping_labels", "interval_ms"):
+                            self.assertEqual(vq_rqe[key], bq_rqe[key])
+                        self.assertEqual(vq_rqe.get("phi"), bq_rqe.get("phi"))
+                        self.assertEqual(vq_rqe.get("k"), bq_rqe.get("k"))
+        self.assertNotIn("variant", base[0])
+
     def test_manifest_declares_deterministic_feeder_facts(self):
         facts = workloads.generate_workloads(seed=4)[0]["data_facts"]
 

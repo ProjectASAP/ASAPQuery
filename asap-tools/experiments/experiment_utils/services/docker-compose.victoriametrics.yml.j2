@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   vmsingle:
-    image: victoriametrics/victoria-metrics:latest
+    image: victoriametrics/victoria-metrics:v1.154.0
     container_name: {{ vmsingle_container_name }}
     user: "{{ user_id }}:{{ group_id }}"
     network_mode: host
@@ -36,7 +36,7 @@ services:
     restart: "no"
 
   vmagent:
-    image: victoriametrics/vmagent:latest
+    image: victoriametrics/vmagent:v1.154.0
     container_name: {{ vmagent_container_name }}
     user: "{{ user_id }}:{{ group_id }}"
     network_mode: host
