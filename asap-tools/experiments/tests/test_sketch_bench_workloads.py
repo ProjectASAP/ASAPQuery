@@ -186,6 +186,11 @@ class ParseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             sbw.init_sql({"data": {"type": "gauge", "labels": []}}, [], False)
 
+    def test_raw_table_is_ordered_by_time_only(self):
+        metrics = {"data": {"type": "gauge", "labels": [{"name": "job"}]}}
+        self.assertIn("ORDER BY ts;", sbw.init_sql(metrics, [], False))
+        self.assertIn("ORDER BY (job, ts);", sbw.init_sql(metrics, [], True))
+
     def test_describe_is_one_line(self):
         entry = {"promql": "sum by (job) (\n  data\n)", "interval_secs": 1}
         self.assertEqual(sbw.describe(entry), "sum by (job) ( data )")
