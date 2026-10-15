@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Cost-latency scatter from collate_batch.py's CSV: one panel per workload
-set, one point per (workload, system); x = p95 query latency, y = total
-CPU-seconds, both log. Lower left is better. A run collate_batch.py marks
+set, one point per (workload, system); x = total CPU-seconds, y = p95 query
+latency, both log. Lower left is better. A run collate_batch.py marks
 invalid (failed queries, or answers that disagree with the reference) is
 drawn hollow: its latency and CPU don't stand for a correct answer.
 
 Two arrows from LiteOlly's geometric-mean point show its improvement in CPU
-(vertical) and p95 latency (horizontal) over the worst baseline for that
+(horizontal) and p95 latency (vertical) over the worst baseline for that
 metric: collate_batch.py's geometric mean of baseline / LiteOlly over
 workloads where both are valid. Arrow lengths are those ratios.
 
@@ -68,8 +68,8 @@ def arrows(ax, rows, improvement, set_name):
     names = {key: label for key, label, *_ in SYSTEMS}
     lite = [r for r in rows if r["arm"] == "asap"]
     lite = [r for r in lite if r["valid"] == "True"] or lite
-    lx = statistics.geometric_mean(float(r["latency_p95"]) for r in lite)
-    ly = statistics.geometric_mean(float(r["cpu_secs"]) for r in lite)
+    lx = statistics.geometric_mean(float(r["cpu_secs"]) for r in lite)
+    ly = statistics.geometric_mean(float(r["latency_p95"]) for r in lite)
     worst = {}
     for metric in ("cpu_secs", "latency_p95"):
         worst[metric] = max(
@@ -77,24 +77,24 @@ def arrows(ax, rows, improvement, set_name):
             key=lambda am: am[1],
         )
     style = dict(arrowstyle="<->", color=INK, linewidth=2, mutation_scale=22)
-    arm, cpu = worst["cpu_secs"]
+    arm, lat = worst["latency_p95"]
     x = lx / 1.5
-    ax.annotate("", (x, ly), xytext=(x, ly * cpu), arrowprops=style, zorder=4)
+    ax.annotate("", (x, ly), xytext=(x, ly * lat), arrowprops=style, zorder=4)
     ax.text(
         x * 1.08,
-        ly * cpu**0.75,
-        f"{cpu:.1f}x less CPU\nvs {names[arm]}",
+        ly * lat**0.75,
+        f"{lat:.1f}x lower p95\nlatency vs\n{names[arm]}",
         color=INK,
         fontsize=13,
         va="center",
     )
-    arm, lat = worst["latency_p95"]
+    arm, cpu = worst["cpu_secs"]
     y = ly / 1.4
-    ax.annotate("", (lx, y), xytext=(lx * lat, y), arrowprops=style, zorder=4)
+    ax.annotate("", (lx, y), xytext=(lx * cpu, y), arrowprops=style, zorder=4)
     ax.text(
-        lx * lat**0.5,
+        lx * cpu**0.5,
         y / 1.08,
-        f"{lat:.1f}x lower p95 latency vs {names[arm]}",
+        f"{cpu:.1f}x less CPU vs {names[arm]}",
         color=INK,
         fontsize=13,
         ha="center",
@@ -127,8 +127,8 @@ def main(csv_path, out_dir):
         workloads = sorted({r["workload"] for r in by_set[set_name]})
         for key, label, color, marker in SYSTEMS:
             pts = [r for r in by_set[set_name] if r["arm"] == key]
-            xs = [float(r["latency_p95"]) for r in pts]
-            ys = [float(r["cpu_secs"]) for r in pts]
+            xs = [float(r["cpu_secs"]) for r in pts]
+            ys = [float(r["latency_p95"]) for r in pts]
             valid = [r["valid"] == "True" for r in pts]
             ax.scatter(
                 [x for x, v in zip(xs, valid) if v],
@@ -157,14 +157,14 @@ def main(csv_path, out_dir):
                 oval(ax, *zip(*fit), color)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("p95 query latency (s)", color=MUTED, fontsize=14)
-        ax.set_ylabel("total compute cost", color=MUTED, fontsize=14)
+        ax.set_xlabel("Total Compute Cost", color=MUTED, fontsize=14)
+        ax.set_ylabel("p95 Query Latency", color=MUTED, fontsize=14)
         for axis in (ax.xaxis, ax.yaxis):
             axis.set_major_locator(ticker.LogLocator(subs=(1, 2, 5)))
             axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(ticker.NullFormatter())
         title = (
-            f"{set_name}: {len(workloads)} workload(s), lower left is better"
+            f"{len(workloads)} workload(s), lower left is better"
             "\nhollow: invalid run (failed queries or wrong answers)"
         )
         ax.set_title(title, color=INK, fontsize=14, loc="left")
