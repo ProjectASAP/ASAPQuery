@@ -97,6 +97,11 @@ name), `n` and the draw, so records match sketch-bench's `label_shares()`
   `endpoint="3.17"`).
 - **Keys** (`zipf` θ over `keys`): the key of Zipf rank `r` is `r`, so key 0 is
   the most frequent.
+- **Rotating per-series pool** (`{"rotating_pool": {"universe_keys": U,
+  "keys_per_series": K}}`): records enumerate every label combination evenly;
+  each combination cycles through a deterministic K-key pool in the U-key
+  universe. Pool starts are seeded per combination, so pools overlap while
+  each leaf has exactly K possible keys.
 - **Burst**: with probability `share` a record is a burst record: its `label`
   is `value` (a child index for a child label) and its key is uniform over
   `keys` burst keys numbered after the background keys (`1000000` to

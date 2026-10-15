@@ -653,6 +653,49 @@ CASES = [
         lambda t, g, c: q_ratio(t, g),
     ),
 ]
+
+
+def topk_by(k: int, vec: Vector, idx: List[int]) -> Vector:
+    out: Vector = {}
+    for group in {tuple(s[i] for i in idx) for s in vec}:
+        members = {s: v for s, v in vec.items() if tuple(s[i] for i in idx) == group}
+        out.update(topk(k, members))
+    return out
+
+
+ALL_LABELS = ("job", "label_0")
+# Shapes the random workloads build from their RQEs, not from PromQL:
+# (name, Query, reference over (gauge, counter) at eval time t ms).
+RQE_CASES = [
+    (
+        "avg by (job) (quantile_over_time(0.9, data[2m]))",
+        sbw.Query("data", 60, 120, ("job",), "quantile", "avg", "0.9"),
+        lambda t, g, c: agg_by(
+            range_fn(g, t, W2, lambda w: prom_quantile(0.9, values(w))),
+            JOB,
+            lambda vs: sum(vs) / len(vs),
+        ),
+    ),
+    (
+        "topk by (job) (2, sum_over_time(data[2m]))",
+        sbw.Query("data", 60, 120, ALL_LABELS, None, "sum", topk=2, topk_by=("job",)),
+        lambda t, g, c: topk_by(2, range_fn(g, t, W2, lambda w: sum(values(w))), JOB),
+    ),
+    (
+        "topk by (job) (2, increase(data_total[5m]))",
+        sbw.Query(
+            "data_total",
+            60,
+            300,
+            ALL_LABELS,
+            "increase",
+            None,
+            topk=2,
+            topk_by=("job",),
+        ),
+        lambda t, g, c: topk_by(2, rate(c, t, W5, False), JOB),
+    ),
+]
 EVAL_OFFSETS_SECS = {
     # Before data, data start (the only sample sits on the window's end),
     # mid-run, around series 2's gap and series 1's end, and after all data.
@@ -814,6 +857,10 @@ def all_cases(gauge, counter, records) -> List[Tuple[str, "sbw.Query", Callable]
         (p, sbw.parse_promql(p, t, LABELS), lambda e, ref=ref: ref(e, gauge, counter))
         for t, p, ref in CASES
     ]
+    cases += [
+        (name, q, lambda e, ref=ref: ref(e, gauge, counter))
+        for name, q, ref in RQE_CASES
+    ]
     for entry in MULTIGROUP:
         q = sbw.query_from_entry(entry, METRICS, LABELS)
         w_ms = q.window_secs * 1000
@@ -954,9 +1001,10 @@ class ClickHouseSemanticsTest(unittest.TestCase):
 
     def test_mv_sql_matches_raw_sql(self):
         for i, (name, q, _) in enumerate(self.cases):
-            # Only sums are re-associated (per bucket, then across buckets and
-            # groups); every other statistic merges to the identical value.
-            rel = 1e-9 if q.agg == "sum" else 0.0
+            # Only sums and averages are re-associated (per bucket, then across
+            # buckets and groups); every other statistic merges to the
+            # identical value.
+            rel = 1e-9 if q.agg in ("sum", "avg") else 0.0
             for offset in EVAL_OFFSETS_SECS[q.interval_secs]:
                 with self.subTest(query=name, offset=offset):
                     raw = self.got[f"raw/{i}@{offset}"]

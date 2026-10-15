@@ -24,13 +24,16 @@ use crate::planner_output::PlannerOutput;
 use crate::promql::generator::{build_inference_yaml, build_streaming_yaml};
 use crate::sql::generator::{build_sql_inference_yaml, build_sql_streaming_yaml};
 
-use super::aqe_extractor::{contains_avg, decompose_to_leaves};
+use super::aqe_extractor::{contains_avg, decompose_to_leaves, per_series_avg};
 use super::milp::{MilpConfig, MilpWorkload};
 use super::solution::OptimizerItem;
 
 #[derive(Debug, Error)]
 pub enum MilpOutputError {
-    #[error("query {0:?} uses avg, which the engine can't answer from sum and count yet")]
+    #[error(
+        "query {0:?} uses an avg the engine can't answer yet: from sum and count, or in a \
+         binary arm"
+    )]
     AvgQuery(String),
     #[error(
         "query groups set step_ms or range_duration_ms, whose extra retention MILP \
@@ -227,6 +230,7 @@ pub fn deployments_to_planner_output(
             }
         }
     }
+    plan_per_series_avgs(config, &binary_leaves, &mut queries)?;
 
     let id_map: HashMap<String, u32> = aggregations
         .keys()
@@ -340,6 +344,50 @@ fn query_plan_entry(
         planned_subquery: regrouped(aggregate, fine),
         query_time_aggregations: vec![stage],
     })
+}
+
+/// Plans each per-series avg query (`per_series_avg`) as its leaf's entry
+/// plus a query-time avg, replacing the leaf's entry unless the leaf is
+/// itself a query or a binary query's arm.
+fn plan_per_series_avgs(
+    config: MilpConfig,
+    binary_leaves: &HashSet<String>,
+    queries: &mut IndexMap<String, QueryPlanEntry>,
+) -> Result<(), MilpOutputError> {
+    let MilpConfig::Promql(config) = config else {
+        return Ok(());
+    };
+    let asked: Vec<&String> = config
+        .query_groups
+        .iter()
+        .flat_map(|group| &group.queries)
+        .collect();
+    let mut leaves = Vec::new();
+    for &query in &asked {
+        let Some((leaf, avg)) = per_series_avg(query) else {
+            continue;
+        };
+        let unregroupable = || MilpOutputError::UnregroupableQuery(query.clone());
+        let entry = queries.get(&leaf).ok_or_else(unregroupable)?;
+        // The leaf keeps every label, so its aggregation is never regrouped.
+        if !entry.query_time_aggregations.is_empty() {
+            return Err(unregroupable());
+        }
+        let stage = aggregation_stage(&avg).ok_or_else(unregroupable)?;
+        let planned = QueryPlanEntry {
+            aggregation_keys: entry.aggregation_keys.clone(),
+            planned_subquery: leaf.clone(),
+            query_time_aggregations: vec![stage],
+        };
+        queries.insert(query.clone(), planned);
+        leaves.push(leaf);
+    }
+    for leaf in leaves {
+        if !asked.contains(&&leaf) && !binary_leaves.contains(&leaf) {
+            queries.shift_remove(&leaf);
+        }
+    }
+    Ok(())
 }
 
 /// The leaves of the workload's binary queries. The engine runs a binary
@@ -1084,6 +1132,45 @@ mod tests {
     #[test]
     fn avg_query_is_an_error() {
         let query = "avg by (job) (http_requests_total)";
+        let (config, workload, solution) = plan(&group(query, 0.99));
+        let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
+            .err()
+            .unwrap();
+        assert!(matches!(err, MilpOutputError::AvgQuery(q) if q == query));
+    }
+
+    /// An avg of a per-series function reads that function's aggregation
+    /// and averages its series at query time; the bare leaf isn't a query.
+    #[test]
+    fn per_series_avg_averages_its_leaf_at_query_time() {
+        let query = "avg by (job) (quantile_over_time(0.99, http_requests_total[5m]))";
+        let leaf = "quantile_over_time(0.99, http_requests_total[5m])";
+        let (config, workload, solution) = plan(&group(query, 0.99));
+        let output =
+            plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution).unwrap();
+
+        let a = aggregation_for(&output, query);
+        assert_eq!(a.aggregation_type, AggregationType::DatasketchesKLL);
+        let query_config = query_config_for(&output, query);
+        assert_eq!(query_config.planned_subquery, leaf);
+        let [stage] = query_config.query_time_aggregations.as_slice() else {
+            panic!("{:?}", query_config.query_time_aggregations);
+        };
+        assert_eq!(
+            serde_json::to_value(stage).unwrap(),
+            json!({"operator": "avg", "grouping": {"mode": "by", "labels": ["job"]},
+                   "parameter": null})
+        );
+        stage.validate().unwrap();
+        let inference = output.to_inference_config(QueryLanguage::promql).unwrap();
+        assert!(inference.query_configs.iter().all(|q| q.query != leaf));
+    }
+
+    /// A binary query's arms run without query-time stages, so a per-series
+    /// avg arm can't be answered.
+    #[test]
+    fn per_series_avg_in_a_binary_arm_is_an_error() {
+        let query = "avg by (job) (quantile_over_time(0.99, http_requests_total[5m])) * 2";
         let (config, workload, solution) = plan(&group(query, 0.99));
         let err = plan_to_planner_output(MilpConfig::Promql(&config), &workload, &solution)
             .err()

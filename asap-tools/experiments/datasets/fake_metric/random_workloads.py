@@ -12,6 +12,7 @@ import math
 import random
 from pathlib import Path
 
+from sketch_bench_workloads import Query, raw_sql
 
 WORKLOAD_COUNT = 10
 QUERIES_PER_WORKLOAD = 10
@@ -19,8 +20,10 @@ SAMPLES_PER_SEC_PER_SERIES = 10
 ACCURACY_SLA = 0.95
 SECOND_MS = 1_000
 MINUTE_MS = 60 * SECOND_MS
-SPATIAL_LOOKBACK_MS = 100
-SPATIAL_INTERVAL_MS = 100
+# 100 s at 10 samples/s gives each series' quantile sketch 1,000 samples, the
+# first N sketch-bench's accuracy curves cover.
+QUANTILE_LOOKBACK_MS = 100 * SECOND_MS
+QUANTILE_INTERVAL_MS = SECOND_MS
 LABEL_HIERARCHY = (
     ("region", 4, None),
     ("service", 5, "region"),
@@ -49,6 +52,16 @@ TEMPORAL_TIMES = (
 )
 QUANTILES = (0.50, 0.75, 0.90, 0.95, 0.99)
 TOPK_VALUES = (4, 8)
+BACKFILL_HISTORY_MS = 20 * MINUTE_MS
+LEAF_SERIES_COUNT = math.prod(LABEL_CARDINALITIES.values())
+LEAF_LABELS = tuple(name for name, _, _ in LABEL_HIERARCHY)
+# Every ClickHouse table has the leaf labels (sketch_bench_workloads' tables).
+CLICKHOUSE_LABELS = {
+    table: list(LEAF_LABELS) for table in ("data", "data_total", "events")
+}
+ZIPF_EXPONENT = 1.1
+USER_ID_UNIVERSE_SIZE = 10_000
+USER_IDS_PER_LEAF = 1_000
 
 
 def duration(milliseconds):
@@ -60,9 +73,98 @@ def grouping_text(grouping):
     return ", ".join(grouping)
 
 
+def rqe_query(rqe):
+    """The ClickHouse renderers' Query for one RQE, built from its fields,
+    never from its PromQL. Raw and MV ClickHouse SQL both render it."""
+    capability, grouping = rqe["capability"], tuple(rqe["grouping_labels"])
+    common = {
+        "table": rqe["metric"],
+        "interval_secs": rqe["interval_ms"] // SECOND_MS,
+        "window_secs": rqe["lookback_ms"] // SECOND_MS,
+    }
+    if capability == "sum":
+        return Query(**common, grouping=grouping, series_fn=None, agg="sum")
+    if capability == "quantile":
+        quantile = f"{rqe['phi']:.2f}"
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn="quantile",
+            agg="avg",
+            quantile=quantile,
+        )
+    if capability == "topk_by_value":
+        return Query(
+            **common,
+            grouping=LEAF_LABELS,
+            series_fn=None,
+            agg="sum",
+            topk=rqe["k"],
+            topk_by=grouping,
+        )
+    if capability in ("topk_by_count", "rate"):
+        series_fn = "increase" if capability == "topk_by_count" else "rate"
+        return Query(
+            **common,
+            grouping=LEAF_LABELS,
+            series_fn=series_fn,
+            agg=None,
+            topk=rqe["k"],
+            topk_by=grouping,
+        )
+    if capability == "cardinality":
+        # Planner SQL windows are left-open, (E - W, E].
+        return Query(
+            **common,
+            grouping=grouping,
+            series_fn=None,
+            agg="cardinality",
+            value=rqe["value"],
+            left_open=True,
+        )
+    raise ValueError(f"unknown capability {capability!r}")
+
+
 def choose_temporal_time(rng):
     lookback_ms, intervals = rng.choice(TEMPORAL_TIMES)
     return lookback_ms, rng.choice(intervals)
+
+
+def workload_data_facts(seed):
+    """Return the feeder contract shared by every workload from one seed."""
+    return {
+        "feeder_seed": seed,
+        "scrape_interval_ms": SECOND_MS // SAMPLES_PER_SEC_PER_SERIES,
+        "backfill_history_ms": BACKFILL_HISTORY_MS,
+        "series": {
+            "leaf_count": LEAF_SERIES_COUNT,
+            "ranking": {
+                "kind": "deterministic_zipf_like",
+                "exponent": ZIPF_EXPONENT,
+                "rank_scope": "leaf_series",
+            },
+        },
+        "metrics": {
+            "data": {
+                "kind": "gauge",
+                "value_shape": "rank_scaled_pareto",
+                "pareto_shape": 2.0,
+            },
+            "data_total": {
+                "kind": "counter",
+                "increment_shape": "rank_scaled_positive_deterministic",
+                "resets": "none",
+            },
+        },
+        "events": {
+            "table": "events",
+            "time_column": "ts",
+            "distinct_key": "user_id",
+            "user_id_universe_size": USER_ID_UNIVERSE_SIZE,
+            "user_ids_per_leaf": USER_IDS_PER_LEAF,
+            "assignment": "deterministic_rotating_pool_with_cross_leaf_overlap",
+        },
+    }
 
 
 def query(
@@ -76,10 +178,15 @@ def query(
     **params,
 ):
     """Create one manifest query and its single optimizer-facing RQE."""
+    metrics = {
+        "rate": "data_total",
+        "topk_by_count": "data_total",
+        "cardinality": "events",
+    }
     rqe = {
         "id": f"{query_id}/rqe",
         "capability": capability,
-        "metric": "data_total" if capability in ("rate", "topk_by_count") else "data",
+        "metric": metrics.get(capability, "data"),
         "grouping_labels": list(grouping),
         "lookback_ms": lookback_ms,
         "interval_ms": interval_ms,
@@ -96,6 +203,7 @@ def query(
         "interval_ms": interval_ms,
         "promql": rendered if support != "sql-only" else None,
         "sql": rendered if support == "sql-only" else None,
+        "clickhouse_sql": raw_sql(rqe_query(rqe), CLICKHOUSE_LABELS),
         "rqes": [rqe],
     }
 
@@ -103,18 +211,24 @@ def query(
 def sum_query(query_id, grouping, lookback_ms, interval_ms):
     rendered = f"sum by ({grouping_text(grouping)}) (sum_over_time(data[{duration(lookback_ms)}]))"
     return query(
-        query_id, "sum", grouping, lookback_ms, interval_ms, rendered, "common-promql"
+        query_id,
+        "sum",
+        grouping,
+        lookback_ms,
+        interval_ms,
+        rendered,
+        "common-promql",
     )
 
 
 def quantile_query(query_id, grouping, phi):
-    rendered = f"quantile by ({grouping_text(grouping)}) ({phi:.2f}, data)"
+    rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[{QUANTILE_LOOKBACK_MS // SECOND_MS}s]))"
     return query(
         query_id,
         "quantile",
         grouping,
-        SPATIAL_LOOKBACK_MS,
-        SPATIAL_INTERVAL_MS,
+        QUANTILE_LOOKBACK_MS,
+        QUANTILE_INTERVAL_MS,
         rendered,
         "common-promql",
         phi=phi,
@@ -235,6 +349,7 @@ def generate_workload(seed, index):
         "seed": seed,
         "labels": METRIC_LABELS,
         "samples_per_sec_per_series": SAMPLES_PER_SEC_PER_SERIES,
+        "data_facts": workload_data_facts(seed),
         "queries": queries,
     }
     validate_workload(workload)
@@ -244,6 +359,16 @@ def generate_workload(seed, index):
 def validate_workload(workload):
     """Reject manifests that violate the experiment's stable public contract."""
     queries = workload["queries"]
+    data_facts = workload["data_facts"]
+    if data_facts["scrape_interval_ms"] != SECOND_MS // SAMPLES_PER_SEC_PER_SERIES:
+        raise ValueError("data facts must declare the 100 ms scrape interval")
+    if data_facts["series"]["leaf_count"] != LEAF_SERIES_COUNT:
+        raise ValueError("data facts must declare every leaf series")
+    if data_facts["metrics"]["data_total"]["resets"] != "none":
+        raise ValueError("the pilot counter contract must be monotonic")
+    events = data_facts["events"]
+    if not 0 < events["user_ids_per_leaf"] <= events["user_id_universe_size"]:
+        raise ValueError("distinct user pools must fit in the declared universe")
     if len(queries) != QUERIES_PER_WORKLOAD:
         raise ValueError(
             f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries"

@@ -19,6 +19,9 @@ services:
       # Raise the per-query caps so 24 h windows over many series aren't rejected.
       - "-search.maxSamplesPerQuery=10000000000"
       - "-search.maxPointsPerTimeseries=1000000"
+      # Serve samples as soon as they arrive, as Prometheus does; the default
+      # 30 s hides the end of any window queried sooner after it closes.
+      - "-search.latencyOffset=0s"
     {% if cpu_limit or memory_limit -%}
     deploy:
       resources:
