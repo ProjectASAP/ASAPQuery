@@ -35,6 +35,19 @@ PILOT_DIR = (
 CLICKHOUSE = shutil.which("clickhouse")
 
 
+def all_workloads():
+    return [
+        w
+        for variant in workloads.VARIANTS
+        for w in workloads.generate_workloads(seed=862, variant=variant)
+    ]
+
+
+def pilot_dir_of(workload):
+    set_dir = PILOT_DIR.parent.parent / artifacts.workload_set(workload)
+    return set_dir / f"{workload['id']}-pilot"
+
+
 def pilot():
     workload = workloads.generate_workloads(seed=862)[0]
     files = artifacts.pilot_configs(workload, PILOT_DIR)
@@ -93,9 +106,9 @@ class RenderArtifactsTest(unittest.TestCase):
 
     def test_archived_pilot_plans_read_the_manifests_pilot_queries(self):
         # An archived plan is only valid for the queries it was solved for.
-        for workload in workloads.generate_workloads(seed=862):
-            with self.subTest(workload=workload["id"]):
-                pilot_dir = PILOT_DIR.parent / f"{workload['id']}-pilot"
+        for workload in all_workloads():
+            with self.subTest(workload=workload["id"], variant=workload.get("variant")):
+                pilot_dir = pilot_dir_of(workload)
                 with open(pilot_dir / "eval_table.json") as f:
                     e2e = json.load(f)["workloads"][0]["e2e"]
                 self.assertEqual(
@@ -116,9 +129,9 @@ class RenderArtifactsTest(unittest.TestCase):
                 )
 
     def test_every_workload_renders_its_pilot_configs(self):
-        for workload in workloads.generate_workloads(seed=862):
-            with self.subTest(workload=workload["id"]):
-                pilot_dir = PILOT_DIR.parent / f"{workload['id']}-pilot"
+        for workload in all_workloads():
+            with self.subTest(workload=workload["id"], variant=workload.get("variant")):
+                pilot_dir = pilot_dir_of(workload)
                 files = artifacts.pilot_configs(workload, pilot_dir)
                 self.assertEqual(
                     sum(path.suffix == ".yaml" for path in files), 4, sorted(files)
@@ -209,7 +222,9 @@ class PilotConfigsPreflightTest(unittest.TestCase):
         ):
             return compose(
                 "config",
-                overrides=[f"experiment_type=random_workload/workload-01/{name}"],
+                overrides=[
+                    f"experiment_type=random_workload/seed-862/workload-01/{name}"
+                ],
             )
 
     def test_e2e_and_victoriametrics_configs_validate(self):
