@@ -124,7 +124,6 @@ def main(csv_path, out_dir):
     )
     for ax, set_name in zip(axes[0], sets):
         ax.set_facecolor(SURFACE)
-        workloads = sorted({r["workload"] for r in by_set[set_name]})
         for key, label, color, marker in SYSTEMS:
             pts = [r for r in by_set[set_name] if r["arm"] == key]
             xs = [float(r["cpu_secs"]) for r in pts]
@@ -163,11 +162,6 @@ def main(csv_path, out_dir):
             axis.set_major_locator(ticker.LogLocator(subs=(1, 2, 5)))
             axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(ticker.NullFormatter())
-        title = (
-            f"{len(workloads)} workload(s), lower left is better"
-            "\nhollow: invalid run (failed queries or wrong answers)"
-        )
-        ax.set_title(title, color=INK, fontsize=14, loc="left")
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
         ax.tick_params(colors=MUTED, labelsize=13, width=2)
         for spine in ax.spines.values():
