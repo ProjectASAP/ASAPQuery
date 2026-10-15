@@ -29,7 +29,11 @@ LABEL_HIERARCHY = (
 )
 LABEL_CARDINALITIES = {name: cardinality for name, cardinality, _ in LABEL_HIERARCHY}
 METRIC_LABELS = [
-    {"name": name, "cardinality": cardinality, **({"child_of": parent} if parent else {})}
+    {
+        "name": name,
+        "cardinality": cardinality,
+        **({"child_of": parent} if parent else {}),
+    }
     for name, cardinality, parent in LABEL_HIERARCHY
 ]
 GROUPINGS = (("region",), ("region", "service"), ("region", "service", "job"))
@@ -241,7 +245,9 @@ def validate_workload(workload):
     """Reject manifests that violate the experiment's stable public contract."""
     queries = workload["queries"]
     if len(queries) != QUERIES_PER_WORKLOAD:
-        raise ValueError(f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries")
+        raise ValueError(
+            f"a workload must contain exactly {QUERIES_PER_WORKLOAD} queries"
+        )
     if len({query["id"] for query in queries}) != len(queries):
         raise ValueError("query IDs must be unique")
     rqe_keys = {
