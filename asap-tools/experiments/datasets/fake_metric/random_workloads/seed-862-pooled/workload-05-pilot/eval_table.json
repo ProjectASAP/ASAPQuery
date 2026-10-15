@@ -1,6 +1,6 @@
 {
  "inputs": {
-  "workload-05.json": "21f70c2eaf8d63f965011d13c54320719e74e531bc5cf5536e9f3b3d6a9ca533"
+  "workload-05.json": "ca0dfc12777d578f43749ca33fdd995667034ccce4d32fae5bc99f7294d1deef"
  },
  "plan": "ProjectASAP/ASAPQuery#879",
  "schema_version": 1,
@@ -86,7 +86,7 @@
       ]
      },
      {
-      "client_promql": "avg by (region, service) (quantile_over_time(0.99, data[100s]))",
+      "client_promql": "quantile by (region, service) (0.99, quantile_over_time(0.99, data[100s]))",
       "expr": {
        "rqe": {
         "capability": "quantile",
@@ -106,7 +106,7 @@
       ]
      },
      {
-      "client_promql": "avg by (region, service, job) (quantile_over_time(0.50, data[100s]))",
+      "client_promql": "quantile by (region, service, job) (0.50, quantile_over_time(0.50, data[100s]))",
       "expr": {
        "rqe": {
         "capability": "quantile",
@@ -127,7 +127,7 @@
       ]
      },
      {
-      "client_promql": "avg by (region) (quantile_over_time(0.90, data[100s]))",
+      "client_promql": "quantile by (region) (0.90, quantile_over_time(0.90, data[100s]))",
       "expr": {
        "rqe": {
         "capability": "quantile",

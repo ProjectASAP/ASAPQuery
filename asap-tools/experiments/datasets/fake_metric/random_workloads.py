@@ -262,10 +262,14 @@ def sum_query(query_id, grouping, lookback_ms, interval_ms):
 def quantile_query(
     query_id, grouping, phi, lookback_ms=QUANTILE_LOOKBACK_MS, pooled=False
 ):
-    """A quantile by `grouping`. Pooled, its RQE is the quantile of all of a
-    group's samples; PromQL can't say that, so the PromQL is the avg of
-    per-series quantiles either way, a stand-in when pooled."""
-    rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, data[{lookback_ms // SECOND_MS}s]))"
+    """A quantile by `grouping`: the avg of per-series quantiles, or pooled,
+    the quantile of all of a group's samples. PromQL can't say the pooled
+    one, so its PromQL is a stand-in: the quantile of per-series quantiles."""
+    window = f"data[{lookback_ms // SECOND_MS}s]"
+    if pooled:
+        rendered = f"quantile by ({grouping_text(grouping)}) ({phi:.2f}, quantile_over_time({phi:.2f}, {window}))"
+    else:
+        rendered = f"avg by ({grouping_text(grouping)}) (quantile_over_time({phi:.2f}, {window}))"
     return query(
         query_id,
         "quantile",

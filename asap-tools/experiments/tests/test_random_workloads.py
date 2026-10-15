@@ -115,14 +115,17 @@ class GenerateWorkloadsTest(unittest.TestCase):
                     self.assertEqual(p_rqe.get("k"), b_rqe.get("k"))
                     if b_rqe["capability"] not in ("quantile", "topk_by_value"):
                         self.assertEqual(pq, bq)
+                    if b_rqe["capability"] == "quantile":
+                        self.assertEqual(pq["grouping"], bq["grouping"])
         self.assertNotIn("pooled", base[0])
 
     def test_a_pooled_quantile_is_one_over_each_groups_samples(self):
-        # PromQL keeps the avg-of-series stand-in; the RQE and ClickHouse
-        # take the quantile of the group's raw samples.
+        # PromQL's stand-in is the quantile of per-series quantiles; the RQE
+        # and ClickHouse take the quantile of the group's raw samples.
         q = workloads.quantile_query("q", ("region",), 0.95, pooled=True)
         self.assertEqual(
-            q["promql"], "avg by (region) (quantile_over_time(0.95, data[100s]))"
+            q["promql"],
+            "quantile by (region) (0.95, quantile_over_time(0.95, data[100s]))",
         )
         self.assertTrue(q["rqes"][0]["pooled"])
         self.assertIn("quantileExactInclusive(0.95)(value)", q["clickhouse_sql"])

@@ -128,7 +128,7 @@
       "lookback_ms": 100000,
       "output_groups": 200,
       "output_series_upper_bound": 200,
-      "promql": "avg by (region, service, job) (quantile_over_time(0.75, data[100s]))",
+      "promql": "quantile by (region, service, job) (0.75, quantile_over_time(0.75, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -161,7 +161,7 @@
       "lookback_ms": 100000,
       "output_groups": 200,
       "output_series_upper_bound": 200,
-      "promql": "avg by (region, service, job) (quantile_over_time(0.95, data[100s]))",
+      "promql": "quantile by (region, service, job) (0.95, quantile_over_time(0.95, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,
@@ -193,7 +193,7 @@
       "lookback_ms": 100000,
       "output_groups": 20,
       "output_series_upper_bound": 20,
-      "promql": "avg by (region, service) (quantile_over_time(0.75, data[100s]))",
+      "promql": "quantile by (region, service) (0.75, quantile_over_time(0.75, data[100s]))",
       "rqes": [
         {
           "accuracy_sla": 0.95,

@@ -220,7 +220,7 @@ class PilotConfigsTest(unittest.TestCase):
         self.assertEqual(set(side), set(texts))
         # The pooled quantile: one leaf at its grouping, under the avg-of-series
         # stand-in text Prometheus runs.
-        stand_in = "avg by (region) (quantile_over_time(0.95, data[100s]))"
+        stand_in = "quantile by (region) (0.95, quantile_over_time(0.95, data[100s]))"
         self.assertEqual(side[stand_in]["rqe"]["grouping"], ["region"])
         self.assertNotIn(
             "query_engine",
