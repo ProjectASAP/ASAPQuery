@@ -52,9 +52,10 @@ EXACT_REL_ERR = 1e-3
 # VictoriaMetrics may count a window-boundary sample Prometheus doesn't.
 VM_REL_ERR = 5e-3
 EXACT_TOPK_PRECISION = 0.99
-# ASAPQuery's sketches: quantiles at the 0.95 accuracy SLA; sums are exact
-# but for a window-boundary sample; top-k at its precision target.
-ASAP_QUANTILE_REL_ERR = 0.05
+# ASAPQuery's sketches: quantiles within the plans' DDSketch guarantee (alpha
+# 0.1, relative error at most 10%); sums are exact but for a window-boundary
+# sample; top-k at its precision target.
+ASAP_QUANTILE_REL_ERR = 0.10
 ASAP_SUM_REL_ERR = 5e-3
 ASAP_TOPK_PRECISION = 0.95
 
