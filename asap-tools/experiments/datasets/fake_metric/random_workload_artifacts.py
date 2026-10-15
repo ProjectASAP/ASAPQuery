@@ -154,7 +154,7 @@ def pilot_configs(workload, pilot_dir):
     table = pilot_dir / "eval_table.json"
     out_dir = Path(CONFIG_DIR) / workload_set(workload) / workload["id"]
 
-    e2e, _ = build_config(
+    e2e, _, _ = build_config(
         str(table),
         seed,
         starting_delay,
