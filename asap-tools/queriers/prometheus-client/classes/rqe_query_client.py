@@ -10,6 +10,8 @@ from .query_client import QueryClient, QueryResponse
 # The `protocol` of a config server answered by RqeQueryClient.
 RQE_PROTOCOL = "rqe"
 RQE_QUERY_PATH = "/api/v1/rqe_query"
+# The only result type the route answers with; results compare as vectors.
+VECTOR_RESULT_TYPE = "vector"
 # (connect, read): the engine answers from precomputed sketches, but a dead
 # server must still fail instead of hanging the querier.
 RQE_QUERY_TIMEOUT_SECS: Tuple[float, float] = (10, 300)
@@ -110,6 +112,15 @@ class RqeQueryClient(QueryClient):
                     success=False,
                     data=None,
                     error_message=f"RQE query failed: {body}",
+                    raw_response=body,
+                )
+            result_type = body["data"].get("resultType")
+            if result_type != VECTOR_RESULT_TYPE:
+                return QueryResponse(
+                    success=False,
+                    data=None,
+                    error_message=f"unexpected result type {result_type!r}, "
+                    f"expected {VECTOR_RESULT_TYPE!r}",
                     raw_response=body,
                 )
             raw_result = body["data"]["result"]

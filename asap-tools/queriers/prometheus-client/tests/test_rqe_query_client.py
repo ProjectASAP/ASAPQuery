@@ -132,6 +132,19 @@ class RqeQueryClientTest(unittest.TestCase):
         assert result.error_message is not None
         self.assertIn("ConnectionError", result.error_message)
 
+    def test_non_vector_result_is_a_failure(self) -> None:
+        for result_type, raw in (("scalar", [1, "3"]), ("matrix", []), (None, [])):
+            data: Dict[str, Any] = {"result": raw}
+            if result_type is not None:
+                data["resultType"] = result_type
+            self.post.return_value = response(200, {"status": "success", "data": data})
+            result = self.client.execute_query(PROMQL, query_time=1)
+            self.assertFalse(result.success)
+            self.assertEqual(
+                result.error_message,
+                f"unexpected result type {result_type!r}, expected 'vector'",
+            )
+
     def test_empty_result_is_a_success(self) -> None:
         self.post.return_value = response(
             200, {"status": "success", "data": {"resultType": "vector", "result": []}}
