@@ -46,6 +46,8 @@ SYSTEMS = [
     ("vm", "VictoriaMetrics", "#1baf7a", "^"),
     ("ch", "ClickHouse", "#eda100", "D"),
     ("chmv", "ClickHouse+MV", "#e87ba4", "v"),
+    # ClickHouse+MV with approximate quantiles, when a CSV includes it (slot 8).
+    ("chmvaq", "ClickHouse+MV (approx.)", "#e34948", "<"),
 ]
 SURFACE, INK = "#fcfcfb", "#0b0b0b"
 
