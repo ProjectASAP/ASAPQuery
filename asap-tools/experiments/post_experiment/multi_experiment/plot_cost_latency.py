@@ -51,8 +51,9 @@ SURFACE, INK = "#fcfcfb", "#0b0b0b"
 
 
 # Memory label offset (points) and alignment; VictoriaMetrics sits just left
-# of ClickHouse, so its label goes up and left.
-MEM_LABEL = {"vm": ((-10, 10), "right", "bottom")}
+# of ClickHouse, so its label goes up and left; LiteOlly's goes up, clear
+# of the latency arrow below it.
+MEM_LABEL = {"vm": ((-10, 10), "right", "bottom"), "asap": ((10, 8), "left", "bottom")}
 
 
 def summary(ax, xs, ys, mems, color, marker, label, key):
@@ -88,7 +89,7 @@ def summary(ax, xs, ys, mems, color, marker, label, key):
         xytext=offset,
         textcoords="offset points",
         color=INK,
-        fontsize=13,
+        fontsize=16,
         ha=ha,
         va=va,
         zorder=6,
@@ -133,19 +134,19 @@ def arrows(ax, rows, improvement, set_name):
         ly * cpu * 1.12,
         vs("cpu_secs", "cheaper"),
         color=INK,
-        fontsize=15,
+        fontsize=17,
         ha="left",
         va="bottom",
     )
     arm, lat = worst["latency_p95"]
-    y = ly / 1.4
+    y = ly / 1.5
     ax.annotate("", (lx, y), xytext=(lx * lat, y), arrowprops=style, zorder=4)
     ax.text(
         lx * lat**0.5,
         y / 1.08,
         vs("latency_p95", "faster"),
         color=INK,
-        fontsize=15,
+        fontsize=17,
         ha="center",
         va="top",
     )
@@ -153,7 +154,7 @@ def arrows(ax, rows, improvement, set_name):
     # Room on the right for the slowest system's memory label.
     ax.set_xlim(min(left, x / 1.5), right * 1.8)
     bottom, top = ax.get_ylim()
-    ax.set_ylim(min(bottom, ly / 2.6), max(top, ly * cpu * 2.2))
+    ax.set_ylim(min(bottom, ly / 3.2), max(top, ly * cpu * 2.2))
 
 
 def main(csv_path, out_dir, suffix=""):
@@ -178,7 +179,7 @@ def main(csv_path, out_dir, suffix=""):
     for i, (ax, set_name) in enumerate(zip(axes[0], sets)):
         ax.set_facecolor(SURFACE)
         if len(sets) > 1:
-            ax.set_title(f"{set_name} dataset", color=INK, fontsize=18)
+            ax.set_title(f"{set_name} dataset", color=INK, fontsize=21)
         for key, label, color, marker in SYSTEMS:
             label = label if key == "asap" else label + suffix
             pts = [r for r in by_set[set_name] if r["arm"] == key]
@@ -215,15 +216,15 @@ def main(csv_path, out_dir, suffix=""):
                 summary(ax, *zip(*fit), color, marker, label, key)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("p95 Query Latency (s)", color=INK, fontsize=16)
+        ax.set_xlabel("p95 Query Latency (s)", color=INK, fontsize=19)
         if i == 0:
-            ax.set_ylabel("Total Compute Cost (CPU-sec)", color=INK, fontsize=16)
+            ax.set_ylabel("Total Compute Cost (CPU-sec)", color=INK, fontsize=19)
         for axis in (ax.xaxis, ax.yaxis):
             axis.set_major_locator(ticker.LogLocator(subs=(1,)))
             axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(ticker.NullFormatter())
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
-        ax.tick_params(colors=INK, labelsize=15, width=2)
+        ax.tick_params(colors=INK, labelsize=18, width=2)
         for spine in ax.spines.values():
             spine.set_color(INK)
             spine.set_linewidth(2)
@@ -242,13 +243,13 @@ def main(csv_path, out_dir, suffix=""):
     fig.legend(
         *axes[0][0].get_legend_handles_labels(),
         frameon=False,
-        fontsize=15,
+        fontsize=18,
         loc="lower center",
         # Suffixed labels are longer: two a row.
         ncol=min(len(SYSTEMS), (2 if suffix else 3) * len(sets)),
     )
     # A one-panel figure fits three legend entries a row, so two rows.
-    fig.tight_layout(rect=(0, 0.07 if len(sets) > 1 else 0.12, 1, 1))
+    fig.tight_layout(rect=(0, 0.1 if len(sets) > 1 else 0.12, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = "+".join(s.replace(" ", "-") for s in sets)
     out_path = Path(out_dir) / f"cost_latency_{name}_{stamp}.png"
