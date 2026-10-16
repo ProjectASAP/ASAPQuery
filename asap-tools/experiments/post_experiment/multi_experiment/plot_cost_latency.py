@@ -251,7 +251,7 @@ def main(csv_path, out_dir, suffix=""):
         ncol=min(len(SYSTEMS), (2 if suffix else 3) * len(sets)),
     )
     # A one-panel figure fits three legend entries a row, so two rows.
-    fig.tight_layout(rect=(0, 0.1 if len(sets) > 1 else 0.12, 1, 1))
+    fig.tight_layout(rect=(0, 0.1 if len(sets) > 1 else 0.17, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = "+".join(s.replace(" ", "-") for s in sets)
     out_path = Path(out_dir) / f"cost_latency_{name}_{stamp}.png"
