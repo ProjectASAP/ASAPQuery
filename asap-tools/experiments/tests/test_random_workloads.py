@@ -186,6 +186,14 @@ class GenerateWorkloadsTest(unittest.TestCase):
                             )
                     self.assertLessEqual(q["lookback_ms"], 20 * workloads.MINUTE_MS)
 
+    def test_sub_minute_windows_render_in_seconds(self):
+        # PromQL rejects "[0m]"; a 1 s top-k window once rendered as that.
+        self.assertEqual(workloads.duration(1_000), "1s")
+        self.assertEqual(workloads.duration(60_000), "1m")
+        for w in workloads.generate_workloads(seed=862, dashboard=True):
+            for q in w["queries"]:
+                self.assertNotIn("[0m]", q["promql"])
+
     def test_manifest_declares_deterministic_feeder_facts(self):
         facts = workloads.generate_workloads(seed=4)[0]["data_facts"]
 

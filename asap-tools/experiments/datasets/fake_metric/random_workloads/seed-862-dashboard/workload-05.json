@@ -313,7 +313,7 @@
       "lookback_ms": 1000,
       "output_groups": 1,
       "output_series_upper_bound": 5,
-      "promql": "topk(5, sum by (region, service) (sum_over_time(data[0m])))",
+      "promql": "topk(5, sum by (region, service) (sum_over_time(data[1s])))",
       "rqes": [
         {
           "accuracy_sla": 0.95,

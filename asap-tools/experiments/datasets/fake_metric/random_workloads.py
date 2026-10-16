@@ -110,7 +110,9 @@ VARIANTS = {
 
 
 def duration(milliseconds):
-    """Render a whole-minute duration for the supported PromQL templates."""
+    """Render a PromQL duration: whole minutes as minutes, else seconds."""
+    if milliseconds % MINUTE_MS:
+        return f"{milliseconds // SECOND_MS}s"
     return f"{milliseconds // MINUTE_MS}m"
 
 

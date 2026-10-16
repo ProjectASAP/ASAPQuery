@@ -1,6 +1,6 @@
 {
  "inputs": {
-  "workload-07.json": "d3a1f4827ae21863ed1a071d83ef6e759a077b67677d2f271c1ff901c492265b"
+  "workload-07.json": "01a0c8437372ab7cc9d4b172229336875826af67f428c8f6c622144be46ece31"
  },
  "plan": "ProjectASAP/ASAPQuery#879",
  "schema_version": 1,
@@ -222,7 +222,7 @@
       ]
      },
      {
-      "client_promql": "topk(3, sum by (region, service, job) (sum_over_time(data[0m])))",
+      "client_promql": "topk(3, sum by (region, service, job) (sum_over_time(data[1s])))",
       "expr": {
        "rqe": {
         "capability": "topk_by_value",
