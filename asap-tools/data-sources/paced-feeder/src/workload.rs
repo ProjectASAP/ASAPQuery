@@ -59,6 +59,9 @@ pub enum Kind {
     /// `(n + 1) · scale` at sample index `n`: starts at the first sample, grows
     /// by the series' scale per sample and never resets.
     Counter,
+    /// Recorded values, `steps` per series, series-major: sample index `n`
+    /// takes step `n mod steps`, so the recording loops.
+    Replay { steps: usize, values: Arc<Vec<f64>> },
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +216,9 @@ impl Metric {
                 scale * pareto_scale * u.powf(-1.0 / pareto_shape)
             }
             Kind::Counter => (sample_index + 1) as f64 * scale,
+            Kind::Replay { steps, ref values } => {
+                values[series * steps + (sample_index % steps as u64) as usize]
+            }
         }
     }
 }

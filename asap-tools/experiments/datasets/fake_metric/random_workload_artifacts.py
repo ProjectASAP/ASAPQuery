@@ -19,6 +19,10 @@ EXPERIMENTS_DIR = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 sys.path.insert(0, EXPERIMENTS_DIR)
+from experiment_utils.config import (  # noqa: E402
+    QUERY_FRONTEND_PROMQL,
+    QUERY_FRONTEND_RQE,
+)
 from sketch_bench_e2e.sketch_bench_e2e_configs import (  # noqa: E402
     BASELINE_MODE,
     build_config,
@@ -34,6 +38,8 @@ FEED_BOUND_QUERY_PHASES = 10
 QUERY_FRESHNESS_DELAY_SECS = 10
 # Relative to EXPERIMENTS_DIR, where the runners read configs and SQL.
 CONFIG_DIR = "config/experiment_type/random_workload"
+# A pooled workload's query text -> RQE tree, next to its e2e.yaml.
+RQE_EXPRS_FILE = "e2e.rqe_exprs.json"
 VICTORIAMETRICS_URL = "http://localhost:8428"
 # 26.6 and later need AVX2, which CloudLab's Xeon E5-2450 nodes lack; the
 # ClickHouse SQL's semantics tests also pass on 23.8.
@@ -128,12 +134,35 @@ def query_groups(queries, query_key):
 
 
 def workload_set(workload):
-    """The directory of `workload`'s seed and variant: seed-862, seed-862-long."""
+    """The directory of `workload`'s seed, variant and query style:
+    seed-862, seed-862-long, seed-862-x2-pooled."""
     variant = workload.get("variant")
-    return f"seed-{workload['seed']}" + (f"-{variant}" if variant else "")
+    style = (
+        f"-{workload['style']}"
+        if "style" in workload
+        else "-pooled" if workload.get("pooled") else ""
+    )
+    return f"seed-{workload['seed']}" + (f"-{variant}" if variant else "") + style
 
 
-def pilot_configs(workload, pilot_dir):
+def as_dashboards(groups, dashboards, key):
+    """`groups` repeated once per dashboard, each copy its own client thread
+    and output group; `key` ("id" or "name") stays unique per copy."""
+    if dashboards == 1:
+        return groups
+    copies = []
+    for d in range(1, dashboards + 1):
+        for group in groups:
+            group = copy.deepcopy(group)
+            if key == "id":
+                group["id"] = len(copies) + 1
+            else:
+                group[key] = f"{group[key]}_d{d}"
+            copies.append(group)
+    return copies
+
+
+def pilot_configs(workload, pilot_dir, dashboards=1):
     """The five-system pilot's run configs, {path under EXPERIMENTS_DIR:
     content}: ASAPQuery (the saved plan in `pilot_dir`) and Prometheus in
     one experiment_run_e2e.py config, VictoriaMetrics in another, and raw
@@ -144,7 +173,14 @@ def pilot_configs(workload, pilot_dir):
     freshness delay, then evaluates each query at multiples of its interval
     for PILOT_DURATION_MS: the same windows relative to its data start.
     Raw ClickHouse runs the manifest's clickhouse_sql, and ClickHouse+MV
-    the same RQEs' Query over exact views (sketch_bench_workloads)."""
+    the same RQEs' Query over exact views (sketch_bench_workloads).
+
+    With `dashboards` K > 1, every query group runs K times concurrently,
+    as K dashboards over the same data, from `<workload>-dashK/`.
+
+    A pooled workload's ASAPQuery queries go to its RQE frontend, each as its
+    tree from the eval table (side file `e2e.rqe_exprs.json`); Prometheus
+    runs their PromQL."""
     queries = [q for q in workload["queries"] if q["support"] == PILOT_SUPPORT]
     lookback_secs = max(q["lookback_ms"] for q in queries) // 1000
     starting_delay = lookback_secs + QUERY_FRESHNESS_DELAY_SECS
@@ -152,9 +188,11 @@ def pilot_configs(workload, pilot_dir):
     feed_secs = starting_delay + FEED_BOUND_QUERY_PHASES * duration
     seed = workload["data_facts"]["feeder_seed"]
     table = pilot_dir / "eval_table.json"
-    out_dir = Path(CONFIG_DIR) / workload_set(workload) / workload["id"]
+    variant = f"-dash{dashboards}" if dashboards > 1 else ""
+    out_dir = Path(CONFIG_DIR) / workload_set(workload) / (workload["id"] + variant)
 
-    e2e, _, _ = build_config(
+    pooled = workload.get("pooled", False)
+    e2e, _, rqe_exprs = build_config(
         str(table),
         seed,
         starting_delay,
@@ -162,10 +200,19 @@ def pilot_configs(workload, pilot_dir):
         QUERY_FRESHNESS_DELAY_SECS,
         feeder_duration_secs=feed_secs,
         prebuilt_output_dir=str(pilot_dir),
+        frontend=QUERY_FRONTEND_RQE if pooled else QUERY_FRONTEND_PROMQL,
+    )
+    side_file = out_dir / RQE_EXPRS_FILE
+    if pooled:
+        e2e["query_engine"]["rqe_exprs_file"] = os.path.join(EXPERIMENTS_DIR, side_file)
+    e2e_params = e2e["experiment_params"]
+    e2e_params["query_groups"] = as_dashboards(
+        e2e_params["query_groups"], dashboards, "id"
     )
     # One monitoring tool per run, so VictoriaMetrics is its own baseline run.
     vm = copy.deepcopy(e2e)
     del vm["controller"]
+    vm.pop("query_engine", None)
     vm_params = vm["experiment_params"]
     vm_params["experiment"] = [BASELINE_MODE]
     vm_params["monitoring"] = {
@@ -232,7 +279,7 @@ def pilot_configs(workload, pilot_dir):
                 "paced_feeder": feeder,
                 "clickhouse_image_tag": CLICKHOUSE_IMAGE_TAG,
             },
-            "query_groups": groups,
+            "query_groups": as_dashboards(groups, dashboards, "name"),
             "data_ingestion_interval_ms": workload["data_facts"]["scrape_interval_ms"],
         }
         files[name] = "# @package experiment_params\n" + yaml.safe_dump(
@@ -240,6 +287,8 @@ def pilot_configs(workload, pilot_dir):
         )
     for name, config in (("e2e.yaml", e2e), ("victoriametrics.yaml", vm)):
         files[name] = "# @package _global_\n" + yaml.safe_dump(config, sort_keys=False)
+    if pooled:
+        files[RQE_EXPRS_FILE] = json.dumps(rqe_exprs, indent=1) + "\n"
     return {out_dir / name: content for name, content in files.items()}
 
 
@@ -277,7 +326,16 @@ def main():
         help="the workload's archived pilot plan (eval_table.json and planner "
         f"configs): also write the pilot's run configs under {CONFIG_DIR}",
     )
+    parser.add_argument(
+        "--dashboards",
+        type=int,
+        default=1,
+        help="with --pilot-dir: issue every query group this many times "
+        "concurrently, into <workload>-dashK/",
+    )
     args = parser.parse_args()
+    if args.dashboards < 1:
+        parser.error("--dashboards must be at least 1")
     workload = json.loads(args.manifest.read_text())
     rendered = render(workload)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -305,7 +363,9 @@ def main():
     )
     print(table)
     if args.pilot_dir:
-        for path, content in pilot_configs(workload, args.pilot_dir).items():
+        for path, content in pilot_configs(
+            workload, args.pilot_dir, args.dashboards
+        ).items():
             path = Path(EXPERIMENTS_DIR) / path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)

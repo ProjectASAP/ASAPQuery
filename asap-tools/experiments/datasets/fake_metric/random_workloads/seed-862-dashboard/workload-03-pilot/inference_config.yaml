@@ -1,0 +1,73 @@
+cleanup_policy:
+  name: circular_buffer
+metrics:
+  data:
+  - job
+  - label_0
+  - region
+  - service
+queries: []
+rqe_configs:
+  random/seed=862/workload-03/q01-sum/keys/600s:
+    aggregations:
+    - aggregation_id: 1
+      num_aggregates_to_retain: 30
+    query_time_aggregations:
+    - operator: sum
+      grouping:
+        mode: by
+        labels:
+        - region
+      parameter: null
+  random/seed=862/workload-03/q02-sum/keys/600s:
+    aggregations:
+    - aggregation_id: 1
+      num_aggregates_to_retain: 30
+    query_time_aggregations:
+    - operator: sum
+      grouping:
+        mode: by
+        labels:
+        - region
+        - service
+      parameter: null
+  random/seed=862/workload-03/q03-sum/keys/600s:
+    aggregations:
+    - aggregation_id: 1
+      num_aggregates_to_retain: 30
+    query_time_aggregations: []
+  random/seed=862/workload-03/q04-panel-p50/values/600s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 60
+    query_time_aggregations: []
+  random/seed=862/workload-03/q05-panel-p90/values/600s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 60
+    query_time_aggregations: []
+  random/seed=862/workload-03/q06-panel-p99/values/600s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 60
+    query_time_aggregations: []
+  random/seed=862/workload-03/q07-quantile/values/60s:
+    aggregations:
+    - aggregation_id: 3
+      num_aggregates_to_retain: 60
+    query_time_aggregations: []
+  random/seed=862/workload-03/q08-quantile/values/600s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 60
+    query_time_aggregations: []
+  random/seed=862/workload-03/topk3_q09-topk/keys/1s:
+    aggregations:
+    - aggregation_id: 4
+      num_aggregates_to_retain: 1
+    query_time_aggregations: []
+  random/seed=862/workload-03/topk3_q10-topk/keys/300s:
+    aggregations:
+    - aggregation_id: 5
+      num_aggregates_to_retain: 300
+    query_time_aggregations: []

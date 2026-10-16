@@ -1,0 +1,717 @@
+{
+ "inputs": {
+  "workload-02.json": "3e8890b33adff0f320dd904a94c72d64e4cdc23d5e7b162fc07ed02a997b6866"
+ },
+ "plan": "ProjectASAP/ASAPQuery#879",
+ "schema_version": 1,
+ "sketch_bench_revision": "2d2935a9e1a28d1613c11fdd38530f237e6db99b",
+ "workloads": [
+  {
+   "dataset": "random/seed=862/workload-02",
+   "e2e": {
+    "metrics": {
+     "data": {
+      "labels": [
+       {
+        "cardinality": 4,
+        "name": "region"
+       },
+       {
+        "cardinality": 5,
+        "child_of": "region",
+        "name": "service"
+       },
+       {
+        "cardinality": 10,
+        "child_of": "service",
+        "name": "job"
+       },
+       {
+        "cardinality": 50,
+        "child_of": "job",
+        "name": "label_0"
+       }
+      ],
+      "samples_per_sec_per_series": 10,
+      "type": "gauge",
+      "values": {
+       "dist": {
+        "pareto": 2.0
+       },
+       "value": {
+        "keys": 10000,
+        "zipf": 1.1
+       }
+      }
+     }
+    },
+    "queries": [
+     {
+      "expr": {
+       "rqe": {
+        "capability": "sum",
+        "grouping": [
+         "region"
+        ],
+        "id": "random/seed=862/workload-02/q01-sum/keys/1200s",
+        "lookback_ms": 1200000,
+        "metric": "data"
+       }
+      },
+      "interval_secs": 30,
+      "promql": "sum by (region) (sum_over_time(data[20m]))",
+      "rqes": [
+       "random/seed=862/workload-02/q01-sum/keys/1200s"
+      ]
+     },
+     {
+      "expr": {
+       "rqe": {
+        "capability": "sum",
+        "grouping": [
+         "region",
+         "service"
+        ],
+        "id": "random/seed=862/workload-02/q02-sum/keys/1200s",
+        "lookback_ms": 1200000,
+        "metric": "data"
+       }
+      },
+      "interval_secs": 30,
+      "promql": "sum by (region, service) (sum_over_time(data[20m]))",
+      "rqes": [
+       "random/seed=862/workload-02/q02-sum/keys/1200s"
+      ]
+     },
+     {
+      "expr": {
+       "rqe": {
+        "capability": "sum",
+        "grouping": [
+         "region",
+         "service",
+         "job"
+        ],
+        "id": "random/seed=862/workload-02/q03-sum/keys/1200s",
+        "lookback_ms": 1200000,
+        "metric": "data"
+       }
+      },
+      "interval_secs": 30,
+      "promql": "sum by (region, service, job) (sum_over_time(data[20m]))",
+      "rqes": [
+       "random/seed=862/workload-02/q03-sum/keys/1200s"
+      ]
+     },
+     {
+      "client_promql": "quantile by (region) (0.50, quantile_over_time(0.50, data[1s]))",
+      "expr": {
+       "rqe": {
+        "capability": "quantile",
+        "grouping": [
+         "region"
+        ],
+        "id": "random/seed=862/workload-02/q04-panel-p50/values/1s",
+        "lookback_ms": 1000,
+        "metric": "data",
+        "phi": 0.5
+       }
+      },
+      "interval_secs": 1,
+      "rqes": [
+       "random/seed=862/workload-02/q04-panel-p50/values/1s"
+      ]
+     },
+     {
+      "client_promql": "quantile by (region) (0.90, quantile_over_time(0.90, data[1s]))",
+      "expr": {
+       "rqe": {
+        "capability": "quantile",
+        "grouping": [
+         "region"
+        ],
+        "id": "random/seed=862/workload-02/q05-panel-p90/values/1s",
+        "lookback_ms": 1000,
+        "metric": "data",
+        "phi": 0.9
+       }
+      },
+      "interval_secs": 1,
+      "rqes": [
+       "random/seed=862/workload-02/q05-panel-p90/values/1s"
+      ]
+     },
+     {
+      "client_promql": "quantile by (region) (0.99, quantile_over_time(0.99, data[1s]))",
+      "expr": {
+       "rqe": {
+        "capability": "quantile",
+        "grouping": [
+         "region"
+        ],
+        "id": "random/seed=862/workload-02/q06-panel-p99/values/1s",
+        "lookback_ms": 1000,
+        "metric": "data",
+        "phi": 0.99
+       }
+      },
+      "interval_secs": 1,
+      "rqes": [
+       "random/seed=862/workload-02/q06-panel-p99/values/1s"
+      ]
+     },
+     {
+      "client_promql": "quantile by (region, service) (0.75, quantile_over_time(0.75, data[1s]))",
+      "expr": {
+       "rqe": {
+        "capability": "quantile",
+        "grouping": [
+         "region",
+         "service"
+        ],
+        "id": "random/seed=862/workload-02/q07-quantile/values/1s",
+        "lookback_ms": 1000,
+        "metric": "data",
+        "phi": 0.75
+       }
+      },
+      "interval_secs": 1,
+      "rqes": [
+       "random/seed=862/workload-02/q07-quantile/values/1s"
+      ]
+     },
+     {
+      "client_promql": "quantile by (region, service, job) (0.75, quantile_over_time(0.75, data[1200s]))",
+      "expr": {
+       "rqe": {
+        "capability": "quantile",
+        "grouping": [
+         "region",
+         "service",
+         "job"
+        ],
+        "id": "random/seed=862/workload-02/q08-quantile/values/1200s",
+        "lookback_ms": 1200000,
+        "metric": "data",
+        "phi": 0.75
+       }
+      },
+      "interval_secs": 30,
+      "rqes": [
+       "random/seed=862/workload-02/q08-quantile/values/1200s"
+      ]
+     },
+     {
+      "client_promql": "topk(8, sum by (region, service) (sum_over_time(data[1m])))",
+      "expr": {
+       "rqe": {
+        "capability": "topk_by_value",
+        "grouping": [
+         "region",
+         "service"
+        ],
+        "id": "random/seed=862/workload-02/topk8_q09-topk/keys/60s",
+        "k": 8,
+        "lookback_ms": 60000,
+        "metric": "data"
+       }
+      },
+      "interval_secs": 2,
+      "rqes": [
+       "random/seed=862/workload-02/topk8_q09-topk/keys/60s"
+      ]
+     },
+     {
+      "client_promql": "topk(3, sum by (region, service, job) (sum_over_time(data[5m])))",
+      "expr": {
+       "rqe": {
+        "capability": "topk_by_value",
+        "grouping": [
+         "region",
+         "service",
+         "job"
+        ],
+        "id": "random/seed=862/workload-02/topk3_q10-topk/keys/300s",
+        "k": 3,
+        "lookback_ms": 300000,
+        "metric": "data"
+       }
+      },
+      "interval_secs": 5,
+      "rqes": [
+       "random/seed=862/workload-02/topk3_q10-topk/keys/300s"
+      ]
+     }
+    ]
+   },
+   "rqes": [
+    {
+     "assumptions": [],
+     "capability": "sum",
+     "covered_groups": 4,
+     "covered_max_N": 30000000.0,
+     "covered_min_N": 30000000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "exact-sum",
+       "grid_K": null,
+       "grid_param": null,
+       "sketch": "exact-sum",
+       "target": 0.0
+      }
+     ],
+     "grouping": [
+      "region"
+     ],
+     "id": "random/seed=862/workload-02/q01-sum/keys/1200s",
+     "instant": false,
+     "interval_secs": 30,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 4,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1200.0,
+     "max_N": 30000000.0,
+     "max_covered_share": 0.25,
+     "metric": "data",
+     "min_N": 30000000.0,
+     "min_covered_share": 0.25,
+     "queries_per_instance": 1,
+     "query_id": "q01-sum",
+     "range": "1200s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [],
+     "capability": "sum",
+     "covered_groups": 20,
+     "covered_max_N": 6000000.0,
+     "covered_min_N": 6000000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "exact-sum",
+       "grid_K": null,
+       "grid_param": null,
+       "sketch": "exact-sum",
+       "target": 0.0
+      }
+     ],
+     "grouping": [
+      "region",
+      "service"
+     ],
+     "id": "random/seed=862/workload-02/q02-sum/keys/1200s",
+     "instant": false,
+     "interval_secs": 30,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 20,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1200.0,
+     "max_N": 6000000.0,
+     "max_covered_share": 0.05,
+     "metric": "data",
+     "min_N": 6000000.0,
+     "min_covered_share": 0.05,
+     "queries_per_instance": 1,
+     "query_id": "q02-sum",
+     "range": "1200s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [],
+     "capability": "sum",
+     "covered_groups": 200,
+     "covered_max_N": 600000.0,
+     "covered_min_N": 600000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "exact-sum",
+       "grid_K": null,
+       "grid_param": null,
+       "sketch": "exact-sum",
+       "target": 0.0
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "job"
+     ],
+     "id": "random/seed=862/workload-02/q03-sum/keys/1200s",
+     "instant": false,
+     "interval_secs": 30,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 200,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1200.0,
+     "max_N": 600000.0,
+     "max_covered_share": 0.005,
+     "metric": "data",
+     "min_N": 600000.0,
+     "min_covered_share": 0.005,
+     "queries_per_instance": 1,
+     "query_id": "q03-sum",
+     "range": "1200s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 4,
+     "covered_max_N": 25000.0,
+     "covered_min_N": 25000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region"
+     ],
+     "id": "random/seed=862/workload-02/q04-panel-p50/values/1s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 4,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1.0,
+     "max_N": 25000.0,
+     "max_covered_share": 0.25,
+     "metric": "data",
+     "min_N": 25000.0,
+     "min_covered_share": 0.25,
+     "queries_per_instance": 1,
+     "query_id": "q04-panel-p50",
+     "range": "1s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 4,
+     "covered_max_N": 25000.0,
+     "covered_min_N": 25000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region"
+     ],
+     "id": "random/seed=862/workload-02/q05-panel-p90/values/1s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 4,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1.0,
+     "max_N": 25000.0,
+     "max_covered_share": 0.25,
+     "metric": "data",
+     "min_N": 25000.0,
+     "min_covered_share": 0.25,
+     "queries_per_instance": 1,
+     "query_id": "q05-panel-p90",
+     "range": "1s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 4,
+     "covered_max_N": 25000.0,
+     "covered_min_N": 25000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region"
+     ],
+     "id": "random/seed=862/workload-02/q06-panel-p99/values/1s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 4,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1.0,
+     "max_N": 25000.0,
+     "max_covered_share": 0.25,
+     "metric": "data",
+     "min_N": 25000.0,
+     "min_covered_share": 0.25,
+     "queries_per_instance": 1,
+     "query_id": "q06-panel-p99",
+     "range": "1s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 20,
+     "covered_max_N": 5000.0,
+     "covered_min_N": 5000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region",
+      "service"
+     ],
+     "id": "random/seed=862/workload-02/q07-quantile/values/1s",
+     "instant": false,
+     "interval_secs": 1,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 20,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1.0,
+     "max_N": 5000.0,
+     "max_covered_share": 0.05,
+     "metric": "data",
+     "min_N": 5000.0,
+     "min_covered_share": 0.05,
+     "queries_per_instance": 1,
+     "query_id": "q07-quantile",
+     "range": "1s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [],
+     "capability": "quantile",
+     "covered_groups": 200,
+     "covered_max_N": 600000.0,
+     "covered_min_N": 600000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "kll",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "kll-percall",
+       "target": 0.01
+      },
+      {
+       "family": "dd",
+       "grid_K": null,
+       "grid_param": 2.0,
+       "sketch": "dd",
+       "target": 0.01
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "job"
+     ],
+     "id": "random/seed=862/workload-02/q08-quantile/values/1200s",
+     "instant": false,
+     "interval_secs": 30,
+     "kind": "values",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 200,
+      "keys_per_window": null
+     },
+     "lookback_secs": 1200.0,
+     "max_N": 600000.0,
+     "max_covered_share": 0.005,
+     "metric": "data",
+     "min_N": 600000.0,
+     "min_covered_share": 0.005,
+     "queries_per_instance": 1,
+     "query_id": "q08-quantile",
+     "range": "1200s",
+     "stream": "data/dist"
+    },
+    {
+     "assumptions": [
+      "20 keys per heap read at the curves' 1000"
+     ],
+     "capability": "topk",
+     "covered_groups": 1,
+     "covered_max_N": 6000000.0,
+     "covered_min_N": 6000000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "topk",
+       "grid_K": 1000,
+       "grid_param": 1.1,
+       "sketch": "cms-heap-topk-fastpath-vector2d",
+       "target": 0.95
+      }
+     ],
+     "grouping": [],
+     "id": "random/seed=862/workload-02/topk8_q09-topk/keys/60s",
+     "instant": false,
+     "interval_secs": 2,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 1,
+      "keys_per_window": 1000
+     },
+     "lookback_secs": 60.0,
+     "max_N": 6000000.0,
+     "max_covered_share": 1.0,
+     "metric": "data",
+     "min_N": 6000000.0,
+     "min_covered_share": 1.0,
+     "queries_per_instance": 1,
+     "query_id": "topk8_q09-topk",
+     "range": "60s",
+     "stream": "data/value"
+    },
+    {
+     "assumptions": [
+      "200 keys per heap read at the curves' 1000"
+     ],
+     "capability": "topk",
+     "covered_groups": 1,
+     "covered_max_N": 30000000.0,
+     "covered_min_N": 30000000.0,
+     "covers_share": null,
+     "dataset": "random/seed=862/workload-02",
+     "families": [
+      {
+       "family": "topk",
+       "grid_K": 1000,
+       "grid_param": 1.1,
+       "sketch": "cms-heap-topk-fastpath-vector2d",
+       "target": 0.95
+      }
+     ],
+     "grouping": [],
+     "id": "random/seed=862/workload-02/topk3_q10-topk/keys/300s",
+     "instant": false,
+     "interval_secs": 5,
+     "kind": "keys",
+     "label_set": {
+      "arrival_rate_per_sec": 100000,
+      "groups": 1,
+      "keys_per_window": 1000
+     },
+     "lookback_secs": 300.0,
+     "max_N": 30000000.0,
+     "max_covered_share": 1.0,
+     "metric": "data",
+     "min_N": 30000000.0,
+     "min_covered_share": 1.0,
+     "queries_per_instance": 1,
+     "query_id": "topk3_q10-topk",
+     "range": "300s",
+     "stream": "data/value"
+    }
+   ],
+   "schemas": {
+    "data": {
+     "labels": [
+      {
+       "cardinality": 4,
+       "name": "region"
+      },
+      {
+       "cardinality": 5,
+       "child_of": "region",
+       "name": "service"
+      },
+      {
+       "cardinality": 10,
+       "child_of": "service",
+       "name": "job"
+      },
+      {
+       "cardinality": 50,
+       "child_of": "job",
+       "name": "label_0"
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

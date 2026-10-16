@@ -1,0 +1,52 @@
+cleanup_policy:
+  name: circular_buffer
+metrics:
+  data:
+  - job
+  - label_0
+  - region
+  - service
+queries: []
+rqe_configs:
+  random/seed=862/workload-04/q01-sum-fine/keys/600s:
+    aggregations:
+    - aggregation_id: 1
+      num_aggregates_to_retain: 60
+    query_time_aggregations: []
+  random/seed=862/workload-04/q02-sum-coarse/keys/600s:
+    aggregations:
+    - aggregation_id: 1
+      num_aggregates_to_retain: 60
+    query_time_aggregations:
+    - operator: sum
+      grouping:
+        mode: by
+        labels:
+        - region
+        - service
+      parameter: null
+  random/seed=862/workload-04/q03-quantile/values/100s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 100
+    query_time_aggregations: []
+  random/seed=862/workload-04/q04-quantile/values/100s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 100
+    query_time_aggregations: []
+  random/seed=862/workload-04/q05-quantile/values/100s:
+    aggregations:
+    - aggregation_id: 2
+      num_aggregates_to_retain: 100
+    query_time_aggregations: []
+  random/seed=862/workload-04/topk4_q06-topk-sum/keys/60s:
+    aggregations:
+    - aggregation_id: 3
+      num_aggregates_to_retain: 30
+    query_time_aggregations: []
+  random/seed=862/workload-04/topk4_q07-topk-sum/keys/1200s:
+    aggregations:
+    - aggregation_id: 4
+      num_aggregates_to_retain: 40
+    query_time_aggregations: []
