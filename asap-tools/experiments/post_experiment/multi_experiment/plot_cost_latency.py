@@ -20,6 +20,7 @@ none is valid), labelled with the geometric mean of their peak memory.
 Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
 
 Usage: python3 plot_cost_latency.py collated.csv out_dir [legend suffix for baselines]
+       [--geomean-only: omit the per-run points]
 """
 
 import csv
@@ -56,6 +57,31 @@ SURFACE, INK = "#fcfcfb", "#0b0b0b"
 # of ClickHouse, so its label goes up and left; LiteOlly's goes up, clear
 # of the latency arrow below it.
 MEM_LABEL = {"vm": ((-10, 10), "right", "bottom"), "asap": ((10, 8), "left", "bottom")}
+
+
+def draw_runs(ax, xs, ys, valid, color, marker):
+    """One faint point per run; invalid runs hollow."""
+    ax.scatter(
+        [x for x, v in zip(xs, valid) if v],
+        [y for y, v in zip(ys, valid) if v],
+        s=60,
+        color=color,
+        marker=marker,
+        alpha=0.35,
+        edgecolors="none",
+        zorder=3,
+    )
+    ax.scatter(
+        [x for x, v in zip(xs, valid) if not v],
+        [y for y, v in zip(ys, valid) if not v],
+        s=60,
+        facecolors="none",
+        edgecolors=color,
+        marker=marker,
+        alpha=0.6,
+        linewidths=1.5,
+        zorder=3,
+    )
 
 
 def summary(ax, xs, ys, mems, color, marker, label, key):
@@ -159,7 +185,7 @@ def arrows(ax, rows, improvement, set_name):
     ax.set_ylim(min(bottom, ly / 3.2), max(top, ly * cpu * 2.2))
 
 
-def main(csv_path, out_dir, suffix=""):
+def main(csv_path, out_dir, suffix="", runs=True):
     rows = list(csv.DictReader(open(csv_path)))
     for r in rows:
         counted = r["valid"] == "True" or r["arm"] == "vm"
@@ -189,27 +215,8 @@ def main(csv_path, out_dir, suffix=""):
             ys = [float(r["cpu_secs"]) for r in pts]
             valid = [r["valid"] == "True" for r in pts]
             mems = [float(r["peak_memory_gib"]) for r in pts]
-            ax.scatter(
-                [x for x, v in zip(xs, valid) if v],
-                [y for y, v in zip(ys, valid) if v],
-                s=60,
-                color=color,
-                marker=marker,
-                alpha=0.35,
-                edgecolors="none",
-                zorder=3,
-            )
-            ax.scatter(
-                [x for x, v in zip(xs, valid) if not v],
-                [y for y, v in zip(ys, valid) if not v],
-                s=60,
-                facecolors="none",
-                edgecolors=color,
-                marker=marker,
-                alpha=0.6,
-                linewidths=1.5,
-                zorder=3,
-            )
+            if runs:
+                draw_runs(ax, xs, ys, valid, color, marker)
             # Invalid runs don't stand for the system, so they don't move its summary.
             fit = [(x, y, m) for x, y, m, v in zip(xs, ys, mems, valid) if v] or list(
                 zip(xs, ys, mems)
@@ -261,4 +268,5 @@ def main(csv_path, out_dir, suffix=""):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    args = [a for a in sys.argv[1:] if a != "--geomean-only"]
+    main(*args[:3], runs="--geomean-only" not in sys.argv)
