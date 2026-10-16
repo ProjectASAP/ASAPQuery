@@ -11,7 +11,9 @@ metric: collate_batch.py's geometric mean of baseline / LiteOlly over
 workloads where both are valid. Arrow lengths are those ratios; labels give
 the ratios against Prometheus and ClickHouse.
 
-An oval encloses each baseline's valid runs (all its runs if none is valid).
+Each system's runs are drawn faint; a large marker sits at their geometric
+mean, with whiskers spanning the runs' range on each axis (valid runs, all if
+none is valid).
 
 Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
 
@@ -26,7 +28,6 @@ from pathlib import Path
 from collections import defaultdict
 
 import matplotlib
-import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -47,20 +48,31 @@ SYSTEMS = [
 SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#52514e"
 
 
-def oval(ax, xs, ys, color):
-    """Ellipse in log space along the points' covariance, scaled to enclose
-    them all with a fixed margin (in decades) for the markers."""
-    pts = np.log10(np.column_stack([xs, ys]))
-    center = pts.mean(axis=0)
-    # The small diagonal keeps one or collinear points drawable.
-    cov = np.cov(pts.T, bias=True) + np.eye(2) * 1e-4
-    inv = np.linalg.inv(cov)
-    d = pts - center
-    reach = np.sqrt(np.einsum("ij,jk,ik->i", d, inv, d).max())
-    vals, vecs = np.linalg.eigh(cov)
-    t = np.linspace(0, 2 * np.pi, 200)
-    ring = (vecs * (np.sqrt(vals) * reach + 0.05)) @ np.vstack([np.cos(t), np.sin(t)])
-    ax.plot(*10 ** (ring + center[:, None]), color=color, linewidth=1.5, zorder=2)
+def summary(ax, xs, ys, color, marker, label):
+    """Geometric-mean marker with min-max whiskers on both axes."""
+    gx, gy = statistics.geometric_mean(xs), statistics.geometric_mean(ys)
+    ax.errorbar(
+        gx,
+        gy,
+        xerr=[[gx - min(xs)], [max(xs) - gx]],
+        yerr=[[gy - min(ys)], [max(ys) - gy]],
+        fmt="none",
+        ecolor=color,
+        elinewidth=2,
+        capsize=4,
+        zorder=4,
+    )
+    ax.scatter(
+        gx,
+        gy,
+        s=260,
+        color=color,
+        marker=marker,
+        label=label,
+        edgecolors=INK,
+        linewidths=1.5,
+        zorder=5,
+    )
 
 
 def arrows(ax, rows, improvement, set_name):
@@ -115,7 +127,7 @@ def arrows(ax, rows, improvement, set_name):
         va="top",
     )
     left, right = ax.get_xlim()
-    ax.set_xlim(min(left, x / 2), right)
+    ax.set_xlim(min(left, x / 1.5), right)
     bottom, top = ax.get_ylim()
     ax.set_ylim(min(bottom, ly / 2.6), max(top, ly * cpu * 2.2))
 
@@ -146,34 +158,34 @@ def main(csv_path, out_dir):
             ax.scatter(
                 [x for x, v in zip(xs, valid) if v],
                 [y for y, v in zip(ys, valid) if v],
-                s=128,
+                s=60,
                 color=color,
                 marker=marker,
-                label=label,
-                edgecolors=SURFACE,
-                linewidths=1,
+                alpha=0.35,
+                edgecolors="none",
                 zorder=3,
             )
             ax.scatter(
                 [x for x, v in zip(xs, valid) if not v],
                 [y for y, v in zip(ys, valid) if not v],
-                s=112,
+                s=60,
                 facecolors="none",
                 edgecolors=color,
                 marker=marker,
-                linewidths=2.5,
+                alpha=0.6,
+                linewidths=1.5,
                 zorder=3,
             )
-            # Invalid runs don't stand for the system, so they don't stretch its oval.
+            # Invalid runs don't stand for the system, so they don't move its summary.
             fit = [(x, y) for x, y, v in zip(xs, ys, valid) if v] or list(zip(xs, ys))
-            if key != "asap" and fit:
-                oval(ax, *zip(*fit), color)
+            if fit:
+                summary(ax, *zip(*fit), color, marker, label)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("p95 Query Latency (s)", color=MUTED, fontsize=14)
         ax.set_ylabel("Total Compute Cost (CPU-sec)", color=MUTED, fontsize=14)
         for axis in (ax.xaxis, ax.yaxis):
-            axis.set_major_locator(ticker.LogLocator(subs=(1, 2, 5)))
+            axis.set_major_locator(ticker.LogLocator(subs=(1,)))
             axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(ticker.NullFormatter())
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
