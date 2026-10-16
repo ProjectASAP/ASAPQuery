@@ -3,7 +3,9 @@
 set, one point per (workload, system); x = p95 query latency, y = total
 CPU-seconds, both log. Lower left is better. A run collate_batch.py marks
 invalid (failed queries, or answers that disagree with the reference) is
-drawn hollow: its latency and CPU don't stand for a correct answer.
+drawn hollow: its latency and CPU don't stand for a correct answer. A run
+whose ingest fell behind is invalid too, and VictoriaMetrics counts as exact
+(its 1 s windows may hold one boundary sample Prometheus's don't).
 
 Two arrows from LiteOlly's geometric-mean point show its improvement in CPU
 (vertical) and p95 latency (horizontal) over the worst baseline for that
@@ -13,11 +15,11 @@ the ratios against Prometheus and ClickHouse.
 
 Each system's runs are drawn faint; a large marker sits at their geometric
 mean, with whiskers spanning the runs' range on each axis (valid runs, all if
-none is valid).
+none is valid), labelled with the geometric mean of their peak memory.
 
 Writes <out_dir>/cost_latency_<sets>_<YYYYmmdd-HHMMSS>.png; never overwrites.
 
-Usage: python3 plot_cost_latency.py collated.csv out_dir
+Usage: python3 plot_cost_latency.py collated.csv out_dir [legend suffix for baselines]
 """
 
 import csv
@@ -45,11 +47,17 @@ SYSTEMS = [
     ("ch", "ClickHouse", "#eda100", "D"),
     ("chmv", "ClickHouse+MV", "#e87ba4", "v"),
 ]
-SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#52514e"
+SURFACE, INK = "#fcfcfb", "#0b0b0b"
 
 
-def summary(ax, xs, ys, color, marker, label):
-    """Geometric-mean marker with min-max whiskers on both axes."""
+# Memory label offset (points) and alignment; VictoriaMetrics sits just left
+# of ClickHouse, so its label goes up and left.
+MEM_LABEL = {"vm": ((-10, 10), "right", "bottom")}
+
+
+def summary(ax, xs, ys, mems, color, marker, label, key):
+    """Geometric-mean marker with min-max whiskers on both axes, labelled with
+    the geometric-mean peak memory."""
     gx, gy = statistics.geometric_mean(xs), statistics.geometric_mean(ys)
     ax.errorbar(
         gx,
@@ -73,6 +81,19 @@ def summary(ax, xs, ys, color, marker, label):
         linewidths=1.5,
         zorder=5,
     )
+    offset, ha, va = MEM_LABEL.get(key, ((9, -9), "left", "top"))
+    ax.annotate(
+        f"{statistics.geometric_mean(mems):.2g} GiB",
+        (gx, gy),
+        xytext=offset,
+        textcoords="offset points",
+        color=INK,
+        fontsize=11,
+        ha=ha,
+        va=va,
+        zorder=6,
+        bbox=dict(boxstyle="round,pad=0.15", fc=SURFACE, ec="none", alpha=0.8),
+    )
 
 
 def arrows(ax, rows, improvement, set_name):
@@ -92,10 +113,12 @@ def arrows(ax, rows, improvement, set_name):
             key=lambda am: am[1],
         )
 
+    present = [a for a in ("prom", "ch", "chmv") if (set_name, a) in improvement]
+
     def vs(metric, word):
         """e.g. "6.2x cheaper vs. ClickHouse,\n4.9x vs. Prometheus", largest first."""
         (a, ra), (b, rb) = sorted(
-            ((a, improvement[(set_name, a)][metric]) for a in ("prom", "ch")),
+            ((a, improvement[(set_name, a)][metric]) for a in present[:2]),
             key=lambda ar: -ar[1],
         )
         return f"{ra:.1f}x {word} vs. {names[a]},\n{rb:.1f}x vs. {names[b]}"
@@ -132,8 +155,11 @@ def arrows(ax, rows, improvement, set_name):
     ax.set_ylim(min(bottom, ly / 2.6), max(top, ly * cpu * 2.2))
 
 
-def main(csv_path, out_dir):
+def main(csv_path, out_dir, suffix=""):
     rows = list(csv.DictReader(open(csv_path)))
+    for r in rows:
+        counted = r["valid"] == "True" or r["arm"] == "vm"
+        r["valid"] = str(counted and r["ingest_kept_up"] != "False")
     by_set = defaultdict(list)
     for r in rows:
         by_set[r["set"]].append(r)
@@ -151,10 +177,12 @@ def main(csv_path, out_dir):
     for ax, set_name in zip(axes[0], sets):
         ax.set_facecolor(SURFACE)
         for key, label, color, marker in SYSTEMS:
+            label = label if key == "asap" else label + suffix
             pts = [r for r in by_set[set_name] if r["arm"] == key]
             xs = [float(r["latency_p95"]) for r in pts]
             ys = [float(r["cpu_secs"]) for r in pts]
             valid = [r["valid"] == "True" for r in pts]
+            mems = [float(r["peak_memory_gib"]) for r in pts]
             ax.scatter(
                 [x for x, v in zip(xs, valid) if v],
                 [y for y, v in zip(ys, valid) if v],
@@ -177,41 +205,50 @@ def main(csv_path, out_dir):
                 zorder=3,
             )
             # Invalid runs don't stand for the system, so they don't move its summary.
-            fit = [(x, y) for x, y, v in zip(xs, ys, valid) if v] or list(zip(xs, ys))
+            fit = [(x, y, m) for x, y, m, v in zip(xs, ys, mems, valid) if v] or list(
+                zip(xs, ys, mems)
+            )
             if fit:
-                summary(ax, *zip(*fit), color, marker, label)
+                summary(ax, *zip(*fit), color, marker, label, key)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("p95 Query Latency (s)", color=MUTED, fontsize=14)
-        ax.set_ylabel("Total Compute Cost (CPU-sec)", color=MUTED, fontsize=14)
+        ax.set_xlabel("p95 Query Latency (s)", color=INK, fontsize=14)
+        ax.set_ylabel("Total Compute Cost (CPU-sec)", color=INK, fontsize=14)
         for axis in (ax.xaxis, ax.yaxis):
             axis.set_major_locator(ticker.LogLocator(subs=(1,)))
             axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(ticker.NullFormatter())
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
-        ax.tick_params(colors=MUTED, labelsize=13, width=2)
+        ax.tick_params(colors=INK, labelsize=13, width=2)
         for spine in ax.spines.values():
             spine.set_color(INK)
             spine.set_linewidth(2)
         arrows(ax, by_set[set_name], improvement, set_name)
     fig.suptitle(
-        "Cost-latency tradeoffs of LiteOlly vs. baselines", color=INK, fontsize=16
+        (
+            f"LiteOlly vs. baselines{suffix}: cost and latency"
+            if suffix
+            else "Cost-latency tradeoffs of LiteOlly vs. baselines"
+        ),
+        color=INK,
+        fontsize=16,
     )
     fig.legend(
         *axes[0][0].get_legend_handles_labels(),
         frameon=False,
         fontsize=13,
         loc="lower center",
-        ncol=min(len(SYSTEMS), 3 * len(sets)),
+        # Suffixed labels are longer: two a row.
+        ncol=min(len(SYSTEMS), (2 if suffix else 3) * len(sets)),
     )
     # A one-panel figure fits three legend entries a row, so two rows.
     fig.tight_layout(rect=(0, 0.07 if len(sets) > 1 else 0.12, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = Path(out_dir) / f"cost_latency_{'+'.join(sets)}_{stamp}.png"
     with open(out_path, "xb") as f:
-        fig.savefig(f, dpi=150, facecolor=SURFACE, format="png")
+        fig.savefig(f, dpi=150, facecolor=SURFACE, format="png", bbox_inches="tight")
     print(out_path)
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    main(*sys.argv[1:4])
