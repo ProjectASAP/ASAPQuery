@@ -202,7 +202,11 @@ def main(csv_path, out_dir, suffix="", runs=True):
         ]
     )
     fig, axes = plt.subplots(
-        1, len(sets), figsize=(7 * len(sets), 6), facecolor=SURFACE, squeeze=False
+        1,
+        len(sets),
+        figsize=(7 * len(sets), 6 if len(sets) > 1 else 7.5),
+        facecolor=SURFACE,
+        squeeze=False,
     )
     for i, (ax, set_name) in enumerate(zip(axes[0], sets)):
         ax.set_facecolor(SURFACE)
@@ -254,11 +258,12 @@ def main(csv_path, out_dir, suffix="", runs=True):
         frameon=False,
         fontsize=18,
         loc="lower center",
-        # Suffixed labels are longer: two a row.
-        ncol=min(len(SYSTEMS), (2 if suffix else 3) * len(sets)),
+        # Two a row under one panel or with long (suffixed) labels, so the
+        # legend is no wider than the plot.
+        ncol=min(len(SYSTEMS), (2 if suffix or len(sets) == 1 else 3) * len(sets)),
     )
     # A one-panel figure fits three legend entries a row, so two rows.
-    fig.tight_layout(rect=(0, 0.1 if len(sets) > 1 else 0.17, 1, 1))
+    fig.tight_layout(rect=(0, 0.1 if len(sets) > 1 else 0.2, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     name = "+".join(s.replace(" ", "-") for s in sets)
     out_path = Path(out_dir) / f"cost_latency_{name}_{stamp}.png"
