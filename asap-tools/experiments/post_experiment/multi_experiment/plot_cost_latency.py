@@ -88,7 +88,7 @@ def summary(ax, xs, ys, mems, color, marker, label, key):
         xytext=offset,
         textcoords="offset points",
         color=INK,
-        fontsize=11,
+        fontsize=13,
         ha=ha,
         va=va,
         zorder=6,
@@ -133,7 +133,7 @@ def arrows(ax, rows, improvement, set_name):
         ly * cpu * 1.12,
         vs("cpu_secs", "cheaper"),
         color=INK,
-        fontsize=13,
+        fontsize=15,
         ha="left",
         va="bottom",
     )
@@ -145,12 +145,13 @@ def arrows(ax, rows, improvement, set_name):
         y / 1.08,
         vs("latency_p95", "faster"),
         color=INK,
-        fontsize=13,
+        fontsize=15,
         ha="center",
         va="top",
     )
     left, right = ax.get_xlim()
-    ax.set_xlim(min(left, x / 1.5), right)
+    # Room on the right for the slowest system's memory label.
+    ax.set_xlim(min(left, x / 1.5), right * 1.8)
     bottom, top = ax.get_ylim()
     ax.set_ylim(min(bottom, ly / 2.6), max(top, ly * cpu * 2.2))
 
@@ -174,8 +175,10 @@ def main(csv_path, out_dir, suffix=""):
     fig, axes = plt.subplots(
         1, len(sets), figsize=(7 * len(sets), 6), facecolor=SURFACE, squeeze=False
     )
-    for ax, set_name in zip(axes[0], sets):
+    for i, (ax, set_name) in enumerate(zip(axes[0], sets)):
         ax.set_facecolor(SURFACE)
+        if len(sets) > 1:
+            ax.set_title(f"{set_name} dataset", color=INK, fontsize=18)
         for key, label, color, marker in SYSTEMS:
             label = label if key == "asap" else label + suffix
             pts = [r for r in by_set[set_name] if r["arm"] == key]
@@ -212,31 +215,34 @@ def main(csv_path, out_dir, suffix=""):
                 summary(ax, *zip(*fit), color, marker, label, key)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("p95 Query Latency (s)", color=INK, fontsize=14)
-        ax.set_ylabel("Total Compute Cost (CPU-sec)", color=INK, fontsize=14)
+        ax.set_xlabel("p95 Query Latency (s)", color=INK, fontsize=16)
+        if i == 0:
+            ax.set_ylabel("Total Compute Cost (CPU-sec)", color=INK, fontsize=16)
         for axis in (ax.xaxis, ax.yaxis):
             axis.set_major_locator(ticker.LogLocator(subs=(1,)))
             axis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(ticker.NullFormatter())
         ax.grid(True, which="major", color="#e6e5e1", linewidth=0.8)
-        ax.tick_params(colors=INK, labelsize=13, width=2)
+        ax.tick_params(colors=INK, labelsize=15, width=2)
         for spine in ax.spines.values():
             spine.set_color(INK)
             spine.set_linewidth(2)
         arrows(ax, by_set[set_name], improvement, set_name)
-    fig.suptitle(
-        (
-            f"LiteOlly vs. baselines{suffix}: cost and latency"
-            if suffix
-            else "Cost-latency tradeoffs of LiteOlly vs. baselines"
-        ),
-        color=INK,
-        fontsize=16,
-    )
+    # Several panels are titled by dataset; a single one gets a figure title.
+    if len(sets) == 1:
+        fig.suptitle(
+            (
+                f"LiteOlly vs. baselines{suffix}: cost and latency"
+                if suffix
+                else "Cost-latency tradeoffs of LiteOlly vs. baselines"
+            ),
+            color=INK,
+            fontsize=18,
+        )
     fig.legend(
         *axes[0][0].get_legend_handles_labels(),
         frameon=False,
-        fontsize=13,
+        fontsize=15,
         loc="lower center",
         # Suffixed labels are longer: two a row.
         ncol=min(len(SYSTEMS), (2 if suffix else 3) * len(sets)),
@@ -244,7 +250,8 @@ def main(csv_path, out_dir, suffix=""):
     # A one-panel figure fits three legend entries a row, so two rows.
     fig.tight_layout(rect=(0, 0.07 if len(sets) > 1 else 0.12, 1, 1))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_path = Path(out_dir) / f"cost_latency_{'+'.join(sets)}_{stamp}.png"
+    name = "+".join(s.replace(" ", "-") for s in sets)
+    out_path = Path(out_dir) / f"cost_latency_{name}_{stamp}.png"
     with open(out_path, "xb") as f:
         fig.savefig(f, dpi=150, facecolor=SURFACE, format="png", bbox_inches="tight")
     print(out_path)
