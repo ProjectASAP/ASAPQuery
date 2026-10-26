@@ -8,13 +8,13 @@ Cost by use: `w_cpu · AUC(CPU) + w_mem · AUC(memory)` (CPU only, in vCPU; Farg
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 2.93 | 2.93 | 17.8 | 1.34e+04 | 46.7 | 2.88 | 4.71 |
-| cpu | ASAP (no roll-ups) | 3.26 | 3.26 | 19.2 | 1.34e+04 | 39 | 2.86 | 5.04 |
+| cpu | ASAP | 2.93 | 2.93 | 17.8 | 1.34e+04 | 46.7 | 2.75 | 4.71 |
+| cpu | ASAP (no roll-ups) | 3.26 | 3.26 | 19.2 | 1.34e+04 | 39 | 2.72 | 5.04 |
 | cpu | PerQuery-CostAware | 8.74 | 8.74 | 43.3 | 3.33e+03 | 59.1 | 5.03 | 11.1 |
 | cpu | AutoSketch-Adapted | 2.71e+03 | 2.71e+03 | 4.01e+03 | 1.01e+03 | 9.45 | 396 | 2.71e+03 |
-| fargate | ASAP | 0.177 | 2.96 | 12.7 | 2.68e+03 | 46.7 | 2.92 | 0.243 |
-| fargate | ASAP (no roll-ups) | 0.197 | 3.29 | 14.2 | 2.68e+03 | 39 | 2.89 | 0.263 |
-| fargate | PerQuery-CostAware | 0.545 | 8.85 | 42 | 2.97e+03 | 59.1 | 5.03 | 0.635 |
+| fargate | ASAP | 0.177 | 2.96 | 12.7 | 2.68e+03 | 46.7 | 2.85 | 0.243 |
+| fargate | ASAP (no roll-ups) | 0.197 | 3.29 | 14.2 | 2.68e+03 | 39 | 2.79 | 0.263 |
+| fargate | PerQuery-CostAware | 0.545 | 8.85 | 42 | 2.97e+03 | 59.1 | 5.04 | 0.635 |
 | fargate | AutoSketch-Adapted | 128 | 2.71e+03 | 4.01e+03 | 1.01e+03 | 9.45 | 396 | 128 |
 
 Frontier points (latency ms, cost), by weights:
@@ -39,13 +39,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 23.5 | 23.5 | 142 | 1.34e+04 | 46.7 | 8.23 | 37.6 |
-| cpu | ASAP (no roll-ups) | 26.1 | 26.1 | 154 | 1.34e+04 | 39 | 8.35 | 40.3 |
-| cpu | PerQuery-CostAware | 69.9 | 69.9 | 346 | 3.33e+03 | 59.1 | 16.4 | 89 |
+| cpu | ASAP | 23.5 | 23.5 | 142 | 1.34e+04 | 46.7 | 22.3 | 37.6 |
+| cpu | ASAP (no roll-ups) | 26.1 | 26.1 | 154 | 1.34e+04 | 39 | 21.9 | 40.3 |
+| cpu | PerQuery-CostAware | 69.9 | 69.9 | 346 | 3.33e+03 | 59.1 | 40.9 | 89 |
 | cpu | AutoSketch-Adapted | 2.17e+04 | 2.17e+04 | 3.2e+04 | 1.01e+03 | 9.45 | 3.17e+03 | 2.17e+04 |
-| fargate | ASAP | 1.41 | 23.7 | 102 | 2.68e+03 | 46.7 | 9.29 | 1.94 |
-| fargate | ASAP (no roll-ups) | 1.57 | 26.4 | 113 | 2.68e+03 | 39 | 8.62 | 2.1 |
-| fargate | PerQuery-CostAware | 4.36 | 70.8 | 336 | 2.97e+03 | 59.1 | 15.1 | 5.08 |
+| fargate | ASAP | 1.41 | 23.7 | 102 | 2.68e+03 | 46.7 | 24.4 | 1.94 |
+| fargate | ASAP (no roll-ups) | 1.57 | 26.4 | 113 | 2.68e+03 | 39 | 23 | 2.1 |
+| fargate | PerQuery-CostAware | 4.36 | 70.8 | 336 | 2.97e+03 | 59.1 | 40.9 | 5.08 |
 | fargate | AutoSketch-Adapted | 1.02e+03 | 2.17e+04 | 3.2e+04 | 1.01e+03 | 9.45 | 3.17e+03 | 1.02e+03 |
 
 Frontier points (latency ms, cost), by weights:
@@ -70,13 +70,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 46.9 | 46.9 | 284 | 1.34e+04 | 46.7 | 17.8 | 75.3 |
-| cpu | ASAP (no roll-ups) | 52.2 | 52.2 | 307 | 1.34e+04 | 39 | 17.3 | 80.6 |
-| cpu | PerQuery-CostAware | 140 | 140 | 693 | 3.33e+03 | 59.1 | 33 | 178 |
+| cpu | ASAP | 46.9 | 46.9 | 284 | 1.34e+04 | 46.7 | 40 | 75.3 |
+| cpu | ASAP (no roll-ups) | 52.2 | 52.2 | 307 | 1.34e+04 | 39 | 39.2 | 80.6 |
+| cpu | PerQuery-CostAware | 140 | 140 | 693 | 3.33e+03 | 59.1 | 72.7 | 178 |
 | cpu | AutoSketch-Adapted | 4.34e+04 | 4.34e+04 | 6.41e+04 | 1.01e+03 | 9.45 | 6.34e+03 | 4.34e+04 |
-| fargate | ASAP | 2.83 | 47.4 | 204 | 2.68e+03 | 46.7 | 27 | 3.89 |
-| fargate | ASAP (no roll-ups) | 3.14 | 52.7 | 227 | 2.68e+03 | 39 | 23 | 4.21 |
-| fargate | PerQuery-CostAware | 8.73 | 142 | 672 | 2.97e+03 | 59.1 | 37.4 | 10.2 |
+| fargate | ASAP | 2.83 | 47.4 | 204 | 2.68e+03 | 46.7 | 46.1 | 3.89 |
+| fargate | ASAP (no roll-ups) | 3.14 | 52.7 | 227 | 2.68e+03 | 39 | 42.5 | 4.21 |
+| fargate | PerQuery-CostAware | 8.73 | 142 | 672 | 2.97e+03 | 59.1 | 72.8 | 10.2 |
 | fargate | AutoSketch-Adapted | 2.04e+03 | 4.34e+04 | 6.41e+04 | 1.01e+03 | 9.45 | 6.34e+03 | 2.04e+03 |
 
 Frontier points (latency ms, cost), by weights:
@@ -101,13 +101,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 3.04 | 3.04 | 12.7 | 2.68e+03 | 46.7 | 1.98 | 4.76 |
-| cpu | ASAP (no roll-ups) | 3.37 | 3.37 | 14.2 | 2.68e+03 | 39 | 1.94 | 5.09 |
-| cpu | PerQuery-CostAware | 15.5 | 15.5 | 51.5 | 3.33e+03 | 34 | 3.57 | 18.1 |
+| cpu | ASAP | 3.04 | 3.04 | 12.7 | 2.68e+03 | 46.7 | 5.45 | 4.76 |
+| cpu | ASAP (no roll-ups) | 3.37 | 3.37 | 14.2 | 2.68e+03 | 39 | 5.37 | 5.09 |
+| cpu | PerQuery-CostAware | 15.5 | 15.5 | 51.5 | 3.33e+03 | 34 | 9.77 | 18.1 |
 | cpu | AutoSketch-Adapted | 3.25e+03 | 3.25e+03 | 4.17e+03 | 1.01e+03 | 5.33 | 396 | 3.25e+03 |
-| fargate | ASAP | 0.18 | 3.04 | 12.7 | 2.68e+03 | 46.7 | 2.15 | 0.245 |
-| fargate | ASAP (no roll-ups) | 0.2 | 3.37 | 14.2 | 2.68e+03 | 39 | 2.02 | 0.265 |
-| fargate | PerQuery-CostAware | 0.856 | 15.6 | 50.2 | 2.97e+03 | 34 | 3.58 | 0.953 |
+| fargate | ASAP | 0.18 | 3.04 | 12.7 | 2.68e+03 | 46.7 | 5.92 | 0.245 |
+| fargate | ASAP (no roll-ups) | 0.2 | 3.37 | 14.2 | 2.68e+03 | 39 | 5.51 | 0.265 |
+| fargate | PerQuery-CostAware | 0.856 | 15.6 | 50.2 | 2.97e+03 | 34 | 9.78 | 0.953 |
 | fargate | AutoSketch-Adapted | 150 | 3.25e+03 | 4.17e+03 | 1.01e+03 | 5.33 | 396 | 150 |
 
 Frontier points (latency ms, cost), by weights:
@@ -132,13 +132,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 2.71 | 2.71 | 16.7 | 1.34e+04 | 46.7 | 0.823 | 4.49 |
-| cpu | ASAP (no roll-ups) | 2.71 | 2.71 | 16.7 | 1.34e+04 | 46.7 | 0.822 | 4.49 |
-| cpu | PerQuery-CostAware | 7.67 | 7.67 | 39.8 | 3.33e+03 | 245 | 1.82 | 10.1 |
+| cpu | ASAP | 2.71 | 2.71 | 16.7 | 1.34e+04 | 46.7 | 2.19 | 4.49 |
+| cpu | ASAP (no roll-ups) | 2.71 | 2.71 | 16.7 | 1.34e+04 | 46.7 | 2.19 | 4.49 |
+| cpu | PerQuery-CostAware | 7.67 | 7.67 | 39.8 | 3.33e+03 | 245 | 4.63 | 10.1 |
 | cpu | AutoSketch-Adapted | 2.7e+03 | 2.7e+03 | 4e+03 | 1.01e+03 | 9.45 | 169 | 2.7e+03 |
-| fargate | ASAP | 0.163 | 2.74 | 11.7 | 2.68e+03 | 46.7 | 0.831 | 0.23 |
-| fargate | ASAP (no roll-ups) | 0.163 | 2.74 | 11.7 | 2.68e+03 | 46.7 | 0.831 | 0.23 |
-| fargate | PerQuery-CostAware | 0.487 | 7.78 | 38.5 | 2.97e+03 | 245 | 1.83 | 0.576 |
+| fargate | ASAP | 0.163 | 2.74 | 11.7 | 2.68e+03 | 46.7 | 2.21 | 0.23 |
+| fargate | ASAP (no roll-ups) | 0.163 | 2.74 | 11.7 | 2.68e+03 | 46.7 | 2.21 | 0.23 |
+| fargate | PerQuery-CostAware | 0.487 | 7.78 | 38.5 | 2.97e+03 | 245 | 4.64 | 0.576 |
 | fargate | AutoSketch-Adapted | 127 | 2.7e+03 | 4e+03 | 1.01e+03 | 9.45 | 169 | 127 |
 
 Frontier points (latency ms, cost), by weights:
@@ -163,13 +163,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 21.7 | 21.7 | 134 | 1.34e+04 | 46.7 | 6.73 | 35.9 |
-| cpu | ASAP (no roll-ups) | 21.7 | 21.7 | 134 | 1.34e+04 | 46.7 | 6.73 | 35.9 |
-| cpu | PerQuery-CostAware | 61.3 | 61.3 | 318 | 3.33e+03 | 245 | 14.4 | 80.5 |
+| cpu | ASAP | 21.7 | 21.7 | 134 | 1.34e+04 | 46.7 | 17.9 | 35.9 |
+| cpu | ASAP (no roll-ups) | 21.7 | 21.7 | 134 | 1.34e+04 | 46.7 | 17.9 | 35.9 |
+| cpu | PerQuery-CostAware | 61.3 | 61.3 | 318 | 3.33e+03 | 245 | 39 | 80.5 |
 | cpu | AutoSketch-Adapted | 2.16e+04 | 2.16e+04 | 3.2e+04 | 1.01e+03 | 9.45 | 1.36e+03 | 2.16e+04 |
-| fargate | ASAP | 1.31 | 22 | 93.7 | 2.68e+03 | 46.7 | 6.83 | 1.84 |
-| fargate | ASAP (no roll-ups) | 1.31 | 22 | 93.7 | 2.68e+03 | 46.7 | 6.83 | 1.84 |
-| fargate | PerQuery-CostAware | 3.89 | 62.3 | 308 | 2.97e+03 | 245 | 14.4 | 4.61 |
+| fargate | ASAP | 1.31 | 22 | 93.7 | 2.68e+03 | 46.7 | 18.2 | 1.84 |
+| fargate | ASAP (no roll-ups) | 1.31 | 22 | 93.7 | 2.68e+03 | 46.7 | 18.2 | 1.84 |
+| fargate | PerQuery-CostAware | 3.89 | 62.3 | 308 | 2.97e+03 | 245 | 39.1 | 4.61 |
 | fargate | AutoSketch-Adapted | 1.02e+03 | 2.16e+04 | 3.2e+04 | 1.01e+03 | 9.45 | 1.36e+03 | 1.02e+03 |
 
 Frontier points (latency ms, cost), by weights:
@@ -194,13 +194,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 43.4 | 43.4 | 268 | 1.34e+04 | 46.7 | 13.3 | 71.8 |
-| cpu | ASAP (no roll-ups) | 43.4 | 43.4 | 268 | 1.34e+04 | 46.7 | 13.3 | 71.8 |
-| cpu | PerQuery-CostAware | 123 | 123 | 636 | 3.33e+03 | 245 | 28.4 | 161 |
+| cpu | ASAP | 43.4 | 43.4 | 268 | 1.34e+04 | 46.7 | 37.2 | 71.8 |
+| cpu | ASAP (no roll-ups) | 43.4 | 43.4 | 268 | 1.34e+04 | 46.7 | 37.2 | 71.8 |
+| cpu | PerQuery-CostAware | 123 | 123 | 636 | 3.33e+03 | 245 | 79.4 | 161 |
 | cpu | AutoSketch-Adapted | 4.32e+04 | 4.32e+04 | 6.4e+04 | 1.01e+03 | 9.45 | 2.71e+03 | 4.32e+04 |
-| fargate | ASAP | 2.61 | 43.9 | 187 | 2.68e+03 | 46.7 | 13.6 | 3.67 |
-| fargate | ASAP (no roll-ups) | 2.61 | 43.9 | 187 | 2.68e+03 | 46.7 | 13.6 | 3.67 |
-| fargate | PerQuery-CostAware | 7.78 | 125 | 616 | 2.97e+03 | 245 | 28.4 | 9.22 |
+| fargate | ASAP | 2.61 | 43.9 | 187 | 2.68e+03 | 46.7 | 38.1 | 3.67 |
+| fargate | ASAP (no roll-ups) | 2.61 | 43.9 | 187 | 2.68e+03 | 46.7 | 38.1 | 3.67 |
+| fargate | PerQuery-CostAware | 7.78 | 125 | 616 | 2.97e+03 | 245 | 79.5 | 9.22 |
 | fargate | AutoSketch-Adapted | 2.04e+03 | 4.32e+04 | 6.4e+04 | 1.01e+03 | 9.45 | 2.71e+03 | 2.04e+03 |
 
 Frontier points (latency ms, cost), by weights:
@@ -225,13 +225,13 @@ Roll-up ablation (ASAP vs. ASAP without roll-ups):
 
 | weights | method | cost (unbounded) | CPU (vCPU) | GiB | latency (ms) | median latency (ms) | planning (s) | cost at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|---|
-| cpu | ASAP | 2.8 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 1.53 | 4.52 |
-| cpu | ASAP (no roll-ups) | 2.8 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 1.53 | 4.52 |
-| cpu | PerQuery-CostAware | 13.5 | 13.5 | 47 | 3.33e+03 | 59.1 | 3.36 | 16 |
+| cpu | ASAP | 2.8 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 3.99 | 4.52 |
+| cpu | ASAP (no roll-ups) | 2.8 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 3.99 | 4.52 |
+| cpu | PerQuery-CostAware | 13.5 | 13.5 | 47 | 3.33e+03 | 59.1 | 9.11 | 16 |
 | cpu | AutoSketch-Adapted | 3.24e+03 | 3.24e+03 | 4.16e+03 | 1.01e+03 | 9.45 | 169 | 3.24e+03 |
-| fargate | ASAP | 0.165 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 1.55 | 0.231 |
-| fargate | ASAP (no roll-ups) | 0.165 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 1.55 | 0.231 |
-| fargate | PerQuery-CostAware | 0.754 | 13.6 | 45.8 | 2.97e+03 | 59.1 | 3.36 | 0.851 |
+| fargate | ASAP | 0.165 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 4.07 | 0.231 |
+| fargate | ASAP (no roll-ups) | 0.165 | 2.8 | 11.7 | 2.68e+03 | 58.6 | 4.07 | 0.231 |
+| fargate | PerQuery-CostAware | 0.754 | 13.6 | 45.8 | 2.97e+03 | 59.1 | 9.12 | 0.851 |
 | fargate | AutoSketch-Adapted | 150 | 3.24e+03 | 4.16e+03 | 1.01e+03 | 9.45 | 169 | 150 |
 
 Frontier points (latency ms, cost), by weights:

@@ -81,12 +81,17 @@ plus its measured benchmark, approxbench accuracy runs at 1e8 items):
 
 | Workload | RQEs | ASAP | PerQuery | AutoSketch |
 |---|---|---|---|---|
-| mixed | 42 | 0.82 s | 1.8 s | 0.0006 s + 169 s |
-| mixed, m = 16 | 672 | 13.3 s | 28.4 s | 0.01 s + 2,710 s |
-| multi-grouping | 62 | 0.52 s | 0.28 s | 0.0023 s + 227 s |
-| multi-grouping, m = 16 | 992 | 8.5 s | 5 s | 0.037 s + 3,625 s |
-| mixed + multi-grouping | 104 | 2.9 s | 5.0 s | 0.0042 s + 396 s |
-| mixed + multi-grouping, m = 16 | 1664 | 17.8 s | 33 s | 0.026 s + 6,335 s |
+| mixed | 42 | 2.2 s | 4.6 s | 0.002 s + 169 s |
+| mixed, m = 16 | 672 | 37.2 s | 79.4 s | 0.028 s + 2,710 s |
+| multi-grouping | 62 | 0.52 s | 0.28 s | 0.002 s + 227 s |
+| multi-grouping, m = 16 | 992 | 8.5 s | 5.0 s | 0.037 s + 3,625 s |
+| mixed + multi-grouping | 104 | 2.8 s | 5.0 s | 0.004 s + 396 s |
+| mixed + multi-grouping, m = 16 | 1664 | 40.0 s | 72.7 s | 0.067 s + 6,335 s |
+
+Every planning time above comes from the same node type (CloudLab Xeon
+E5-2683 v3), each node running its share of the tables serially. The mixed
+templates dominate it: their per-series quantile and sum RQEs give one
+candidate per (series grouping, window, config).
 
 The denser grid gives ASAP and PerQuery more candidates (6 KLL and 5 DDSketch
 configs instead of 3 and 4), so their MILPs are larger than before (mixed +
@@ -172,6 +177,11 @@ ruled out by accuracy; cardinality's Hydra candidate is hydra-hll.
   (the per-(service, endpoint) queries), so the 100 and 300 ms SLAs have no
   plan.
 - `fig_planning_time.png`: planning time vs. RQEs (multi-grouping set).
+- `paper/`: the paper's §6.3 figures, from `scripts/plot_sec63_paper.py
+  rqe-optimizer/results/autosketch-vs-asap-hydra
+  rqe-optimizer/results/autosketch-vs-asap-hydra/paper`: `sec63_cost_bars`
+  (each method's cost at AutoSketch's latency, with each baseline's multiple
+  of ASAP's), `sec63_frontier` and `sec63_rollups`, as PDF and PNG.
 - `fig_rollup_ablation.png`: ASAP vs. ASAP without roll-ups, cheapest plan per
   workload (CPU only, log scale).
 
@@ -261,16 +271,17 @@ serially. Plans: `--runs 1`, without `--no-chosen`, extracted with
 
 One-scrape instant RQEs (2026-10-14, #215, sketch-bench main at acc2db1): the
 8 classic and all tables re-exported (`--keep-duplicate-queries`; only the 6
-instant RQEs per metric change) and rerun serially on a 16-core desktop, not
-an idle cluster node, with their plans and the 90%/99% runs of
-`../autosketch-vs-asap-targets/`. The multi-grouping JSONs and plans are the
+instant RQEs per metric change) and rerun serially on a 16-core desktop, with
+their plans and the 90%/99% runs of `../autosketch-vs-asap-targets/`. The 8
+95% results were then rerun on CloudLab (clnode109/155/167/178, the nodes of
+the multi-grouping runs, each running its share serially), so every planning
+time comes from one node type; every cost, latency and plan matched the
+desktop's exactly. The multi-grouping JSONs and plans are the
 denser-grid rerun's. AutoSketch's probes are unchanged, so every benchmark time
 is reused from `autosketch-benchmark-times.json`.
 
-The JSONs, figures and plans here are from those last two reruns. Planning
-times of the mixed and mixed + multi-grouping rows come from the desktop, those
-of the multi-grouping rows from the cluster, so compare them across rows only
-to about 2×.
+The JSONs, figures and plans here are from those last two reruns; the 95%
+JSONs of the mixed and mixed + multi-grouping tables are the CloudLab ones.
 
 ## Caveats
 

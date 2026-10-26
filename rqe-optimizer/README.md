@@ -19,6 +19,7 @@ ProjectASAP/ASAPQuery#777 (`docs/evaluation/autosketch-vs-planner.md`).
 | `examples/small_problem.rs` | a toy instance solved end to end (brute force or MILP) | |
 | `results/autosketch-vs-asap-hydra/` | **the current §6.3 results** (2026-10-11; classic and all rerun 2026-10-13 without templates 7 and 9; all rerun 2026-10-14 on the denser grid, #213): roll-ups, the roll-up ablation, Hydra candidates, the classic, multi-grouping and mixed + multi-grouping workloads, and each plan | current |
 | `results/e2e-rate10/` | the classic, multi-grouping and all workloads (r = m = 1) re-planned at 10 samples/s per series, for the end-to-end run (on the grid before #213's denser one) | current (e2e input) |
+| `results/case-studies-6.3.1/` | the paper's §6.3.1 case studies (performance monitoring, anomaly detection): tables, every method's plan, and what each deploys | current |
 | `results/autosketch-vs-asap-inputs/` | the accuracy curves every run reads (#138's study), and #138's tables and raw records | current (shared input) |
 | `results/autosketch-vs-asap-synthetic/`, `results/autosketch-vs-asap-synthetic-sla/` | the 2026-10-08 results (#138): before roll-ups and the KLL footprint fix | superseded by `-hydra` |
 | `data/autosketch-eval/table.json` | the trace workloads (Alibaba 2022, Google 2011, BOOM) | not yet rerun on cost by use |
