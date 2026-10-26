@@ -1,5 +1,5 @@
 //! v1 brute-force solver for the RAQE -> sketch-deployment mapping problem.
-//! `docs/rqe_sketch_deployment_v1.md` is the problem statement;
+//! `rqe-optimizer/docs/rqe_sketch_deployment_v1.md` is the problem statement;
 //! `rqe_optimizer_candidates.md` and `rqe_optimizer_cost_model.md` hold the
 //! detailed planning design.
 //!
@@ -568,7 +568,7 @@ pub fn row_accuracy(config: &AtomicCostEntry) -> f64 {
     })
 }
 
-/// A candidate deployment (`docs/rqe_optimizer_candidates.md`): one configuration, one grouped stream, and a
+/// A candidate deployment (`rqe-optimizer/docs/rqe_optimizer_candidates.md`): one configuration, one grouped stream, and a
 /// sliding sketch window. Retention is an execution/storage concern, not an
 /// optimizer candidate dimension.
 #[derive(Debug, Clone, PartialEq)]

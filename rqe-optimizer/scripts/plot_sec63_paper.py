@@ -15,7 +15,7 @@ Writes into OUT (PDF and PNG each):
 
 Every cost is absolute (vCPU or $/hour).
 
-Usage: scripts/plot_sec63_paper.py RESULTS_DIR OUT
+Usage: rqe-optimizer/scripts/plot_sec63_paper.py RESULTS_DIR OUT
   RESULTS_DIR: rqe-optimizer/results/autosketch-vs-asap-hydra
 """
 

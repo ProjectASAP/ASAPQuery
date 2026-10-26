@@ -15,7 +15,7 @@
 //! ```
 //!
 //! Every plan is priced by use (`usage::usage_cost`, sketch-bench
-//! `docs/rqe_optimizer_cost_model.md`, "Cost by use and batch latency"):
+//! `rqe-optimizer/docs/rqe_optimizer_cost_model.md`, "Cost by use and batch latency"):
 //! `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, CPU elastic, at each weight
 //! setting of #777 §4 (CPU only; Fargate's per-vCPU and per-GB prices). A
 //! batch's latency is its longest chain (the newest window's compaction,
@@ -62,22 +62,22 @@
 //! as N grows (sketch-bench#189), so either may be the hardest group.
 //!
 //! Costs and accuracy come from `--saturation-dir`, the same inputs the
-//! planner reads (#174): the cost table `optimizer_cost/rqe_atomic_costs.json`
+//! planner reads (sketch-bench#174): the cost table `optimizer_cost/rqe_atomic_costs.json`
 //! (one row per config, at the evaluation dataset's shape) and the saturation
 //! curves. ASAP reads `SaturationCurves::accuracy` (the curve at the
 //! lookback's items; KLL and top-k merged from `L/x` shards read the merge
-//! curve, #158); AutoSketch reads `autosketch_accuracy` (one unmerged sketch
+//! curve, sketch-bench#158); AutoSketch reads `autosketch_accuracy` (one unmerged sketch
 //! per query window, no saturation requirement).
 //!
 //! Hydra: ASAP and PerQuery plan with undeployable families allowed, so a
 //! Hydra grid over a schema metric's full schema competes with per-group
-//! sketches (sketch-bench `docs/rqe_optimizer_hydra.md`). Its cost rows and
+//! sketches (`rqe-optimizer/docs/rqe_optimizer_hydra.md`). Its cost rows and
 //! accuracy (`hydra_saturation.csv` under the saturation dir) are measured
 //! on the dataset shaped like the stream's metric ([`hydra_dataset`]), at
 //! that full schema; without them no Hydra deployment is eligible. Hydra is
 //! held to the worst case (max over covered groups, worst over N and seeds),
 //! per-group sketches to seed-mean curves. AutoSketch allows undeployable
-//! families too but skips Hydra itself (#159).
+//! families too but skips Hydra itself (sketch-bench#159).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -326,7 +326,7 @@ fn groups_of(r: &Value, capability: Capability) -> u64 {
 }
 
 /// The `hydra_saturation.csv` dataset measured with a schema metric's
-/// labels, shares and values (`configs/datagen/hydra_*.yaml`): `http`'s
+/// labels, shares and values (sketch-bench `configs/datagen/hydra_*.yaml`): `http`'s
 /// latency for quantiles, its user ids otherwise, and `flows`' sources.
 /// `None` for any other metric, which no Hydra deployment serves.
 fn hydra_dataset(metric: &str, capability: Capability) -> Option<String> {
@@ -679,7 +679,7 @@ fn autosketch_plan(
         let costs = w.costs.get(stream).map_or(&[][..], Vec::as_slice);
         let oracle = |r: &Raqe, c: &AtomicCostEntry| w.autosketch_accuracy(r, c);
         // Undeployable families allowed, as for ASAP: AutoSketch skips
-        // Hydra itself (#159), so every method sees the same other families.
+        // Hydra itself (sketch-bench#159), so every method sees the same other families.
         match autosketch::plan(&group, costs, SEED, true, oracle) {
             Ok(plan) => {
                 deployments.extend(plan.deployments);
@@ -887,7 +887,7 @@ fn frontier_bounds(lo: f64, hi: f64, n: usize, extra: f64) -> Vec<f64> {
 }
 
 /// Every method's plan for `w`, priced by use at each weight setting, with
-/// its latency (`docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
+/// its latency (`rqe-optimizer/docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
 /// latency"): version 1 (no latency constraint; frontier) in `results`,
 /// version 2 (each SLA of `slas`) in `sla_results`.
 fn evaluate(w: &Workload, runs: usize, weights: &[(&str, f64, f64)], slas: &[f64]) -> Value {
@@ -945,7 +945,7 @@ fn evaluate(w: &Workload, runs: usize, weights: &[(&str, f64, f64)], slas: &[f64
     let probes: usize = plan.searches.iter().map(|s| s.probes.len()).sum();
     // The distinct probed (metric, config) pairs and the data shape each is
     // benchmarked on: AutoSketch benchmarks a config once per metric, on that
-    // metric's data. scripts/autosketch_benchmark_time.py times them.
+    // metric's data. sketch-bench/scripts/autosketch_benchmark_time.py times them.
     let mut probed_configs = BTreeMap::new();
     for s in &plan.searches {
         let r = raqes.iter().find(|r| r.id == s.raqe_id).unwrap();
@@ -1704,7 +1704,7 @@ mod tests {
     fn a_covered_rqe_is_held_to_the_worse_of_its_smallest_and_largest_group() {
         // Relative error: a 3% target accepts at most 0.03.
         let at = |target: f64, error: Option<f64>| error.unwrap() <= target;
-        // Error grows with N (#189): the largest group rejects what the
+        // Error grows with N (sketch-bench#189): the largest group rejects what the
         // smallest accepts.
         let [asap, autosketch, smallest, largest] = covered_reads([0.01, 0.01, 0.05, 0.05, 0.05]);
         assert!(at(0.03, smallest) && !at(0.03, largest));

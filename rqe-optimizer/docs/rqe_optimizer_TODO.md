@@ -30,8 +30,8 @@ implemented, what is next, and what is intentionally deferred.
   counts, per-RQE eligibility, and the Cartesian mapping-space size.
 - Streaming mode reports periodic throughput and frontier-size progress, and
   can print initial example mappings.
-- `scripts/study_saturation.py --phase optimizer-cost` measures the cost
-  table used by `small_problem` (#174), without changing ASAPQuery's
+- `sketch-bench/scripts/study_saturation.py --phase optimizer-cost` measures the cost
+  table used by `small_problem` (sketch-bench#174), without changing ASAPQuery's
   exporter.
 - The MILP uses HiGHS to minimize `Objective::AUCCost { w_cpu, w_mem }`,
   `w_cpu × CPU + w_mem × memory GiB` (default `(1, 0)`), without enumerating

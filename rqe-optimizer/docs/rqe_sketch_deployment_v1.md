@@ -22,7 +22,7 @@ and per-RAQE latency.
 - **Cost table**: per configuration, measured memory per instance, CPU per
   insert, merge and query, and accuracy in its named `accuracy_metric`.
   Measured by
-  [`scripts/study_saturation.py --phase optimizer-cost`](../scripts/study_saturation.py).
+  [`sketch-bench/scripts/study_saturation.py --phase optimizer-cost`](https://github.com/ProjectASAP/sketch-bench/blob/main/scripts/study_saturation.py).
 - **Window**: the interval `[k × y, k × y + x)` an instance covers; `x` is the
   window size and `y` the slide.
 - **Instance**: one sketch or accumulator object holding one group's samples
@@ -73,8 +73,8 @@ lambda(metric) = card(metric.labels) / scrape_interval      samples/second
 `validate_facts` reports every missing or inconsistent fact up front.
 
 The cost table, measured by
-[`scripts/study_saturation.py --phase optimizer-cost`](../scripts/study_saturation.py)
-(#174), gives for each configuration:
+[`sketch-bench/scripts/study_saturation.py --phase optimizer-cost`](https://github.com/ProjectASAP/sketch-bench/blob/main/scripts/study_saturation.py)
+(sketch-bench#174), gives for each configuration:
 
 - memory per instance;
 - CPU per insert;
@@ -188,7 +188,7 @@ each phase's CPU and memory, together with the selected deployment mapping.
   KLL's guarantee, no better than the last measurement (univmon-cardinality
   has none, so no accuracy). Roll-ups multiply the merge count by the
   fan-out, so they reach the guarantee sooner. Heap top-k reads its plain
-  curve (#158).
+  curve (sketch-bench#158).
 - **Query-result sharing:** v1 charges every RAQE its own query and merge CPU.
   Revisit when RAQE semantics and execution timing identify safe reuse cases.
 - **Latency SLAs:** `minimize` takes optional per-RAQE latency bounds;

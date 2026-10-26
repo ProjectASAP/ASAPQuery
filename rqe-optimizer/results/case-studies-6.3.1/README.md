@@ -2,8 +2,8 @@
 
 The two illustrative workloads of the paper's §6.3.1, planned by every method
 of the §6.3 evaluation (`../autosketch-vs-asap-hydra/`) with the same inputs:
-#213's curves, cost table and Hydra study, 95% accuracy, cost by use.
-`inputs/*.json` are the tables, from `scripts/export_case_studies.py`;
+sketch-bench#213's curves, cost table and Hydra study, 95% accuracy, cost by use.
+`inputs/*.json` are the tables, from `sketch-bench/scripts/export_case_studies.py`;
 `*-tp95.json` are the runner's results, each plan's per-RQE choices kept
 (`chosen`).
 
@@ -61,7 +61,7 @@ the coarse group's p99, not a quantile of quantiles.
 ```sh
 cargo build --release -p rqe-optimizer --examples
 C=rqe-optimizer/results/case-studies-6.3.1
-python3 scripts/export_case_studies.py $C/inputs
+python3 $SKETCH_BENCH/scripts/export_case_studies.py $C/inputs
 SAT=$(mktemp -d); cp -r rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/
 cp -r rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/* $SAT/
 for t in perf-monitoring anomaly-detection; do

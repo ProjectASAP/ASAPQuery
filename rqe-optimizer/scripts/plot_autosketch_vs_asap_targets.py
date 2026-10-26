@@ -14,7 +14,7 @@ Reads `autosketch_vs_asap` results named `<table>-t<level>.json`, with level
                             cheapest cost, latency and deployments, RQEs
                             dropped, roll-ups
 
-Usage: scripts/plot_autosketch_vs_asap_targets.py OUT RESULT.json...
+Usage: rqe-optimizer/scripts/plot_autosketch_vs_asap_targets.py OUT RESULT.json...
 """
 
 import json

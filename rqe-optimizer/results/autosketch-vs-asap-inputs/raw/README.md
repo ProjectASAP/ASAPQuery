@@ -2,8 +2,8 @@
 
 These are the raw approxbench records (gzipped JSONL, one record per
 benchmark run) behind `../saturation/`, from the sketch-bench study on
-asap_sketchlib 0.3.0 run on 2026-10-07 with `scripts/study_saturation.py`
-(sketch-bench main at the time, with #186's full-cross grid). The curves and
+asap_sketchlib 0.3.0 run on 2026-10-07 with `sketch-bench/scripts/study_saturation.py`
+(sketch-bench main at the time, with sketch-bench#186's full-cross grid). The curves and
 the cost table in `../saturation/` are reduced from them; the figures read
 only those.
 
@@ -16,7 +16,7 @@ Every accuracy run is `study_saturation.py --phase accuracy --seeds 3` plus:
 
 | File | Machine | Arguments | Records | Run time | Feeds |
 |---|---|---|---|---|---|
-| `grid_topk.saturation_accuracy.jsonl.gz` | clnode155 | `--n-max 1e7 --jobs 48 --families topk` (then the K = 1e4 column refilled for #186) | 13,056 | 98 s + 42 s | `out_grid_1e7_cost/` |
+| `grid_topk.saturation_accuracy.jsonl.gz` | clnode155 | `--n-max 1e7 --jobs 48 --families topk` (then the K = 1e4 column refilled for sketch-bench#186) | 13,056 | 98 s + 42 s | `out_grid_1e7_cost/` |
 | `grid_card.saturation_accuracy.jsonl.gz` | clnode178 | `--n-max 1e7 --jobs 48 --families cardinality` (then the K = 1e4 column refilled) | 4,896 | 100 s + 43 s | `out_grid_1e7_cost/` |
 | `grid_quantile.saturation_accuracy.jsonl.gz` | clnode178 | `--n-max 1e7 --jobs 48 --families quantile --merge-shards-list 1,4,16,64` | 5,712 | 32 s | `out_grid_1e7_cost/` |
 | `kll_a2.saturation_accuracy.jsonl.gz` | clnode178 | `--no-cost-shape --families quantile --alphas 2 --n-max 3.16e7 --jobs 24`, KLL k ∈ {50, 200, 800}, `--merge-shards-list 1,4,16,64,256,1024,4096,16384,65536,86400` | 1,710 | 47 s | `out_1e9/` |
@@ -30,7 +30,7 @@ Every accuracy run is `study_saturation.py --phase accuracy --seeds 3` plus:
 Run times are each file's first-to-last record timestamps; the refills ran
 about 40 minutes after their grids and are counted separately.
 
-## The denser grid (#213, measured 2026-10-13/14 UTC)
+## The denser grid (sketch-bench#213, measured 2026-10-13/14 UTC)
 
 Only the new configs, with the same arguments as the rows above plus
 `--sketches`/`--configs`; accuracy runs on clnode130 (the same Xeon

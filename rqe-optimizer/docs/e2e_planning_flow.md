@@ -8,10 +8,10 @@ How to plan sketch deployments for a query workload over a real trace:
 4. run the optimizer;
 5. read the plan.
 
-This page follows what exists on `main` (through #183). It names the
+This page follows what exists on `main` (through sketch-bench#183). It names the
 steps that are still manual. The model itself (candidates, cost model,
 eligibility) is in [`rqe_sketch_deployment_v1.md`](rqe_sketch_deployment_v1.md),
-and the saturation study is in [`saturation_study.md`](saturation_study.md).
+and the saturation study is in [`saturation_study.md`](https://github.com/ProjectASAP/sketch-bench/blob/main/docs/saturation_study.md).
 
 ```text
 query workload ──► RAQEs (capability, S, T, G, accuracy SLA, latency SLA)
@@ -45,7 +45,7 @@ Each one is a single statistic that is evaluated every `T` over the last `S`:
 | `metric` | The metric it reads; must have an entry in `WorkloadFacts` |
 | `spatial_filter` | Must be empty for now. `validate_facts` rejects filters until facts carry per-filter cardinality |
 | `grouping_labels` | `G`, the `by (...)` labels; empty for a whole-metric aggregate |
-| `accuracy_sla` | Bound on the family's own accuracy metric. It is a ceiling for errors and a floor for top-k precision (#172) |
+| `accuracy_sla` | Bound on the family's own accuracy metric. It is a ceiling for errors and a floor for top-k precision (sketch-bench#172) |
 | `latency_sla_ms` | Optional ceiling on the modeled query latency. Only the MILP enforces it |
 
 A PromQL query expands into one RAQE per statistic. For example, a query
@@ -55,7 +55,7 @@ This expansion is done by hand today.
 Where workloads are written down:
 
 - **sketch-bench:** `raqes()` in
-  [`rqe-optimizer/examples/small_problem.rs`](../rqe-optimizer/examples/small_problem.rs)
+  [`rqe-optimizer/examples/small_problem.rs`](../examples/small_problem.rs)
   is Rust code; edit it and rebuild.
 - **ASAPQuery:** `asap-optimizer-cli --milp` reads the planner's workload YAML
   (`--input_config`, the same format as `asap-planner --input_config`). Its
@@ -121,15 +121,15 @@ not an average, since longer samples expose worse cases
 | `target_*` | `accuracy_sla` | Per-family targets from the analysis |
 
 Copying these numbers into `MetricFacts` is **manual**. sketch-bench's
-[`scripts/recommend_config.py`](../scripts/recommend_config.py) reads the same
+[`sketch-bench/scripts/recommend_config.py`](https://github.com/ProjectASAP/sketch-bench/blob/main/scripts/recommend_config.py) reads the same
 file, but it recommends one config per query from the curves; it doesn't write
 facts for the optimizer.
 
-## 3. Measuring the sketches: `scripts/study_saturation.py`
+## 3. Measuring the sketches: `sketch-bench/scripts/study_saturation.py`
 
 The optimizer reads two things from one directory, `SATURATION_DIR`: the
 saturation curves, for accuracy, and the cost table, for CPU and memory. Both
-come from `scripts/study_saturation.py`, and its configs are one grid (#174).
+come from `sketch-bench/scripts/study_saturation.py`, and its configs are one grid (sketch-bench#174).
 Run it on a quiet machine. We use CloudLab `clnode109`. Cost and timing runs
 must be the only job on the machine.
 
@@ -137,18 +137,18 @@ must be the only job on the machine.
 cargo build -p aqpbm-cli --release
 D=SATURATION_DIR
 
-# Accuracy grid to N = 1e7, with merge curves (KLL needs them, #158; top-k
-# merges with a heap of m·k and reads its plain curve, #182).
-python3 scripts/study_saturation.py --phase accuracy --n-max 1e7 --seeds 3 --jobs 48 \
+# Accuracy grid to N = 1e7, with merge curves (KLL needs them, sketch-bench#158; top-k
+# merges with a heap of m·k and reads its plain curve, sketch-bench#182).
+python3 $SKETCH_BENCH/scripts/study_saturation.py --phase accuracy --n-max 1e7 --seeds 3 --jobs 48 \
     --merge-shards-list 1,4,16,64 --out $D/out_grid_1e7_cost
 
 # Larger N for the points that need it: list them in a CSV with
 # sketch,config,dist,param,cardinality columns.
-python3 scripts/study_saturation.py --phase accuracy --n-max 1e9 --seeds 3 --jobs 16 \
+python3 $SKETCH_BENCH/scripts/study_saturation.py --phase accuracy --n-max 1e9 --seeds 3 --jobs 16 \
     --points-from points.csv --out $D/out_1e9
 
 # The cost table (serial).
-python3 scripts/study_saturation.py --phase optimizer-cost --out $D/optimizer_cost
+python3 $SKETCH_BENCH/scripts/study_saturation.py --phase optimizer-cost --out $D/optimizer_cost
 ```
 
 - **Grid:** `--thetas`, `--cardinalities` and `--alphas` set the data shapes,
@@ -159,7 +159,7 @@ python3 scripts/study_saturation.py --phase optimizer-cost --out $D/optimizer_co
   `m` shards, into `saturation_merge_curve.csv`. List every `m` the workload's
   merges need (`m = S / x` for the windows `x` the optimizer may pick).
   Past the largest measured `m`, a merged KLL answer falls back to its
-  guarantee (#180). Restrict `--merge-shards-list` to the quantile family with
+  guarantee (sketch-bench#180). Restrict `--merge-shards-list` to the quantile family with
   `--families quantile` and `--resume`.
 - **Cost table:** `--phase optimizer-cost` measures each config of the families
   the optimizer plans (`OPTIMIZER_FAMILIES`: top-k, cardinality, quantile) and
@@ -168,7 +168,7 @@ python3 scripts/study_saturation.py --phase optimizer-cost --out $D/optimizer_co
   `rqe_atomic_costs.json`, and every row names its `accuracy_metric`. The
   phase fails if any row is skipped.
 - **Resuming:** `--resume` keeps complete curves after an interruption, and
-  with a narrower grid it keeps the other points' rows (#182).
+  with a narrower grid it keeps the other points' rows (sketch-bench#182).
 
 ### Fanning out over machines
 
@@ -182,7 +182,7 @@ machine to itself.
 3. Concatenate the parts into one run directory:
 
    ```bash
-   python3 scripts/merge_study_parts.py $D/out_grid_1e7_cost part_a/grid part_b/grid
+   python3 $SKETCH_BENCH/scripts/merge_study_parts.py $D/out_grid_1e7_cost part_a/grid part_b/grid
    ```
 
    It refuses a point that appears in two parts and mismatched headers.
@@ -273,10 +273,10 @@ lookback (series per group × scrapes per lookback):
 - **Merging `m = S / x` windows:** CMS, CountSketch, HLL and DDSketch merge
   exactly, so they read the plain curve. KLL reads the merge curve at `m`,
   taking the worse of the measured counts either side. Top-k deployments keep
-  a heap of `m·k` (#182), so a merged top-k answer reads the plain curve.
+  a heap of `m·k` (sketch-bench#182), so a merged top-k answer reads the plain curve.
 - **Unmeasured:** past an unsaturated curve, past the measured `m` or N, or
   with no merge curve, the accuracy falls back to the sketch's published
-  guarantee at 95% (#180), never better than the last measurement it extends.
+  guarantee at 95% (sketch-bench#180), never better than the last measurement it extends.
 - **No accuracy** (below the first checkpoint, or a shape outside the grid)
   means the candidate is not eligible.
 

@@ -169,10 +169,10 @@ the CPU-only results are unchanged, cost for cost). With memory priced
 
 | File | What it is |
 |---|---|
-| `inputs/tables/<case>-<knob>-<value>.json` | one table per sweep point (`scripts/case_study_tables.py`); `base-0` is the draft's workload |
+| `inputs/tables/<case>-<knob>-<value>.json` | one table per sweep point (`sketch-bench/scripts/case_study_tables.py`); `base-0` is the draft's workload |
 | `inputs/tables/plan.tsv` | each table and its SLA grid (ms) |
 | `<case>-<knob>-<value>-tp95.json` | the runner's result, with each plan's `chosen` |
-| `summary.md` | every table: ASAP's cost, MVs and latency with no SLA and per SLA, and each distinct plan (`scripts/summarize_case_studies.py`) |
+| `summary.md` | every table: ASAP's cost, MVs and latency with no SLA and per SLA, and each distinct plan (`rqe-optimizer/scripts/summarize_case_studies.py`) |
 
 ## Reproduce
 
@@ -181,13 +181,13 @@ cargo build --release -p rqe-optimizer --examples
 DIR=rqe-optimizer/results/case-studies
 SAT=$(mktemp -d); cp -r rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/
 cp -r rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/* $SAT/
-python3 scripts/case_study_tables.py --out $DIR/inputs/tables
+python3 $SKETCH_BENCH/scripts/case_study_tables.py --out $DIR/inputs/tables
 while IFS=$'\t' read -r table slas; do
   target/release/examples/autosketch_vs_asap synthetic --table $DIR/inputs/tables/$table \
       --target p95 --runs 1 --slas-ms $slas --saturation-dir $SAT \
       --out $DIR/${table%.json}-tp95.json
 done < $DIR/inputs/tables/plan.tsv
-python3 scripts/summarize_case_studies.py $DIR/*-tp95.json > $DIR/summary.md
+python3 rqe-optimizer/scripts/summarize_case_studies.py $DIR/*-tp95.json > $DIR/summary.md
 ```
 
 The whole sweep (38 tables) plans in under a minute.

@@ -11,9 +11,9 @@ applies in each sketch family's own metric:
 | 99% (`acc99`) | ≤ 0.01 | ≤ 0.01 | ≥ 0.99 |
 
 Exact accumulators (sum, increase) have zero error at every level. Everything
-else is the 95% runs': the same tables (#210's, without classic templates 7
-and 9, with #215's one-scrape instant RQEs), the cost table, curves and Hydra
-study with #213's denser grid, and
+else is the 95% runs': the same tables (sketch-bench#210's, without classic templates 7
+and 9, with sketch-bench#215's one-scrape instant RQEs), the cost table, curves and Hydra
+study with sketch-bench#213's denser grid, and
 the same runner (`--target acc90` / `acc99`). The 95% results are
 `../autosketch-vs-asap-hydra/synthetic-*-tp95.json`.
 
@@ -88,12 +88,12 @@ for acc in acc90 acc99; do
         --target $acc --runs 3 --no-chosen --saturation-dir $SAT --out $D/${t%.json}-t$acc.json
   done
 done
-python3 scripts/plot_autosketch_vs_asap_targets.py $D $H/synthetic-*-tp95.json $D/synthetic-*-tacc*.json
+python3 rqe-optimizer/scripts/plot_autosketch_vs_asap_targets.py $D $H/synthetic-*-tp95.json $D/synthetic-*-tacc*.json
 ```
 
 Runs: 2026-10-14, the 4 CloudLab nodes clnode109/155/167/178 (Xeon E5-2683
 v3, 56 cores), each running its share serially, with the 95% runs. The
-classic and all tables were rerun with #215's one-scrape instant RQEs
+classic and all tables were rerun with sketch-bench#215's one-scrape instant RQEs
 (2026-10-14, sketch-bench main at acc2db1, serially on a 16-core desktop);
 the multi-grouping runs are unchanged. Planning
 times are not compared here. AutoSketch's benchmark time was not measured for

@@ -9,6 +9,14 @@ are in `docs/rqe_optimizer_cost_model.md`, `docs/rqe_optimizer_candidates.md`
 and `docs/rqe_optimizer_hydra.md`. The evaluation plan is
 ProjectASAP/ASAPQuery#777 (`docs/evaluation/autosketch-vs-planner.md`).
 
+The crate moved here from ProjectASAP/sketch-bench, which still measures the
+sketches and exports the tables the runner reads: the saturation study
+(`scripts/study_saturation.py`), the cost table, and the eval-table exporters
+(`scripts/export_autosketch_eval_table.py`, `scripts/case_study_tables.py`,
+`scripts/export_case_studies.py`). Paths written `sketch-bench/...` are in that
+repo, and commands using `$SKETCH_BENCH` run from a checkout of it.
+`sketch-bench#N` is an issue or PR there.
+
 ## Layout
 
 | Path | What it is | Status |
@@ -17,11 +25,13 @@ ProjectASAP/ASAPQuery#777 (`docs/evaluation/autosketch-vs-planner.md`).
 | `examples/autosketch_vs_asap.rs` | the §6.3 runner: one workload in, one result JSON out | |
 | `examples/workload_scenarios.rs` | how the optimal plan moves as one knob of a workload changes (types, groupings, windows, SLAs) | |
 | `examples/small_problem.rs` | a toy instance solved end to end (brute force or MILP) | |
-| `results/autosketch-vs-asap-hydra/` | **the current §6.3 results** (2026-10-11; classic and all rerun 2026-10-13 without templates 7 and 9; all rerun 2026-10-14 on the denser grid, #213): roll-ups, the roll-up ablation, Hydra candidates, the classic, multi-grouping and mixed + multi-grouping workloads, and each plan | current |
-| `results/e2e-rate10/` | the classic, multi-grouping and all workloads (r = m = 1) re-planned at 10 samples/s per series, for the end-to-end run (on the grid before #213's denser one) | current (e2e input) |
+| `scripts/` | run the synthetic grid, extract plans, summarize the case studies, and plot (§6.3 paper figures in `plot_sec63_paper.py`) | |
+| `docs/` | the problem statement, candidate and cost-model design, Hydra, and the end-to-end planning flow | |
+| `results/autosketch-vs-asap-hydra/` | **the current §6.3 results** (2026-10-11; classic and all rerun 2026-10-13 without templates 7 and 9; all rerun 2026-10-14 on the denser grid, sketch-bench#213): roll-ups, the roll-up ablation, Hydra candidates, the classic, multi-grouping and mixed + multi-grouping workloads, and each plan | current |
+| `results/e2e-rate10/` | the classic, multi-grouping and all workloads (r = m = 1) re-planned at 10 samples/s per series, for the end-to-end run (on the grid before sketch-bench#213's denser one) | current (e2e input) |
 | `results/case-studies-6.3.1/` | the paper's §6.3.1 case studies (performance monitoring, anomaly detection): tables, every method's plan, and what each deploys | current |
-| `results/autosketch-vs-asap-inputs/` | the accuracy curves every run reads (#138's study), and #138's tables and raw records | current (shared input) |
-| `results/autosketch-vs-asap-synthetic/`, `results/autosketch-vs-asap-synthetic-sla/` | the 2026-10-08 results (#138): before roll-ups and the KLL footprint fix | superseded by `-hydra` |
+| `results/autosketch-vs-asap-inputs/` | the accuracy curves every run reads (sketch-bench#138's study), and sketch-bench#138's tables and raw records | current (shared input) |
+| `results/autosketch-vs-asap-synthetic/`, `results/autosketch-vs-asap-synthetic-sla/` | the 2026-10-08 results (sketch-bench#138): before roll-ups and the KLL footprint fix | superseded by `-hydra` |
 | `data/autosketch-eval/table.json` | the trace workloads (Alibaba 2022, Google 2011, BOOM) | not yet rerun on cost by use |
 
 Use `results/autosketch-vs-asap-hydra/` for anything new. Its `README.md` has
@@ -125,7 +135,7 @@ window with a 60 s slide).
 ### Workload tables
 
 `results/autosketch-vs-asap-hydra/inputs/tables/*.json`, from
-`scripts/export_autosketch_eval_table.py --synthetic`. They are built as RQEs
+`sketch-bench/scripts/export_autosketch_eval_table.py --synthetic`. They are built as RQEs
 directly; no PromQL is parsed. `plan.tsv` lists one run per table. A table
 has `workloads[0].rqes` (one entry per RQE) and `workloads[0].schemas` (each
 multi-grouping metric's labels, cardinalities and skew). An RQE:
@@ -171,7 +181,7 @@ The raw study records are in `autosketch-vs-asap-inputs/raw/`.
 deterministic; planning times depend on the machine.
 
 **Run a new workload.** Write a table in the format above (add templates to
-`SCHEMA_TEMPLATES` in `scripts/export_autosketch_eval_table.py`, or write the
+`SCHEMA_TEMPLATES` in `sketch-bench/scripts/export_autosketch_eval_table.py`, or write the
 JSON yourself) and run:
 
 ```sh
@@ -182,7 +192,7 @@ target/release/examples/autosketch_vs_asap synthetic --table MY_TABLE.json \
 Leave out `--no-chosen` to keep each plan's `chosen`; add `--weights cpu` or
 `--slas-ms 1000` to run less. A new data shape (θ, K, a) or sketch config not
 on the measured grid needs a new saturation study
-(`scripts/study_saturation.py`); new windows, intervals, groupings or
+(`sketch-bench/scripts/study_saturation.py`); new windows, intervals, groupings or
 queries on the same shapes do not.
 
 **See how the plan reacts to one change.** `examples/workload_scenarios.rs`

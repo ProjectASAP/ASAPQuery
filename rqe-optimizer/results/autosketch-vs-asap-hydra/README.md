@@ -1,36 +1,36 @@
 # AutoSketch vs. ASAP with Hydra candidates and roll-ups
 
 Results of ProjectASAP/ASAPQuery#777's synthetic evaluation (§6.3), rerun with
-everything added since #138:
+everything added since sketch-bench#138:
 
 - the planner may serve a coarse RQE from a finer deployment by merging its
-  groups (**roll-ups**, #190), and an **ablation** without them;
+  groups (**roll-ups**, sketch-bench#190), and an **ablation** without them;
 - **Hydra** grids (hydra-hll, hydra-univmon-cardinality, hydra-kll) are
   candidates for ASAP and PerQuery, with accuracy measured on the eval's own
-  data (#193 design; #195–#202 measurement and optimizer);
-- **multi-grouping** templates (`http` and `flows`, templates 11–17, #196),
+  data (sketch-bench#193 design; sketch-bench#195–sketch-bench#202 measurement and optimizer);
+- **multi-grouping** templates (`http` and `flows`, templates 11–17, sketch-bench#196),
   among them p99 latency `GROUP BY CUBE(region, service, endpoint)`
   (template 16, all 7 groupings), evaluated alone (**multi-grouping**) and
   added to the classic mixed set (**mixed + multi-grouping**);
-- the KLL footprint is asap_sketchlib's real allocation (#192), and the cost
+- the KLL footprint is asap_sketchlib's real allocation (sketch-bench#192), and the cost
   table is re-measured;
 - classic templates 7 (`sum by (job) (rate(data_total[w]))`) and 9
   (`topk(32, sum by (label_0) (rate(data_total[w])))`) are dropped, as
   ASAPQuery's engine would need per-series counter deltas to serve them
   (2026-10-13 rerun of the classic and all workloads; the multi-grouping
   results are unchanged);
-- a **denser config grid** (2026-10-14, #213): KLL `k` ∈ {25, 50, 100, 200,
+- a **denser config grid** (2026-10-14, sketch-bench#213): KLL `k` ∈ {25, 50, 100, 200,
   400, 800} (was 50/200/800), DDSketch α adds 0.1, and Hydra grids add
   W = 65536 (hydra-hll, hydra-kll). Only the new configs were measured and
   appended to the curves, the cost table and the Hydra study. HLL stays at
   `lg_k` 12/14/16, the precisions asap_sketchlib builds;
-- **instant RQEs read one scrape** (2026-10-14, #215): `sum by (job)` and
+- **instant RQEs read one scrape** (2026-10-14, sketch-bench#215): `sum by (job)` and
   `quantile by (job)` look back 5 ms, one sample per series (N = 1e3 per
   job), instead of 1 s (2e5), as a PromQL instant query does. Rerun of the
   classic and all workloads; the multi-grouping tables are unchanged, so
   their results stand.
 
-Cost is billed by use (sketch-bench `docs/rqe_optimizer_cost_model.md`):
+Cost is billed by use (`rqe-optimizer/docs/rqe_optimizer_cost_model.md`):
 `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, at two weight settings (CPU only, in
 vCPU; AWS Fargate's per-vCPU and per-GiB prices, in $/hour). Every RQE has a
 p95 accuracy target (0.05 in its family's own metric). An RQE with a coverage
@@ -45,7 +45,7 @@ groups, the worst over N and seeds.
 | ASAP | the MILP over every RQE jointly: shared deployments, roll-ups, Hydra grids |
 | ASAP (no roll-ups) | the same MILP, each RQE only at its own grouping (or a Hydra grid): the roll-up ablation |
 | PerQuery-CostAware | the same MILP without sharing (one deployment per RQE, no roll-ups) |
-| AutoSketch-Adapted | fixed configs chosen by memory (NSDI '24); no Hydra (#159) |
+| AutoSketch-Adapted | fixed configs chosen by memory (NSDI '24); no Hydra (sketch-bench#159) |
 
 ## Results
 
@@ -155,7 +155,7 @@ Google 2011; not committed) agreed: Hydra meets 0.05 only for groups holding
 ≥ 1–5% of records, and per-group sketches that grow with n use less memory
 than the grid at the W that needs.
 
-W = 65536 (#213) widens what Hydra is accurate for: on groups holding ≥ 1% of
+W = 65536 (sketch-bench#213) widens what Hydra is accurate for: on groups holding ≥ 1% of
 the records, the worst error at 1e7 records drops from 0.283 to 0.039
 (hydra-hll, `http`), 0.074 to 0.021 (hydra-hll, `flows`) and 0.054 to 0.017
 (hydra-kll, unmerged; 0.056 to 0.017 over every merge count). But it is the
@@ -177,7 +177,7 @@ ruled out by accuracy; cardinality's Hydra candidate is hydra-hll.
   (the per-(service, endpoint) queries), so the 100 and 300 ms SLAs have no
   plan.
 - `fig_planning_time.png`: planning time vs. RQEs (multi-grouping set).
-- `paper/`: the paper's §6.3 figures, from `scripts/plot_sec63_paper.py
+- `paper/`: the paper's §6.3 figures, from `rqe-optimizer/scripts/plot_sec63_paper.py
   rqe-optimizer/results/autosketch-vs-asap-hydra
   rqe-optimizer/results/autosketch-vs-asap-hydra/paper`: `sec63_cost_bars`
   (each method's cost at AutoSketch's latency, with each baseline's multiple
@@ -214,18 +214,18 @@ zcat plans/synthetic-templatesmultigroup-shared1.plans.json.gz | jq '.plans[]
 ## Inputs
 
 - `inputs/saturation/optimizer_cost/rqe_atomic_costs.json`: the cost table, 63
-  rows (56, plus #213's KLL `k` 25/100/400, DDSketch α 0.1 and Hydra W = 65536
+  rows (56, plus sketch-bench#213's KLL `k` 25/100/400, DDSketch α 0.1 and Hydra W = 65536
   rows), measured serially on idle clnode138 (`study_saturation.py --phase
   optimizer-cost --seeds 3 --hydra-variants hydra-hll,hydra-kll`), including
-  Hydra rows per dataset (`measured_at.dataset`) and #192's KLL footprint.
+  Hydra rows per dataset (`measured_at.dataset`) and sketch-bench#192's KLL footprint.
 - `inputs/saturation/hydra_saturation.csv`: the Hydra study (`--phase hydra`,
-  #202), 7,778 runs on 4 CloudLab nodes (#213 added 999 at W = 65536);
+  sketch-bench#202), 7,778 runs on 4 CloudLab nodes (sketch-bench#213 added 999 at W = 65536);
   hydra-kll on `hydra_http_latency` rerun with per-service latency scales
   (×1–10 log-uniform), so groups differ in distribution as they do in
   practice.
 - The accuracy curves (`out_grid_1e7_cost/`, `out_1e9/`) are the committed
-  #138 study's, in `../autosketch-vs-asap-inputs/saturation/` (#194), with
-  #213's new KLL and DDSketch configs appended.
+  sketch-bench#138 study's, in `../autosketch-vs-asap-inputs/saturation/` (sketch-bench#194), with
+  sketch-bench#213's new KLL and DDSketch configs appended.
 - `inputs/tables/`: the workloads, `export_autosketch_eval_table.py --synthetic
   --keep-duplicate-queries` (classic, multigroup and all × r ∈ {1, 8} × m ∈ {1, 8, 16}).
 
@@ -234,17 +234,17 @@ zcat plans/synthetic-templatesmultigroup-shared1.plans.json.gz | jq '.plans[]
 ```sh
 cargo build --release -p aqpbm-cli -p rqe-optimizer --bins --examples
 DIR=rqe-optimizer/results/autosketch-vs-asap-hydra
-# saturation dir = the #138 curves + this cost table and Hydra study:
+# saturation dir = the sketch-bench#138 curves + this cost table and Hydra study:
 SAT=$(mktemp -d); cp -r rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/
 cp -r $DIR/inputs/saturation/* $SAT/
 while IFS=$'\t' read -r table target result; do
   target/release/examples/autosketch_vs_asap synthetic --table $DIR/inputs/tables/$table \
       --target $target --runs 3 --no-chosen --saturation-dir $SAT --out $DIR/$result
 done < $DIR/inputs/tables/plan.tsv
-python3 scripts/autosketch_benchmark_time.py --binary target/release/approxbench \
+python3 $SKETCH_BENCH/scripts/autosketch_benchmark_time.py --binary $SKETCH_BENCH/target/release/approxbench \
     --out $DIR/autosketch-benchmark-times.json $DIR/synthetic-*-tp95.json
-python3 scripts/plot_autosketch_vs_asap_synthetic.py $DIR
-python3 scripts/plot_autosketch_vs_asap_sla.py $DIR $DIR/synthetic-*-tp95.json
+python3 rqe-optimizer/scripts/plot_autosketch_vs_asap_synthetic.py $DIR
+python3 rqe-optimizer/scripts/plot_autosketch_vs_asap_sla.py $DIR $DIR/synthetic-*-tp95.json
 ```
 
 Runs: Xeon E5-2683 v3, 56 cores, `--runs 3`. First run (superseded by the
@@ -263,13 +263,13 @@ benchmark times are reused: the dropped RQEs used exact accumulators or a
 top-k config already probed on the same metric, so every probe was already
 measured and each workload's benchmark time is unchanged.
 
-Denser grid (2026-10-14, #213, runner at sketch-bench eval/dense-grid):
+Denser grid (2026-10-14, sketch-bench#213, runner at sketch-bench eval/dense-grid):
 multi-grouping on the 4 CloudLab nodes clnode109/155/167/178, then classic and
-all on #210's tables on the same 4 nodes, each node running its share
+all on sketch-bench#210's tables on the same 4 nodes, each node running its share
 serially. Plans: `--runs 1`, without `--no-chosen`, extracted with
-`scripts/extract_autosketch_plans.py`.
+`rqe-optimizer/scripts/extract_autosketch_plans.py`.
 
-One-scrape instant RQEs (2026-10-14, #215, sketch-bench main at acc2db1): the
+One-scrape instant RQEs (2026-10-14, sketch-bench#215, sketch-bench main at acc2db1): the
 8 classic and all tables re-exported (`--keep-duplicate-queries`; only the 6
 instant RQEs per metric change) and rerun serially on a 16-core desktop, with
 their plans and the 90%/99% runs of `../autosketch-vs-asap-targets/`. The 8
@@ -290,7 +290,7 @@ JSONs of the mixed and mixed + multi-grouping tables are the CloudLab ones.
   real traces). Adding it raises ASAP's flows ingest from 0.11 to ~1.3 vCPU,
   still far below a Hydra grid's 8.2; the Hydra conclusion holds.
 - Per-group sketch memory is asap_sketchlib's full allocation from
-  construction (#192); sketches that grow with n would favour per-group
+  construction (sketch-bench#192); sketches that grow with n would favour per-group
   sketches further.
 - Hydra datasets: no flows DDoS burst (datagen can't tie a source set to a
   subnet), uniform proto, smaller UnivMon cells (3×256, 8 layers, heap 64).

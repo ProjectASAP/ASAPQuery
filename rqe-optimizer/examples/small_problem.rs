@@ -3,7 +3,7 @@
 //! Pareto-optimal subset. Picking one mapping *off* the Pareto front is still
 //! the parked scalarization question (problem statement, "Open for later").
 //!
-//! Cost data is real, not fabricated: `scripts/study_saturation.py --phase
+//! Cost data is real, not fabricated: `sketch-bench/scripts/study_saturation.py --phase
 //! optimizer-cost` measures it via `sketch-bench`/`aqpbm-cli` and writes
 //! [`COST_TABLE`] under the saturation directory, an `AtomicCostTable`
 //! loaded here verbatim -- no translation layer, since
@@ -14,9 +14,9 @@
 //! (`facts`, `raqes`) and nowhere else in this file.
 //!
 //! Sketch accuracy comes from the saturation study's curves, not the cost
-//! table (#156). Pass `--saturation-dir DIR` (required), the directory
+//! table (sketch-bench#156). Pass `--saturation-dir DIR` (required), the directory
 //! holding `out_grid_1e7_cost/`, `out_1e9/` and the cost table from
-//! `scripts/study_saturation.py` (#174).
+//! `sketch-bench/scripts/study_saturation.py` (sketch-bench#174).
 //!
 //! Do not run this example
 //! with no mode flag on a large workload: eager mode retains every feasible
@@ -72,7 +72,7 @@ fn required_dir(flag: &str, what: &str) -> String {
 fn saturation_dir() -> String {
     required_dir(
         "--saturation-dir",
-        "holding out_grid_1e7_cost/, out_1e9/ and the cost table from scripts/study_saturation.py",
+        "holding out_grid_1e7_cost/, out_1e9/ and the cost table from sketch-bench/scripts/study_saturation.py",
     )
 }
 
@@ -86,7 +86,7 @@ fn load_cost_table() -> AtomicCostTable {
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "couldn't read {} ({e}) -- run \
-             `scripts/study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost` \
+             `sketch-bench/scripts/study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost` \
              first to generate it",
             path.display()
         )

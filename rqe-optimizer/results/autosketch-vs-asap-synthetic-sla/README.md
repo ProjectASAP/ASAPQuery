@@ -1,7 +1,7 @@
 # Synthetic mixed set: AutoSketch vs. ASAP under a batch latency SLA (version 2)
 
 Version 2 of the evaluation in ProjectASAP/ASAPQuery#777, with the cost model
-of sketch-bench `docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
+of `rqe-optimizer/docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
 latency":
 
 - **Cost by use:** `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, CPU elastic, for
@@ -60,7 +60,7 @@ CPU only (vCPU):
 | mixed, m = 16 | 13.4 s | 10.8 s | 0.029 s + 3159 s |
 
 **How the AutoSketch benchmark is measured:**
-`scripts/autosketch_benchmark_time.py` runs every probed config's
+`sketch-bench/scripts/autosketch_benchmark_time.py` runs every probed config's
 approxbench accuracy benchmark, serially, alone on clnode109
 (`autosketch_benchmark_times.json`).
 - Each run is 1e8 items on the probe's data shape: generate the data, run the
@@ -74,11 +74,11 @@ approxbench accuracy benchmark, serially, alone on clnode109
 ```sh
 # The inputs these results used are committed: TABLES=../autosketch-vs-asap-inputs/tables,
 # DIR=../autosketch-vs-asap-inputs/saturation (paths from this directory).
-python3 scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries --out TABLES
+python3 $SKETCH_BENCH/scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries --out TABLES
 # For each row of TABLES/plan.tsv:
 target/release/examples/autosketch_vs_asap synthetic --table TABLES/T --target p95 \
     --saturation-dir DIR --out OUT/R --runs 3
-python3 scripts/autosketch_benchmark_time.py --binary target/release/approxbench \
+python3 $SKETCH_BENCH/scripts/autosketch_benchmark_time.py --binary $SKETCH_BENCH/target/release/approxbench \
     --out OUT/autosketch_benchmark_times.json OUT/synthetic-*-tp95.json
-python3 scripts/plot_autosketch_vs_asap_sla.py OUT OUT/synthetic-*-tp95.json
+python3 rqe-optimizer/scripts/plot_autosketch_vs_asap_sla.py OUT OUT/synthetic-*-tp95.json
 ```

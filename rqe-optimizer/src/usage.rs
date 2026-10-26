@@ -1,5 +1,5 @@
 //! A plan's resource use over time, its cost billed by use, and its batch
-//! latency (`docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
+//! latency (`rqe-optimizer/docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
 //! latency").
 //!
 //! Ingest is a steady load on `⌈ρ⌉` workers per deployment, split by sample.

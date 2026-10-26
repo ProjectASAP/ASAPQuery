@@ -92,7 +92,7 @@ An RAQE `r_i` is eligible for a candidate `D` when:
 
 Exact accumulators take that accuracy from the cost table; they merge without
 loss, so the window size doesn't matter. Sketches take it
-from the saturation study's error-vs-N curves (`SaturationCurves`, #156),
+from the saturation study's error-vs-N curves (`SaturationCurves`, sketch-bench#156),
 read at the number of items one answered group receives over the RAQE's
 whole lookback: series per `G_i` group times scrapes per lookback. On a
 roll-up the answered group is the RAQE's coarse one.
@@ -108,7 +108,7 @@ roll-up the answered group is the RAQE's coarse one.
   refuses a curve for another metric as a stale study.
 - For sketches that merge exactly, the window size doesn't matter: a merged
   answer reads the curve at the lookback's item count, like a single sketch.
-  KLL and univmon-cardinality merge lossily (#131; UnivMon rebuilds its
+  KLL and univmon-cardinality merge lossily (sketch-bench#131; UnivMon rebuilds its
   heavy-hitter heaps from the union of the merged heaps): an answer merged from `n = S_i / D.x` windows,
   times the average fan-out `⌈card(D.G) / card(G_i)⌉` on a roll-up, reads
   the study's merge curve (`saturation_merge_curve.csv`, the sketch merged
@@ -117,12 +117,12 @@ roll-up the answered group is the RAQE's coarse one.
   a merge curve's last N, the curves say nothing, so the answer takes the
   guarantee below, no better than the largest count's last measurement; the
   study should measure the merge counts a workload needs
-  (`--merge-shards-list`) so the guarantee isn't what decides (#158);
+  (`--merge-shards-list`) so the guarantee isn't what decides (sketch-bench#158);
   univmon-cardinality has no guarantee, so past its curves it has no
   accuracy. `SaturationCurves::load` refuses a study with no merge curves
   for a lossy non-heap candidate sketch (KLL, univmon-cardinality,
   univmon-topk). The fan-out is the average; the largest group's is
-  #189.
+  sketch-bench#189.
 - A top-k RAQE asks for its own `k` (`Raqe::topk_k`, default 32). Heap
   top-k (CMS-heap, CountSketch-heap) keeps a heap of `n · k` in a deployment
   answering from `n = S_i / D.x` merged windows (`n = 1` gives `k`).
@@ -242,7 +242,7 @@ univmon-cardinality, KLL and DDSketch. These don't, and serve only
 - **Accuracy**: read at `G_r`: its `data_shape`, and its items per group over
   the lookback. KLL's and univmon-cardinality's merge curves are read at
   `⌈card(G_d)/card(G_r)⌉ · n` merged instances, the average fan-out, an estimate rather than a
-  worst-group bound (uneven fan-out is #189).
+  worst-group bound (uneven fan-out is sketch-bench#189).
 - **Facts**: `validate_facts` requires `card(X) ≤ card(Y)` for every pair
   `X ⊂ Y` among the label sets a plan can use (every RAQE grouping on the
   metric, and its full label set), so a merge count is never negative.

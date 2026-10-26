@@ -335,7 +335,7 @@ with `k_D = 1`, roll-ups included.
 ### Instance shape and size law
 
 Each row of the cost table (from
-[`scripts/study_saturation.py --phase optimizer-cost`](../scripts/study_saturation.py))
+[`sketch-bench/scripts/study_saturation.py --phase optimizer-cost`](https://github.com/ProjectASAP/sketch-bench/blob/main/scripts/study_saturation.py))
 is measured on one instance, at whatever key count the benchmark fed it
 (`measured_keys`). A key is one distinct entry an instance stores exactly,
 such as one group's running sum in an exact accumulator. Turning a row into a
@@ -359,12 +359,12 @@ not scale.
 
 Quantile sketches have no keys. KLL's `m` is Fixed, and the same at every
 item count, because `asap_sketchlib::KLL` allocates once at construction.
-Since #192 the cost table's KLL rows report that allocation: item slots,
+Since sketch-bench#192 the cost table's KLL rows report that allocation: item slots,
 level index and merge buffer, 5536 B at `k = 50`. Cost tables measured
 before it, including the committed `autosketch-vs-asap-inputs`, carry a
 nominal `4 · k · sizeof(T)` instead (1600 B at `k = 50`; the allocation is
 1.58× that at `k = 200`, 1.14× at `k = 800`), so they understate KLL
-memory (#191).
+memory (sketch-bench#191).
 DDSketch is sized from the metric's `value_range` when given (capped by
 values per instance), else from the measured size.
 
@@ -406,7 +406,7 @@ and key tracker are in [Hydra](rqe_optimizer_hydra.md) §3.
 
 The Hydra families are in their capabilities' family lists but not in
 `DEPLOYABLE_FAMILIES`, so they are candidates only when undeployable families
-are allowed (the §6.3 eval runner); AutoSketch skips them (#159).
+are allowed (the §6.3 eval runner); AutoSketch skips them (sketch-bench#159).
 
 ### Family properties and key tracker
 

@@ -3,8 +3,8 @@
 Everything the three figures were computed from (`../autosketch-vs-asap-synthetic/`
 and `../autosketch-vs-asap-synthetic-sla/`), as run on 2026-10-08.
 
-- `saturation/`: the sketch-bench study on asap_sketchlib 0.3.0 (#174,
-  #178–#186), the `--saturation-dir` the runner reads:
+- `saturation/`: the sketch-bench study on asap_sketchlib 0.3.0 (sketch-bench#174,
+  sketch-bench#178–sketch-bench#186), the `--saturation-dir` the runner reads:
   - `optimizer_cost/rqe_atomic_costs.json`: the cost table, one row per
     config of every family the optimizer plans, sketches (HLL, KLL,
     DDSketch, CMS-heap top-k) and exact aggregations (exact-sum,
@@ -15,13 +15,13 @@ and `../autosketch-vs-asap-synthetic-sla/`), as run on 2026-10-08.
     including the cost table's shape (Zipf 1.1 over 1e4 keys; Pareto a = 2),
     with merge curves for the sketches that lose accuracy when merged;
   - `out_1e9/`: the targeted points past 1e7 that the workloads read.
-- #213 (2026-10-14) appended the denser grid's new configs to both curve
+- sketch-bench#213 (2026-10-14) appended the denser grid's new configs to both curve
   directories: KLL `k` ∈ {25, 100, 400} and DDSketch α = 0.1, measured alone
   (`study_saturation.py --sketches/--configs`) and merged with
-  `scripts/merge_study_parts.py`, which refuses a point measured twice. Their
+  `sketch-bench/scripts/merge_study_parts.py`, which refuses a point measured twice. Their
   raw records are `raw/dense_*`.
 - `tables/`: the synthetic mixed-set workloads from
-  `scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries` (RQEs, streams,
+  `sketch-bench/scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries` (RQEs, streams,
   targets, data shapes) and `plan.tsv` (one run per table).
 
 AutoSketch's measured benchmark times are next to each figure's results

@@ -1,4 +1,4 @@
-//! Candidate generation and eligibility (`docs/rqe_optimizer_candidates.md`).
+//! Candidate generation and eligibility (`rqe-optimizer/docs/rqe_optimizer_candidates.md`).
 
 use crate::analytical_cost_model;
 use crate::{

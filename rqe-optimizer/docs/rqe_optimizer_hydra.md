@@ -42,7 +42,7 @@ baselines.
 | `hydra-cms` | Count-Min, cell 3 × 512 i32; grid 3 × 128 | `R·W·cell_rows·cell_cols·4` |
 | `hydra-cs` | Count Sketch, same shape | same |
 | `hydra-hll` | HLL, `p = 14` fixed | `R·W·2^14` |
-| `hydra-kll` | KLL, `cell_k = 200` | `R·W·(slots(k)·8 + 62·8)` (no merge buffer; #191) |
+| `hydra-kll` | KLL, `cell_k = 200` | `R·W·(slots(k)·8 + 62·8)` (no merge buffer; sketch-bench#191) |
 | `hydra-univmon` | UnivMon: heap 1000, 5 × 2048, 8 layers; grid 2 × 8 | `R·W·layers·((sr·sc + sr)·8 + heap·entry)` |
 
 `hydra-univmon` is registered as four statistics: cardinality, L1, L2 and
@@ -133,7 +133,7 @@ and these bounds serve as sanity checks on the measurements.
   and HLL takes register maxima; with the shared seeds, a merged grid equals
   one built from all the records, so merged accuracy is the single-grid
   accuracy at the merged mass. KLL cells merge lossily (as `kll-percall`,
-  #131) and UnivMon rebuilds heaps from the union of candidates, so both
+  sketch-bench#131) and UnivMon rebuilds heaps from the union of candidates, so both
   need measured merge curves.
 - **Coarse groupings.** A grouping inside `Λ` is answered directly, because
   its subkey was inserted; Hydra never rolls up, which is why
@@ -224,7 +224,7 @@ Code this needs, in order: `FamilyProperties` for the four other variants;
 the new property and the Hydra branch in `is_eligible` and
 `build_all_candidates_unpruned`; Hydra in `Capability::families` and
 `DEPLOYABLE_FAMILIES`; the saturation lookup keyed as in §2.4; cost-table
-rows. AutoSketch keeps skipping Hydra (#159).
+rows. AutoSketch keeps skipping Hydra (sketch-bench#159).
 
 ## 5. What sketch-bench must add
 
@@ -234,12 +234,12 @@ them all; `hydra-kll` is measured in that same run, alongside `hydra-cms`,
 `hydra-cs`, `hydra-hll` and `hydra-univmon`, under every item below.
 
 1. **Target grouping.** Comparators score only column 0
-   (`aqpbm-cli/src/rows/mod.rs`); they must score any named subset of the
+   (`sketch-bench/aqpbm-cli/src/rows/mod.rs`); they must score any named subset of the
    schema, and the wrapper must query any subset, not only prefixes
    (`hydra_shared.rs` `query`).
 2. **Exact baseline.** The `polars` baselines build untagged subkeys
    (`polars_shared.rs`), so overlapping label values alias there but not in
-   the 0.3.0 sketch (#74); tag them the same way.
+   the 0.3.0 sketch (sketch-bench#74); tag them the same way.
 3. **Data.** Hierarchical labels with set cardinality per label, per-parent
    fan-out and skew; the result records `|Λ|`, the target grouping's
    cardinality, every group's `N_q`, and the fanned-out mass `M`.
@@ -257,7 +257,7 @@ them all; `hydra-kll` is measured in that same run, alongside `hydra-cms`,
    for CMS, CountSketch and HLL; merge curves for KLL and UnivMon cells.
 7. **Cost table.** Hydra rows in `study_saturation.py` (`SKETCHES`,
    `OPTIMIZER_FAMILIES`) and `approxbench atomic-costs`: `m_h` (including
-   each KLL cell's merge buffer, #191), `c_ins,h` per record at the schema
+   each KLL cell's merge buffer, sketch-bench#191), `c_ins,h` per record at the schema
    width, `c_mrg,h`, and `c_probe,h` per probe at the target grouping.
 8. **Key enumeration.** Benchmark the chosen tracker (§6) at its grouping,
    with its input and output cardinality.

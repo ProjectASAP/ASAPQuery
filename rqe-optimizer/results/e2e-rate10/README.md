@@ -24,7 +24,7 @@ differences for the end-to-end run:
   RQE ids), added after planning: the RQEs and plans are unchanged.
 - `plans/<table>.plans.json.gz`: each method's chosen plans, in the format of
   `../autosketch-vs-asap-hydra/README.md`, "Plans" (`--runs 1`, kept, then
-  `scripts/extract_autosketch_plans.py`).
+  `rqe-optimizer/scripts/extract_autosketch_plans.py`).
 - `<table>-tp95.json`: the runner's results (`--runs 3 --no-chosen`).
 
 ## Served and left-out RQEs
@@ -115,7 +115,7 @@ converts: classic PromQL 12/12, multigroup SQL 8/8, all SQL 8/8 and PromQL
 cargo build --release -p rqe-optimizer --examples
 DIR=rqe-optimizer/results/e2e-rate10; TMP=$(mktemp -d)
 # SAT: the saturation dir of ../autosketch-vs-asap-hydra/README.md, "Reproduce"
-python3 scripts/export_autosketch_eval_table.py --synthetic --samples-per-sec 10 \
+python3 $SKETCH_BENCH/scripts/export_autosketch_eval_table.py --synthetic --samples-per-sec 10 \
     --revision acc2db1 --out $TMP
 for t in classic all multigroup; do
   f=synthetic-templates$t-shared1
@@ -124,7 +124,7 @@ for t in classic all multigroup; do
       --target p95 --runs 3 --no-chosen --saturation-dir $SAT --out $DIR/$f-tp95.json
   target/release/examples/autosketch_vs_asap synthetic --table $DIR/inputs/tables/$f.json \
       --target p95 --runs 1 --saturation-dir $SAT --out $TMP/$f-tp95.json
-  python3 scripts/extract_autosketch_plans.py $TMP/$f-tp95.json $DIR/plans/$f.plans.json.gz
+  python3 rqe-optimizer/scripts/extract_autosketch_plans.py $TMP/$f-tp95.json $DIR/plans/$f.plans.json.gz
 done
 ```
 

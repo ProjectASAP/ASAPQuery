@@ -1,4 +1,4 @@
-//! Analytical scoring built from measured per-operation costs (`docs/rqe_optimizer_cost_model.md`).
+//! Analytical scoring built from measured per-operation costs (`rqe-optimizer/docs/rqe_optimizer_cost_model.md`).
 //!
 //! Costs split into four phases, each with CPU and memory:
 //! - ingest: inserts into open windows, and their state;

@@ -3,7 +3,7 @@
 and latency with no SLA and at each batch latency SLA, and each distinct
 plan's MVs (sketch, grouping, window/slide, the queries each serves).
 
-    python3 scripts/summarize_case_studies.py RESULT.json... > summary.md
+    python3 rqe-optimizer/scripts/summarize_case_studies.py RESULT.json... > summary.md
 """
 
 import json

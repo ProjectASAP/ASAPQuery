@@ -1,21 +1,21 @@
 //! Sketch accuracy read from the saturation study's error-vs-N curves
-//! (`scripts/study_saturation.py`, #130, #140) at the number of items a
-//! deployment's answer covers. Design decisions: #156.
+//! (`sketch-bench/scripts/study_saturation.py`, sketch-bench#130, sketch-bench#140) at the number of items a
+//! deployment's answer covers. Design decisions: sketch-bench#156.
 //!
 //! The curve is read at the number of items one group receives over the
 //! RAQE's whole lookback: series per group times scrapes per lookback. For
 //! sketches that merge exactly, that holds whether the answer is one sketch
 //! or a merge of many smaller-window sketches. KLL and top-k merge lossily
-//! (#131): an answer merged from `L / x` windows reads the curve of the sketch
-//! merged from that many shards (#158).
+//! (sketch-bench#131): an answer merged from `L / x` windows reads the curve of the sketch
+//! merged from that many shards (sketch-bench#158).
 //!
 //! The cost table's sketch accuracies are not read: each is one point on a
 //! curve, at the row's `measured_at`, and [`SaturationCurves::check_cost_table`]
-//! checks that the two agree there (#171). Both come from one study run
-//! (`study_saturation.py --phase optimizer-cost`, #174).
+//! checks that the two agree there (sketch-bench#171). Both come from one study run
+//! (`study_saturation.py --phase optimizer-cost`, sketch-bench#174).
 //!
 //! Hydra reads none of these curves: its accuracy is measured per dataset
-//! and grouping (`hydra_saturation.csv`, `docs/rqe_optimizer_hydra.md`
+//! and grouping (`hydra_saturation.csv`, `rqe-optimizer/docs/rqe_optimizer_hydra.md`
 //! §2.4), see [`SaturationCurves::accuracy`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,7 +84,7 @@ struct GridPoint {
     /// `(n, seed_mean_error, seed_se)`, ascending in `n`.
     curve: Vec<(f64, f64, f64)>,
     /// The same, for the sketch merged from `m` shards of the stream, keyed
-    /// by `m > 1` (`saturation_merge_curve.csv`, #131, #158).
+    /// by `m > 1` (`saturation_merge_curve.csv`, sketch-bench#131, sketch-bench#158).
     merged: BTreeMap<u64, Vec<(f64, f64, f64)>>,
 }
 
@@ -140,7 +140,7 @@ impl GridPoint {
         Some(value >= low - tolerance && value <= high + tolerance)
     }
 
-    /// Q6 of #156: between checkpoints, the worse neighbour; below the first,
+    /// Q6 of sketch-bench#156: between checkpoints, the worse neighbour; below the first,
     /// unmeasured; past the last, the plateau only if the point saturated.
     fn error_at(&self, n: f64, direction: AccuracyDirection) -> Option<f64> {
         curve_error_at(&self.curve, self.n_sat, n, direction)
@@ -238,7 +238,7 @@ fn curve_error_at(
 }
 
 /// KLL, the heap top-k sketches and UnivMon lose accuracy when merged
-/// (#131): a merged answer reads their merge curve. UnivMon's counters add
+/// (sketch-bench#131): a merged answer reads their merge curve. UnivMon's counters add
 /// exactly, but each level's heavy-hitter heap is rebuilt from the union of
 /// the two heaps, so a key heavy only in the union is lost. The other
 /// sketches merge exactly. Hydra's cells merge as their sketch does.
@@ -762,7 +762,7 @@ impl SaturationCurves {
         check
     }
 
-    /// Every grid point of `config` bracketing `shape` (Q8 of #156), or
+    /// Every grid point of `config` bracketing `shape` (Q8 of sketch-bench#156), or
     /// `None` when `config` isn't in the grid, `shape` lies outside it, or a
     /// bracketing point is missing.
     fn bracketing_points(
@@ -1765,7 +1765,7 @@ mod tests {
     }
 
     /// A curve for another metric than the family's, such as DD's max error
-    /// before #175, is a stale study: refused at load, whatever the lookback.
+    /// before sketch-bench#175, is a stale study: refused at load, whatever the lookback.
     #[test]
     fn load_refuses_a_curve_for_another_metric() {
         let dir = std::env::temp_dir().join(format!("rqe-stale-{}", std::process::id()));

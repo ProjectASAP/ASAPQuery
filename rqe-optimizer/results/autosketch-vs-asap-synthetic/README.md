@@ -7,8 +7,8 @@ template set per metric, 50 · m RQEs). One accuracy level, p95: 95% in each
 family's own metric (rank, relative value and relative error at most 0.05;
 top-k precision at least 0.95).
 
-**Cost model: cost by use** (sketch-bench `docs/rqe_optimizer_cost_model.md`,
-"Cost by use and batch latency", #188): `w_cpu · AUC(CPU) + w_mem ·
+**Cost model: cost by use** (`rqe-optimizer/docs/rqe_optimizer_cost_model.md`,
+"Cost by use and batch latency", sketch-bench#188): `w_cpu · AUC(CPU) + w_mem ·
 AUC(memory)`, CPU elastic, at two weight settings (CPU only, in vCPU; AWS
 Fargate's per-vCPU and per-GB prices, in $/hour). CPU covers ingest (on
 `⌈ρ⌉` workers split by sample), compaction of each closed window, and one
@@ -23,7 +23,7 @@ latency bounds log-spaced from the tightest feasible bound to the unbounded
 plan's latency, plus a bound at AutoSketch's latency: each method's
 **cost-latency frontier**. AutoSketch-Adapted ignores latency and is one
 point. AutoSketch's planning time is its search **plus its measured
-benchmark**: `scripts/autosketch_benchmark_time.py` ran approxbench's
+benchmark**: `sketch-bench/scripts/autosketch_benchmark_time.py` ran approxbench's
 accuracy benchmark (1e8 items, exact baseline and scoring) once per distinct
 probed (config, data shape), serially on idle clnode155
 (`autosketch-benchmark-times.json`), and charged it once per probed
@@ -32,7 +32,7 @@ probed (config, data shape), serially on idle clnode155
 Runs: one workload per CloudLab node, all Intel Xeon E5-2683 v3 @ 2.00 GHz
 with 56 cores (mixed on clnode155, r = 8 on clnode178, m = 8 on clnode167,
 m = 16 on clnode138), 2026-10-08, `--runs 3`,
-sketch-bench at #188 + this branch. No RQE was dropped and no sanity check
+sketch-bench at sketch-bench#188 + this branch. No RQE was dropped and no sanity check
 failed (ASAP ≤ PerQuery, ASAP ≤ AutoSketch, each frontier monotone).
 
 Files: `synthetic-*.json` (raw: every method's plan, unbounded and bounded,
@@ -140,7 +140,7 @@ at {region, service} or {service, status}. 15 active deployments in all,
 ## Inputs
 
 Costs and accuracy come from one saturation-study directory `DIR`, the same
-inputs the planner reads (#174, #178, #179). The one these results used is
+inputs the planner reads (sketch-bench#174, sketch-bench#178, sketch-bench#179). The one these results used is
 committed in `../autosketch-vs-asap-inputs/saturation/`, and the tables in
 `../autosketch-vs-asap-inputs/tables/`:
 - `DIR/out_grid_1e7_cost/`: the accuracy grid to N = 1e7, including the
@@ -157,23 +157,23 @@ workload: RQEs, streams, targets and data shapes.
 ```sh
 cargo build -p aqpbm-cli --release
 # Accuracy grid with merge curves (parallel), then the targeted 1e9 points.
-python3 scripts/study_saturation.py --phase accuracy --n-max 1e7 --seeds 3 \
+python3 $SKETCH_BENCH/scripts/study_saturation.py --phase accuracy --n-max 1e7 --seeds 3 \
     --jobs 48 --merge-shards-list 1,4,16,64 --out DIR/out_grid_1e7_cost
-python3 scripts/study_saturation.py --phase accuracy --n-max 1e9 --seeds 3 \
+python3 $SKETCH_BENCH/scripts/study_saturation.py --phase accuracy --n-max 1e9 --seeds 3 \
     --jobs 16 --points-from POINTS.csv --out DIR/out_1e9
 # Cost table, serially on a quiet machine.
-python3 scripts/study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost
+python3 $SKETCH_BENCH/scripts/study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost
 
 # Workload tables and plan.tsv, then the runs.
-python3 scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries --out TABLES
+python3 $SKETCH_BENCH/scripts/export_autosketch_eval_table.py --synthetic --keep-duplicate-queries --out TABLES
 # Or use the committed inputs: TABLES=rqe-optimizer/results/autosketch-vs-asap-inputs/tables,
 # DIR=rqe-optimizer/results/autosketch-vs-asap-inputs/saturation.
-SATURATION_DIR=DIR scripts/run_autosketch_vs_asap_synthetic.sh TABLES run
+SATURATION_DIR=DIR rqe-optimizer/scripts/run_autosketch_vs_asap_synthetic.sh TABLES run
 # AutoSketch's measured benchmark (serially, on an idle machine; writes
 # benchmark_secs_measured into the results), then the figures.
-python3 scripts/autosketch_benchmark_time.py --binary ./target/release/approxbench \
+python3 $SKETCH_BENCH/scripts/autosketch_benchmark_time.py --binary $SKETCH_BENCH/target/release/approxbench \
     --out OUT/autosketch-benchmark-times.json OUT/synthetic-*.json
-scripts/run_autosketch_vs_asap_synthetic.sh TABLES plot
+rqe-optimizer/scripts/run_autosketch_vs_asap_synthetic.sh TABLES plot
 ```
 
 `--merge-shards-list` and `POINTS.csv` follow the workloads' queries: the

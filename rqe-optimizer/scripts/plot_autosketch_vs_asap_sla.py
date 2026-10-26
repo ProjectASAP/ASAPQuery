@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Plot version 2 (a batch latency SLA) of the AutoSketch vs. ASAP evaluation
-(ProjectASAP/ASAPQuery#777; sketch-bench docs/rqe_optimizer_cost_model.md,
+(ProjectASAP/ASAPQuery#777; rqe-optimizer/docs/rqe_optimizer_cost_model.md,
 "Cost by use and batch latency") from the `sla_results` of
 `autosketch_vs_asap synthetic` runs.
 
@@ -18,7 +18,7 @@ Writes, into OUT:
                        (RQEs rolled up, deployments and cost with and
                        without roll-ups, saving %)
 
-Usage: scripts/plot_autosketch_vs_asap_sla.py OUT RESULT.json...
+Usage: rqe-optimizer/scripts/plot_autosketch_vs_asap_sla.py OUT RESULT.json...
 """
 
 import json
@@ -82,7 +82,7 @@ def fmt(x, digits=3):
 
 
 def autosketch_planning_secs(data):
-    """Search + measured benchmark (scripts/autosketch_benchmark_time.py)."""
+    """Search + measured benchmark (sketch-bench/scripts/autosketch_benchmark_time.py)."""
     a = data["autosketch"]
     measured = a.get("benchmark_secs_measured")
     return None if measured is None else a["search_secs"] + measured
