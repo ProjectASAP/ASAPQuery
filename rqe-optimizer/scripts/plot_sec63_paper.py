@@ -31,11 +31,21 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 plt.rcParams.update({"font.size": 8, "pdf.fonttype": 42})
 
-WORKLOADS = [("classic", "Aggregations"), ("multigroup", "Roll-ups"),
-             ("all", "Aggregations + roll-ups")]
-VARIANTS = [("shared1", "base"), ("shared8", "8 users"), ("shared1-metrics16", "16 metrics")]
-METHODS = [("autosketch", "AutoSketch-Adapted", "C2"), ("perquery", "PerQuery", "C1"),
-           ("asap", "ASAP", "C0")]
+WORKLOADS = [
+    ("classic", "Aggregations"),
+    ("multigroup", "Roll-ups"),
+    ("all", "Aggregations + roll-ups"),
+]
+VARIANTS = [
+    ("shared1", "base"),
+    ("shared8", "8 users"),
+    ("shared1-metrics16", "16 metrics"),
+]
+METHODS = [
+    ("autosketch", "AutoSketch-Adapted", "C2"),
+    ("perquery", "PerQuery", "C1"),
+    ("asap", "ASAP", "C0"),
+]
 
 
 def load(results, table):
@@ -44,14 +54,22 @@ def load(results, table):
 
 
 def plans(data, method, weights):
-    return [r for r in data["results"]
-            if r["weights"] == weights and r["method"] == method and "objective" in r]
+    return [
+        r
+        for r in data["results"]
+        if r["weights"] == weights and r["method"] == method and "objective" in r
+    ]
 
 
 def cheapest(data, method, weights="cpu", max_latency_ms=None):
-    return min((r for r in plans(data, method, weights)
-                if max_latency_ms is None or r["latency_ms"] <= max_latency_ms + 1e-6),
-               key=lambda r: r["objective"])["objective"]
+    return min(
+        (
+            r
+            for r in plans(data, method, weights)
+            if max_latency_ms is None or r["latency_ms"] <= max_latency_ms + 1e-6
+        ),
+        key=lambda r: r["objective"],
+    )["objective"]
 
 
 def save(fig, out, name, tight=False):
@@ -79,8 +97,14 @@ def cost_bars_wide(results, out):
     right on top of its bar; each baseline's multiple of it sits inside the
     baseline's bar in white, or just above the bar when the bar is too short
     to hold it. The page is trimmed to the drawing."""
-    sizes = {"font.size": 9.5, "axes.titlesize": 11, "axes.labelsize": 10.5,
-             "xtick.labelsize": 9.5, "ytick.labelsize": 9.5, "legend.fontsize": 10.5}
+    sizes = {
+        "font.size": 9.5,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10.5,
+        "xtick.labelsize": 9.5,
+        "ytick.labelsize": 9.5,
+        "legend.fontsize": 10.5,
+    }
     label_pt = 8.5
     with plt.rc_context(sizes):
         fig, axes = plt.subplots(1, len(WORKLOADS), figsize=(7.1, 3.0))
@@ -91,21 +115,37 @@ def cost_bars_wide(results, out):
             for i, (variant, name) in enumerate(VARIANTS):
                 data = load(results, f"{templates}-{variant}")
                 limit = data["frontier"]["autosketch_latency_ms"]
-                cost = {m: cheapest(data, m, max_latency_ms=limit) for m, _, _ in METHODS}
+                cost = {
+                    m: cheapest(data, m, max_latency_ms=limit) for m, _, _ in METHODS
+                }
                 for k, (method, label, _) in enumerate(METHODS):
                     x = i * gap + (k - 1) * width
-                    ax.bar(x, cost[method], width * 0.95, color=WIDE_COLORS[method],
-                           label=label if i == 0 else None)
+                    ax.bar(
+                        x,
+                        cost[method],
+                        width * 0.95,
+                        color=WIDE_COLORS[method],
+                        label=label if i == 0 else None,
+                    )
                     if method == "asap":
                         # Vertical, so it stays within its bar's width.
-                        ax.text(x, cost[method] * 1.08, short(cost[method]), ha="center",
-                                va="bottom", rotation=90, fontsize=label_pt, weight="bold",
-                                color=WIDE_COLORS["asap"])
+                        ax.text(
+                            x,
+                            cost[method] * 1.08,
+                            short(cost[method]),
+                            ha="center",
+                            va="bottom",
+                            rotation=90,
+                            fontsize=label_pt,
+                            weight="bold",
+                            color=WIDE_COLORS["asap"],
+                        )
                     else:
                         ratio = cost[method] / cost["asap"]
                         text = f"{ratio:.0f}×" if ratio >= 10 else f"{ratio:.1f}×"
-                        labels_to_place.append((ax, x, cost[method], text,
-                                                WIDE_COLORS[method]))
+                        labels_to_place.append(
+                            (ax, x, cost[method], text, WIDE_COLORS[method])
+                        )
                 ticks.append(f"{name}\n{data['rqes']:,}")
             ax.set_yscale("log")
             ax.set_xticks([i * gap for i in range(len(VARIANTS))])
@@ -119,8 +159,16 @@ def cost_bars_wide(results, out):
             ax.set_xlabel("workload scale (# RQEs)")
         axes[0].set_ylabel("cost (vCPU)")
         handles, names = axes[0].get_legend_handles_labels()
-        fig.legend(handles, names, loc="upper center", ncol=len(METHODS), frameon=False,
-                   handlelength=1.2, columnspacing=1.2, bbox_to_anchor=(0.5, 1.02))
+        fig.legend(
+            handles,
+            names,
+            loc="upper center",
+            ncol=len(METHODS),
+            frameon=False,
+            handlelength=1.2,
+            columnspacing=1.2,
+            bbox_to_anchor=(0.5, 1.02),
+        )
         fig.tight_layout(rect=(0, 0, 1, 0.9), w_pad=0.3)
         # With the axes final: a label goes inside its bar, written
         # vertically in white, if the bar is tall enough (in points) to hold
@@ -131,20 +179,43 @@ def cost_bars_wide(results, out):
             to_pt = ax.transData.transform
             height_pt = (to_pt((x, top))[1] - to_pt((x, bottom))[1]) * 72 / fig.dpi
             if height_pt > label_pt * 0.62 * len(text) + 6:
-                ax.text(x, top / 1.12, text, ha="center", va="top", rotation=90,
-                        fontsize=label_pt, weight="bold", color="white")
+                ax.text(
+                    x,
+                    top / 1.12,
+                    text,
+                    ha="center",
+                    va="top",
+                    rotation=90,
+                    fontsize=label_pt,
+                    weight="bold",
+                    color="white",
+                )
             else:
-                ax.text(x, top * 1.08, text, ha="center", va="bottom", rotation=90,
-                        fontsize=label_pt, weight="bold", color=color)
+                ax.text(
+                    x,
+                    top * 1.08,
+                    text,
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                    fontsize=label_pt,
+                    weight="bold",
+                    color=color,
+                )
         save(fig, out, "sec63_cost_bars_wide", tight=True)
 
 
 # The paper's names: the system, its no-sharing ablation, and the baseline.
-SINGLE_METHODS = [("asap", "LiteOlly", "#1f5fa8"),
-                  ("perquery", "LiteOllyPerQuery", "#8fb3de"),
-                  ("autosketch", "AutoSketch baseline", "#2e7d32")]
-SINGLE_WORKLOADS = [("classic", "W-RangeHeavy"), ("multigroup", "W-RollupHeavy"),
-                    ("all", "W-Mixed")]
+SINGLE_METHODS = [
+    ("asap", "LiteOlly", "#1f5fa8"),
+    ("perquery", "LiteOllyPerQuery", "#8fb3de"),
+    ("autosketch", "AutoSketch baseline", "#2e7d32"),
+]
+SINGLE_WORKLOADS = [
+    ("classic", "W-RangeHeavy"),
+    ("multigroup", "W-RollupHeavy"),
+    ("all", "W-Mixed"),
+]
 SINGLE_VARIANTS = [("shared1", "base"), ("shared8", "8U"), ("shared1-metrics16", "16M")]
 
 
@@ -155,28 +226,52 @@ def cost_bars_single(results, out, weights="cpu"):
     latency, log scale, under `weights` (CPU only, or Fargate's prices). LiteOlly's cost sits on its bar; each other
     bar names how many times LiteOlly's cost it is, inside the bar in white
     when it fits, else just above it. The page is trimmed to the drawing."""
-    sizes = {"font.size": 8, "axes.labelsize": 8.5, "xtick.labelsize": 7.5,
-             "ytick.labelsize": 8, "legend.fontsize": 8}
+    sizes = {
+        "font.size": 8,
+        "axes.labelsize": 8.5,
+        "xtick.labelsize": 7.5,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+    }
     label_pt = 6.5
     with plt.rc_context(sizes):
         fig, ax = plt.subplots(figsize=(3.4, 2.5))
-        width, gap, block = 0.32, 1.02, 0.35  # bar, group spacing, extra between workloads
+        width, gap, block = (
+            0.32,
+            1.02,
+            0.35,
+        )  # bar, group spacing, extra between workloads
         x0, ticks, ticklabels, spans, to_place = 0.0, [], [], [], []
         for templates, title in SINGLE_WORKLOADS:
             start = x0
             for variant, name in SINGLE_VARIANTS:
                 data = load(results, f"{templates}-{variant}")
                 limit = data["frontier"]["autosketch_latency_ms"]
-                cost = {m: cheapest(data, m, weights, max_latency_ms=limit)
-                        for m, _, _ in SINGLE_METHODS}
+                cost = {
+                    m: cheapest(data, m, weights, max_latency_ms=limit)
+                    for m, _, _ in SINGLE_METHODS
+                }
                 for k, (method, label, color) in enumerate(SINGLE_METHODS):
                     x = x0 + (k - 1) * width
-                    ax.bar(x, cost[method], width * 0.92, color=color,
-                           label=label if not ticks else None)
+                    ax.bar(
+                        x,
+                        cost[method],
+                        width * 0.92,
+                        color=color,
+                        label=label if not ticks else None,
+                    )
                     if method == "asap":
-                        ax.text(x, cost[method] * 1.1, short(cost[method]), ha="center",
-                                va="bottom", rotation=90, fontsize=label_pt, weight="bold",
-                                color=color)
+                        ax.text(
+                            x,
+                            cost[method] * 1.1,
+                            short(cost[method]),
+                            ha="center",
+                            va="bottom",
+                            rotation=90,
+                            fontsize=label_pt,
+                            weight="bold",
+                            color=color,
+                        )
                     else:
                         ratio = cost[method] / cost["asap"]
                         text = f"{ratio:.0f}×" if ratio >= 10 else f"{ratio:.1f}×"
@@ -197,32 +292,60 @@ def cost_bars_single(results, out, weights="cpu"):
         ax.set_ylabel("cost (vCPU)" if weights == "cpu" else "cost ($/hour)")
         # Workload names under their three groups; thin separators between them.
         for start, end, title in spans:
-            ax.text((start + end) / 2, -0.11, title, transform=ax.get_xaxis_transform(),
-                    ha="center", va="top", fontsize=8)
+            ax.text(
+                (start + end) / 2,
+                -0.11,
+                title,
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="top",
+                fontsize=8,
+            )
         for (_, end, _), (start, _, _) in zip(spans, spans[1:]):
             ax.axvline((end + start) / 2, color="0.6", lw=0.6, ls=":")
         handles, names = ax.get_legend_handles_labels()
         fig.tight_layout(rect=(0, 0, 1, 0.9))
         # Placed after the layout, so it does not narrow the axes.
-        fig.legend(handles, names, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=3,
-                   frameon=False, fontsize=7.5, handlelength=0.9, handletextpad=0.4,
-                   columnspacing=0.7)
+        fig.legend(
+            handles,
+            names,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=3,
+            frameon=False,
+            fontsize=7.5,
+            handlelength=0.9,
+            handletextpad=0.4,
+            columnspacing=0.7,
+        )
         fig.canvas.draw()
         for x, top, text, color in to_place:
             bottom = ax.get_ylim()[0]
             to_pt = ax.transData.transform
             height_pt = (to_pt((x, top))[1] - to_pt((x, bottom))[1]) * 72 / fig.dpi
             inside = height_pt > label_pt * 0.62 * len(text) + 5
-            ax.text(x, top / 1.12 if inside else top * 1.1, text, ha="center",
-                    va="top" if inside else "bottom", rotation=90, fontsize=label_pt,
-                    weight="bold",
-                    # White inside dark bars; the light LiteOllyPerQuery bar
-                    # takes dark blue inside and above it, where its own
-                    # colour would not read.
-                    color=("#0b2e59" if color == "#8fb3de" else
-                           "white" if inside else color))
-        save(fig, out, "sec63_cost_bars" + ("" if weights == "cpu" else f"_{weights}"),
-             tight=True)
+            ax.text(
+                x,
+                top / 1.12 if inside else top * 1.1,
+                text,
+                ha="center",
+                va="top" if inside else "bottom",
+                rotation=90,
+                fontsize=label_pt,
+                weight="bold",
+                # White inside dark bars; the light LiteOllyPerQuery bar
+                # takes dark blue inside and above it, where its own
+                # colour would not read.
+                color=(
+                    "#0b2e59" if color == "#8fb3de" else "white" if inside else color
+                ),
+            )
+        save(
+            fig,
+            out,
+            "sec63_cost_bars" + ("" if weights == "cpu" else f"_{weights}"),
+            tight=True,
+        )
 
 
 def cost_bars(results, out, layout):
@@ -230,14 +353,31 @@ def cost_bars(results, out, layout):
     (7 in). `column`: stacked, at one column's width (3.4 in). Both are drawn
     at their printed size, so fonts are what the paper shows."""
     wide = layout == "wide"
-    sizes = ({"font.size": 9.5, "axes.titlesize": 11, "axes.labelsize": 10,
-              "xtick.labelsize": 9.5, "ytick.labelsize": 9.5, "legend.fontsize": 10.5}
-             if wide else
-             {"font.size": 8, "axes.titlesize": 9, "axes.labelsize": 8.5,
-              "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 8.5})
+    sizes = (
+        {
+            "font.size": 9.5,
+            "axes.titlesize": 11,
+            "axes.labelsize": 10,
+            "xtick.labelsize": 9.5,
+            "ytick.labelsize": 9.5,
+            "legend.fontsize": 10.5,
+        }
+        if wide
+        else {
+            "font.size": 8,
+            "axes.titlesize": 9,
+            "axes.labelsize": 8.5,
+            "xtick.labelsize": 8,
+            "ytick.labelsize": 8,
+            "legend.fontsize": 8.5,
+        }
+    )
     with plt.rc_context(sizes):
-        fig, axes = (plt.subplots(1, len(WORKLOADS), figsize=(7.1, 3.1)) if wide else
-                     plt.subplots(len(WORKLOADS), 1, figsize=(3.4, 5.8)))
+        fig, axes = (
+            plt.subplots(1, len(WORKLOADS), figsize=(7.1, 3.1))
+            if wide
+            else plt.subplots(len(WORKLOADS), 1, figsize=(3.4, 5.8))
+        )
         width = 0.3 if wide else 0.28
         gap = 1.15 if wide else 1.0  # between variant groups
         for ax, (templates, title) in zip(axes, WORKLOADS):
@@ -245,11 +385,18 @@ def cost_bars(results, out, layout):
             for i, (variant, name) in enumerate(VARIANTS):
                 data = load(results, f"{templates}-{variant}")
                 limit = data["frontier"]["autosketch_latency_ms"]
-                cost = {m: cheapest(data, m, max_latency_ms=limit) for m, _, _ in METHODS}
+                cost = {
+                    m: cheapest(data, m, max_latency_ms=limit) for m, _, _ in METHODS
+                }
                 for k, (method, label, color) in enumerate(METHODS):
                     x = i * gap + (k - 1) * width
-                    ax.bar(x, cost[method], width * 0.95, color=color,
-                           label=label if i == 0 else None)
+                    ax.bar(
+                        x,
+                        cost[method],
+                        width * 0.95,
+                        color=color,
+                        label=label if i == 0 else None,
+                    )
                     ratio = cost[method] / cost["asap"]
                     multiple = f"{ratio:.0f}×" if ratio >= 10 else f"{ratio:.1f}×"
                     if wide:
@@ -257,18 +404,30 @@ def cost_bars(results, out, layout):
                         # baseline's multiple of it (its cost is on the axis).
                         text = short(cost[method]) if method == "asap" else multiple
                     else:
-                        text = short(cost[method]) + ("" if method == "asap" else "\n" + multiple)
+                        text = short(cost[method]) + (
+                            "" if method == "asap" else "\n" + multiple
+                        )
                     # Wide: when ASAP's bar is about as tall as PerQuery's, its
                     # label rises above PerQuery's, so neighbours never share a
                     # row (one label is about a factor 2.5 of height here).
                     y = cost[method] * 1.2
                     if wide and method == "asap":
                         y = max(y, cost["perquery"] * 1.2 * 2.6)
-                    ax.text(x, y, text, ha="center", va="bottom",
-                            fontsize=8 if wide else 6.5, linespacing=0.95,
-                            weight="bold" if wide and method == "asap" else "normal")
-                labels.append(f"{name}\n{data['rqes']:,}" if wide else
-                              f"{name}\n{data['rqes']:,} RQEs")
+                    ax.text(
+                        x,
+                        y,
+                        text,
+                        ha="center",
+                        va="bottom",
+                        fontsize=8 if wide else 6.5,
+                        linespacing=0.95,
+                        weight="bold" if wide and method == "asap" else "normal",
+                    )
+                labels.append(
+                    f"{name}\n{data['rqes']:,}"
+                    if wide
+                    else f"{name}\n{data['rqes']:,} RQEs"
+                )
             ax.set_yscale("log")
             ax.set_xticks([i * gap for i in range(len(VARIANTS))])
             ax.set_xticklabels(labels, fontsize=8.5 if wide else 8, linespacing=1.0)
@@ -285,8 +444,15 @@ def cost_bars(results, out, layout):
             if wide and ax is not axes[0]:
                 ax.set_ylabel("")
         handles, names = axes[0].get_legend_handles_labels()
-        fig.legend(handles, names, loc="upper center", ncol=len(METHODS), frameon=False,
-                   handlelength=1.2, columnspacing=1.2)
+        fig.legend(
+            handles,
+            names,
+            loc="upper center",
+            ncol=len(METHODS),
+            frameon=False,
+            handlelength=1.2,
+            columnspacing=1.2,
+        )
         fig.tight_layout(rect=(0, 0, 1, 0.89 if wide else 0.95), h_pad=1.4, w_pad=0.3)
         save(fig, out, "sec63_cost_bars" + ("" if wide else "_column"))
 
@@ -301,11 +467,26 @@ def frontier(results, out):
             ax = axes[i, j]
             for method, label, color, marker in lines:
                 rs = sorted(plans(data, method, weights), key=lambda r: r["latency_ms"])
-                ax.plot([r["latency_ms"] / 1e3 for r in rs], [r["objective"] for r in rs],
-                        "-", color=color, marker=marker, ms=2.5, lw=1, label=label)
+                ax.plot(
+                    [r["latency_ms"] / 1e3 for r in rs],
+                    [r["objective"] for r in rs],
+                    "-",
+                    color=color,
+                    marker=marker,
+                    ms=2.5,
+                    lw=1,
+                    label=label,
+                )
             auto = plans(data, "autosketch", weights)[0]
-            ax.scatter([auto["latency_ms"] / 1e3], [auto["objective"]], marker="D", s=20,
-                       color="C2", label="AutoSketch-Adapted", zorder=5)
+            ax.scatter(
+                [auto["latency_ms"] / 1e3],
+                [auto["objective"]],
+                marker="D",
+                s=20,
+                color="C2",
+                label="AutoSketch-Adapted",
+                zorder=5,
+            )
             ax.set_xscale("log")
             ax.set_yscale("log")
             ax.xaxis.set_major_locator(matplotlib.ticker.LogLocator(subs=(1, 2, 5)))
@@ -331,13 +512,26 @@ def rollups(results, out):
         for variant, name in VARIANTS:
             data = load(results, f"{templates}-{variant}")
             for k, (method, label, color) in enumerate(
-                    [("asap-norollup", "ASAP w/o roll-ups", "C9"), ("asap", "ASAP", "C0")]):
+                [("asap-norollup", "ASAP w/o roll-ups", "C9"), ("asap", "ASAP", "C0")]
+            ):
                 cost = cheapest(data, method)
-                ax.bar(x + (k - 0.5) * 0.38, cost, 0.38, color=color,
-                       label=label if x == 0 else None, hatch="//" if k == 0 else None,
-                       edgecolor="white", lw=0)
-                ax.text(x + (k - 0.5) * 0.38, cost * 1.08, f"{cost:.3g}", ha="center",
-                        fontsize=6)
+                ax.bar(
+                    x + (k - 0.5) * 0.38,
+                    cost,
+                    0.38,
+                    color=color,
+                    label=label if x == 0 else None,
+                    hatch="//" if k == 0 else None,
+                    edgecolor="white",
+                    lw=0,
+                )
+                ax.text(
+                    x + (k - 0.5) * 0.38,
+                    cost * 1.08,
+                    f"{cost:.3g}",
+                    ha="center",
+                    fontsize=6,
+                )
             ticks.append(x)
             labels.append(f"{name}\n({data['rqes']} RQEs)")
             x += 1
@@ -348,7 +542,9 @@ def rollups(results, out):
     ax.set_xticks(ticks)
     ax.set_xticklabels(labels, fontsize=6.5)
     ax.set_ylabel("cheapest plan (vCPU)")
-    ax.legend(fontsize=7, loc="lower left", bbox_to_anchor=(0, 1), frameon=False, ncol=2)
+    ax.legend(
+        fontsize=7, loc="lower left", bbox_to_anchor=(0, 1), frameon=False, ncol=2
+    )
     ax.grid(axis="y", alpha=0.3, lw=0.3)
     fig.tight_layout()
     save(fig, out, "sec63_rollups")

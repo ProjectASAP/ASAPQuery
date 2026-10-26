@@ -7,6 +7,8 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
+        # rqe-optimizer's committed eval results (result JSON up to ~2 MB).
+        exclude: ^rqe-optimizer/results/
       - id: check-case-conflict
       - id: check-merge-conflict
       - id: check-executables-have-shebangs

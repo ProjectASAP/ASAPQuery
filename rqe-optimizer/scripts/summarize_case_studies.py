@@ -46,16 +46,23 @@ def mvs(plan):
         # The runner names the deployment's grouping only where it differs
         # from the RQE's (a roll-up or a Hydra grid).
         grouping = first.get("deployment_grouping") or grouping_of(first["rqe"])
-        out.append((f"{first['sketch']}({params}) by ({','.join(grouping)}) "
-                    f"window {secs(first['window_secs'])} "
-                    f"slide {secs(first['slide_secs'])}",
-                    [f"{short(c['rqe'])} (merges {c['merged_shards']})" for c in choices]))
+        out.append(
+            (
+                f"{first['sketch']}({params}) by ({','.join(grouping)}) "
+                f"window {secs(first['window_secs'])} "
+                f"slide {secs(first['slide_secs'])}",
+                [f"{short(c['rqe'])} (merges {c['merged_shards']})" for c in choices],
+            )
+        )
     return out
 
 
 def cheapest(result):
-    return next(r for r in result["results"]
-                if r["method"] == "asap" and r["weights"] == "cpu" and r["bound_ms"] is None)
+    return next(
+        r
+        for r in result["results"]
+        if r["method"] == "asap" and r["weights"] == "cpu" and r["bound_ms"] is None
+    )
 
 
 def describe(path):
@@ -64,14 +71,19 @@ def describe(path):
     lines.append("| SLA (ms) | vCPU | MVs | latency (ms) |")
     lines.append("|---|---|---|---|")
     plans = [("none", cheapest(result))]
-    plans += [(r["sla_ms"], r) for r in result["sla_results"]
-              if r["method"] == "asap" and r["weights"] == "cpu"]
+    plans += [
+        (r["sla_ms"], r)
+        for r in result["sla_results"]
+        if r["method"] == "asap" and r["weights"] == "cpu"
+    ]
     for sla, asap in plans:
         if asap.get("infeasible"):
             lines.append(f"| {sla} | infeasible | | |")
         else:
-            lines.append(f"| {sla} | {asap['cpu']:.3g} | {asap['active_deployments']} "
-                         f"| {asap['latency_ms']:.3g} |")
+            lines.append(
+                f"| {sla} | {asap['cpu']:.3g} | {asap['active_deployments']} "
+                f"| {asap['latency_ms']:.3g} |"
+            )
     lines.append("")
     seen = set()
     for sla, asap in plans:

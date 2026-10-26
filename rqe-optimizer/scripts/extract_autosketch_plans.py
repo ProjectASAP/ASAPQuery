@@ -11,8 +11,15 @@ import gzip
 import json
 import sys
 
-FIELDS = ["objective", "cpu", "gib", "latency_ms", "active_deployments", "rolled_up_rqes",
-          "chosen"]
+FIELDS = [
+    "objective",
+    "cpu",
+    "gib",
+    "latency_ms",
+    "active_deployments",
+    "rolled_up_rqes",
+    "chosen",
+]
 
 
 def plans(result):
@@ -21,14 +28,32 @@ def plans(result):
         key = (r["method"], r["weights"])
         if key not in cheapest or r["objective"] < cheapest[key]["objective"]:
             cheapest[key] = r
-    out = [{"kind": "cheapest", "method": method, "weights": weights,
-            **{f: r.get(f) for f in FIELDS}}
-           for (method, weights), r in sorted(cheapest.items(), key=lambda kv: kv[0][::-1])]
-    out += [{"kind": "sla", "sla_ms": r.get("sla_ms"), "method": r["method"],
-             "weights": r["weights"], **{f: r.get(f) for f in FIELDS}}
-            for r in result["sla_results"] if r.get("objective") is not None]
-    return {"workload": result["workload"], "rqes": result["rqes"],
-            "cost_model": result["cost_model"], "plans": out}
+    out = [
+        {
+            "kind": "cheapest",
+            "method": method,
+            "weights": weights,
+            **{f: r.get(f) for f in FIELDS},
+        }
+        for (method, weights), r in sorted(cheapest.items(), key=lambda kv: kv[0][::-1])
+    ]
+    out += [
+        {
+            "kind": "sla",
+            "sla_ms": r.get("sla_ms"),
+            "method": r["method"],
+            "weights": r["weights"],
+            **{f: r.get(f) for f in FIELDS},
+        }
+        for r in result["sla_results"]
+        if r.get("objective") is not None
+    ]
+    return {
+        "workload": result["workload"],
+        "rqes": result["rqes"],
+        "cost_model": result["cost_model"],
+        "plans": out,
+    }
 
 
 def main(argv):

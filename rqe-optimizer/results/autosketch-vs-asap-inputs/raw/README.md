@@ -49,4 +49,3 @@ The Hydra W = 65536 accuracy rows (999 runs, `--phase hydra --hydra-sweeps eval
 --hydra-ws 65536 --hydra-variants hydra-hll,hydra-kll --hydra-shard i/4` on
 clnode109/155/167/178) are appended to
 `../../autosketch-vs-asap-hydra/inputs/saturation/hydra_saturation.csv`.
-

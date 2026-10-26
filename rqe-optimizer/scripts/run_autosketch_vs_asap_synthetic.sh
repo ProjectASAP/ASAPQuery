@@ -31,6 +31,7 @@ run)
     export SATURATION_DIR JOB_TIMEOUT RUNS OUT
     cargo build --release -p rqe-optimizer --example autosketch_vs_asap
     : > "$OUT/failed.txt"
+    # shellcheck disable=SC2016 # the sh -c script expands these, not this shell
     while IFS=$'\t' read -r table target result; do
         [[ -s "$OUT/$result" ]] || echo "$TABLES/$table $target $OUT/$result"
     done < "$TABLES/plan.tsv" |
