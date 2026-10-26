@@ -21,7 +21,7 @@ from type_aliases import (
 import threading
 import subprocess
 import concurrent.futures
-from requests.adapters import HTTPAdapter
+from requests.adapters import DEFAULT_POOLSIZE, HTTPAdapter
 from urllib3.util.retry import Retry
 
 from classes.config import Config
@@ -655,6 +655,9 @@ def main(args: Any) -> None:
         global_query_idx += len(query_group.queries)
 
     server_url_for_alignment = None
+    # Every query of every group can be in flight at once; a smaller pool
+    # opens a new connection per excess request, inside its latency.
+    pool_size = max(DEFAULT_POOLSIZE, global_query_idx)
 
     servers: Dict[str, QueryClient] = {}
     for server in config.servers:
@@ -699,7 +702,7 @@ def main(args: Any) -> None:
             )
 
         # Mount debug adapter for HTTP request logging
-        debug_adapter = DebugHTTPAdapter(server.name)
+        debug_adapter = DebugHTTPAdapter(server.name, pool_maxsize=pool_size)
         client.session.mount("http://", debug_adapter)
         client.session.mount("https://", debug_adapter)
         servers[server.name] = client

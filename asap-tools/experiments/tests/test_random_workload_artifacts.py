@@ -36,11 +36,15 @@ CLICKHOUSE = shutil.which("clickhouse")
 
 
 def all_workloads():
-    return [
-        w
-        for variant in workloads.VARIANTS
-        for w in workloads.generate_workloads(seed=862, variant=variant)
-    ]
+    return (
+        [
+            w
+            for variant in workloads.VARIANTS
+            for w in workloads.generate_workloads(seed=862, variant=variant)
+        ]
+        + workloads.generate_workloads(seed=862, pooled=True)
+        + workloads.generate_workloads(seed=862, dashboard=True)
+    )
 
 
 def pilot_dir_of(workload):
@@ -111,22 +115,34 @@ class RenderArtifactsTest(unittest.TestCase):
                 pilot_dir = pilot_dir_of(workload)
                 with open(pilot_dir / "eval_table.json") as f:
                     e2e = json.load(f)["workloads"][0]["e2e"]
+                # A pooled query is its tree; its text is client_promql.
+                texts = [q.get("promql") or q["client_promql"] for q in e2e["queries"]]
                 self.assertEqual(
-                    [(q["promql"], q["interval_secs"] * 1000) for q in e2e["queries"]],
+                    [
+                        (t, q["interval_secs"] * 1000)
+                        for t, q in zip(texts, e2e["queries"])
+                    ],
                     [
                         (q["promql"], q["interval_ms"])
                         for q in workload["queries"]
                         if q["support"] == "common-promql"
                     ],
                 )
-                # The planner's configs answer every pilot query.
+                # The planner's configs answer every pilot query: by text, or
+                # (pooled, an expr-only plan) by each tree's RQEs.
                 inference = yaml.safe_load(
                     (pilot_dir / "inference_config.yaml").read_text()
                 )
-                self.assertEqual(
-                    sorted(q["query"] for q in inference["queries"]),
-                    sorted(q["promql"] for q in e2e["queries"]),
-                )
+                if workload.get("pooled"):
+                    self.assertEqual(
+                        set(inference["rqe_configs"]),
+                        {r for q in e2e["queries"] for r in q["rqes"]},
+                    )
+                else:
+                    self.assertEqual(
+                        sorted(q["query"] for q in inference["queries"]),
+                        sorted(texts),
+                    )
 
     def test_every_workload_renders_its_pilot_configs(self):
         for workload in all_workloads():
@@ -193,6 +209,65 @@ class PilotConfigsTest(unittest.TestCase):
         ]
         raw_sql = "".join(files[f"interval_{t}s_baseline.sql"] for t in (1, 20, 30))
         self.assertTrue(all(sql in raw_sql for sql in pilot_sql))
+
+    def test_pooled_queries_reach_asapquery_as_trees_and_prometheus_as_text(self):
+        workload = workloads.generate_workloads(seed=862, pooled=True)[0]
+        files = artifacts.pilot_configs(workload, pilot_dir_of(workload))
+        by_name = {p.name: c for p, c in files.items()}
+        e2e = yaml.safe_load(by_name["e2e.yaml"])
+        side = json.loads(by_name[artifacts.RQE_EXPRS_FILE])
+        texts = [
+            q for g in e2e["experiment_params"]["query_groups"] for q in g["queries"]
+        ]
+        self.assertEqual(e2e["query_engine"]["frontend"], "rqe")
+        self.assertTrue(os.path.isabs(e2e["query_engine"]["rqe_exprs_file"]))
+        self.assertEqual(set(side), set(texts))
+        # The pooled quantile: one leaf at its grouping, under the avg-of-series
+        # stand-in text Prometheus runs.
+        stand_in = "quantile by (region) (0.95, quantile_over_time(0.95, data[100s]))"
+        self.assertEqual(side[stand_in]["rqe"]["grouping"], ["region"])
+        self.assertNotIn(
+            "query_engine",
+            yaml.safe_load(by_name["victoriametrics.yaml"]),
+        )
+        self.assertEqual({p.parent.name for p in files}, {"workload-01"})
+        self.assertEqual({p.parent.parent.name for p in files}, {"seed-862-pooled"})
+
+    def test_two_dashboards_repeat_every_group_on_the_same_plan(self):
+        workload = workloads.generate_workloads(seed=862)[0]
+
+        def configs(dashboards):
+            files = artifacts.pilot_configs(workload, PILOT_DIR, dashboards)
+            # The SQL files are the same, under the variant's directory.
+            return {
+                p.name: yaml.safe_load(c.replace("workload-01-dash2/", "workload-01/"))
+                for p, c in files.items()
+                if p.suffix == ".yaml"
+            }, {p.parent.name for p in files}
+
+        one, _ = configs(1)
+        two, dirs = configs(2)
+        self.assertEqual(dirs, {"workload-01-dash2"})
+        for name, key in (
+            ("e2e.yaml", "id"),
+            ("clickhouse.yaml", "name"),
+            ("clickhouse_mv.yaml", "name"),
+        ):
+            with self.subTest(config=name):
+                single, double = one[name], two[name]
+                params = (
+                    (single["experiment_params"], double["experiment_params"])
+                    if name == "e2e.yaml"
+                    else (single, double)
+                )
+                groups, copies = (p.pop("query_groups") for p in params)
+                # Same plan, feeder and data; only the groups repeat.
+                self.assertEqual(double, single)
+                # Each copy is its own group, so the client keeps its latencies apart.
+                self.assertEqual(len({g[key] for g in copies}), 2 * len(groups))
+                for g in groups + copies:
+                    del g[key]
+                self.assertEqual(copies, 2 * groups)
 
 
 class PilotConfigsPreflightTest(unittest.TestCase):

@@ -1,0 +1,103 @@
+aggregations:
+- aggregationId: 1
+  aggregationSubType: sum
+  aggregationType: MultipleSum
+  labels:
+    aggregated:
+    - job
+    - region
+    - service
+    grouping: []
+    rollup: []
+  metric: data
+  parameters: {}
+  slideIntervalMs: 20000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 20000
+  windowType: tumbling
+- aggregationId: 2
+  aggregationSubType: ''
+  aggregationType: DDSketch
+  labels:
+    aggregated: []
+    grouping:
+    - job
+    - region
+    - service
+    rollup: []
+  metric: data
+  parameters:
+    alpha: 0.1
+  slideIntervalMs: 10000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 10000
+  windowType: tumbling
+- aggregationId: 3
+  aggregationSubType: ''
+  aggregationType: DDSketch
+  labels:
+    aggregated: []
+    grouping:
+    - region
+    - service
+    rollup: []
+  metric: data
+  parameters:
+    alpha: 0.1
+  slideIntervalMs: 1000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 1000
+  windowType: tumbling
+- aggregationId: 4
+  aggregationSubType: sum
+  aggregationType: CountMinSketchWithHeap
+  labels:
+    aggregated:
+    - region
+    - service
+    grouping: []
+    rollup: []
+  metric: data
+  parameters:
+    depth: 3
+    heapsize: 900
+    width: 1024
+  slideIntervalMs: 1000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 1000
+  windowType: tumbling
+- aggregationId: 5
+  aggregationSubType: sum
+  aggregationType: CountMinSketchWithHeap
+  labels:
+    aggregated:
+    - job
+    - region
+    - service
+    grouping: []
+    rollup: []
+  metric: data
+  parameters:
+    depth: 3
+    heapsize: 900
+    width: 1024
+  slideIntervalMs: 1000
+  spatialFilter: ''
+  table_name: null
+  value_column: null
+  windowSizeMs: 1000
+  windowType: tumbling
+metrics:
+  data:
+  - job
+  - label_0
+  - region
+  - service

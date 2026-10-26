@@ -57,6 +57,15 @@ struct GaugeValues {
     dist: ParetoDist,
 }
 
+/// A recording to replay instead of generated values: `steps` values per
+/// series, series-major in [`series_labels`] order.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayValues {
+    steps: usize,
+    values: Vec<f64>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ParetoDist {
@@ -161,6 +170,31 @@ fn metric(name: &str, spec: &Value, seed: u64) -> Result<(Metric, u32)> {
         );
     }
     let series = series_labels(&spec.labels)?;
+    if let Some(replay) = spec.values.get("replay") {
+        ensure!(spec.kind == "gauge", "`replay` values apply to gauges only");
+        let replay: ReplayValues =
+            serde_json::from_value(replay.clone()).context("gauge `values.replay`")?;
+        ensure!(replay.steps > 0, "`replay.steps` must be positive");
+        ensure!(
+            replay.values.len() == series.len() * replay.steps,
+            "`replay.values` has {} values, not {} series x {} steps",
+            replay.values.len(),
+            series.len(),
+            replay.steps
+        );
+        let metric = Metric {
+            name: name.to_string(),
+            labels: spec.labels,
+            scales: vec![1.0; series.len()],
+            series,
+            kind: Kind::Replay {
+                steps: replay.steps,
+                values: Arc::new(replay.values),
+            },
+            seed: splitmix64(seed ^ fnv1a(name)),
+        };
+        return Ok((metric, spec.samples_per_sec_per_series));
+    }
     let (skew, kind) = if spec.kind == "gauge" {
         let values: GaugeValues = serde_json::from_value(spec.values).context("gauge `values`")?;
         ensure!(
@@ -413,6 +447,24 @@ mod tests {
             .collect();
         assert_eq!(pairs.len(), 6);
         assert_eq!(series[11], ["1", "2", "2.1"]);
+    }
+
+    #[test]
+    fn replay_values_loop_per_series() {
+        let spec = json!({
+            "type": "gauge",
+            "samples_per_sec_per_series": 10,
+            "labels": [{"name": "job", "cardinality": 2}],
+            "values": {"replay": {"steps": 3, "values": [1.0, 2.0, 3.0, 10.0, 20.0, 30.0]}},
+        });
+        let (m, rate) = metric("data", &spec, 7).unwrap();
+        assert_eq!(rate, 10);
+        let seen: Vec<f64> = (0..4).map(|n| m.value(1, n)).collect();
+        assert_eq!(seen, [10.0, 20.0, 30.0, 10.0]);
+        // One value per series and step, no more and no fewer.
+        let mut short = spec.clone();
+        short["values"]["replay"]["values"] = json!([1.0, 2.0]);
+        assert!(metric("data", &short, 7).is_err());
     }
 
     #[test]

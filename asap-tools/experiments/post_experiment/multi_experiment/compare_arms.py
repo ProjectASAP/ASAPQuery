@@ -137,13 +137,23 @@ def report(arms, reference):
         interval = arms[reference].interval_secs[gq[0]]
         print(f"\n[{gq[0]}.{gq[1]}] every {interval:g}s: {name}")
         for arm_name, arm in arms.items():
-            xs = arm.latencies.get(gq)
-            if not xs:
+            recorded = arm.latencies.get(gq)
+            if not recorded:
                 continue
-            within = sum(x <= interval for x in xs) / len(xs)
+            # A failed or timed-out query records no latency; it never counts
+            # as answered within the interval.
+            xs = [x for x in recorded if x is not None]
+            failed = len(recorded) - len(xs)
+            within = sum(x <= interval for x in xs) / len(recorded)
+            stats = (
+                f"{percentile(xs, 50):8.3f} {percentile(xs, 95):8.3f} "
+                f"{percentile(xs, 99):8.3f}"
+                if xs
+                else f"{'-':>8s} {'-':>8s} {'-':>8s}"
+            )
             print(
-                f"  {arm_name:16s} n={len(xs):5d}  {percentile(xs, 50):8.3f} "
-                f"{percentile(xs, 95):8.3f} {percentile(xs, 99):8.3f}   {within:6.1%}"
+                f"  {arm_name:16s} n={len(recorded):5d}  {stats}   {within:6.1%}"
+                + (f"   FAILED {failed}" if failed else "")
             )
 
     print(f"\n== Agreement with {reference}")
