@@ -1,4 +1,4 @@
-//! Plans a workload with sketch-bench's rqe-optimizer MILP: converts the
+//! Plans a workload with rqe-optimizer's MILP: converts the
 //! workload config into `Raqe`s and solves for the cheapest deployments.
 
 use promql_utilities::query_logics::enums::Statistic;

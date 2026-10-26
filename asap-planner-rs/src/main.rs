@@ -57,14 +57,14 @@ struct Args {
     #[arg(long = "clickhouse-database", required = false)]
     clickhouse_database: Option<String>,
 
-    /// `milp` plans with sketch-bench's rqe-optimizer: PromQL or SQL with
+    /// `milp` plans with rqe-optimizer's MILP: PromQL or SQL with
     /// --input_config only, labels from its `metrics:` hints or tables'
-    /// `metadata_columns`. `saved` writes a PromQL or SQL plan sketch-bench's
+    /// `metadata_columns`. `saved` writes a PromQL or SQL plan rqe-optimizer's
     /// `autosketch_vs_asap` already solved.
     #[arg(long, value_enum, default_value = "legacy")]
     planner: PlannerArg,
 
-    /// Saved only. sketch-bench `autosketch_vs_asap` plan file
+    /// Saved only. rqe-optimizer `autosketch_vs_asap` plan file
     /// (`<table>.plans.json.gz`).
     #[arg(long, required_if_eq("planner", "saved"))]
     plan: Option<PathBuf>,

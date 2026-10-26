@@ -1,5 +1,5 @@
 //! `--planner saved` on real sketch-bench eval tables and their saved plans:
-//! the `all` workload of sketch-bench's `rqe-optimizer/results/e2e-rate10`,
+//! the `all` workload of `rqe-optimizer/results/e2e-rate10`,
 //! whose e2e queries carry RQE trees (all but its `rate` queries), and a
 //! pilot random workload, `seed-862/workload-01-pilot`, whose top-k queries
 //! are `topk by (region, service)`.
