@@ -132,7 +132,24 @@ ingest, and the planner splits the frequent coarse queries off to a
 > them every 15 s for the per-service and per-region queries costs more than
 > a second MV, so LiteOlly splits those queries off to a (service, region) MV.
 
-## Caveats
+## Fargate prices
+
+The result files now hold both weight settings (rerun without `--weights cpu`;
+the CPU-only results are unchanged, cost for cost). With memory priced
+(AWS Fargate), three plans differ from the CPU-only ones:
+
+- **Performance monitoring, no SLA:** 3 MVs, 0.0075 $/h. The 6h and 24h
+  queries share a 30 min tumbling MV, and the 1m–30m queries stay on 15 s;
+  CPU-only keeps all six on 15 s (18 GiB). A 1 s SLA therefore no longer
+  changes the plan. At 100 ms the planner moves 10m/30m to 2 min windows
+  sliding every minute and 6h/24h to 1 h windows sliding every 30 min (4 MVs,
+  0.0105 $/h).
+- **Performance monitoring, 15 s refresh of the long dashboard:** a 2 min
+  window sliding every 15 s serves 10m–24h, as under CPU weights (0.106 $/h;
+  LiteOllyPerQuery 0.140, AutoSketch 29.6).
+- **Anomaly detection:** the same plans as CPU-only (3 MVs for the six
+  queries; with the drill-down, 1 MV at 25 endpoints and 2 at 100).
+
 
 - CPU weights only: memory is free, so the base performance plan holds
   18 GiB of 15 s windows. Fargate weights would favor coarser windows.
@@ -167,7 +184,7 @@ cp -r rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/* $SAT/
 python3 scripts/case_study_tables.py --out $DIR/inputs/tables
 while IFS=$'\t' read -r table slas; do
   target/release/examples/autosketch_vs_asap synthetic --table $DIR/inputs/tables/$table \
-      --target p95 --runs 1 --weights cpu --slas-ms $slas --saturation-dir $SAT \
+      --target p95 --runs 1 --slas-ms $slas --saturation-dir $SAT \
       --out $DIR/${table%.json}-tp95.json
 done < $DIR/inputs/tables/plan.tsv
 python3 scripts/summarize_case_studies.py $DIR/*-tp95.json > $DIR/summary.md

@@ -35,7 +35,7 @@
       }
     ],
     "probes": 18,
-    "search_secs": 0.000174297
+    "search_secs": 0.000323183
   },
   "cost_model": "w_cpu * AUC(CPU) + w_mem * AUC(memory), billed by use; latency = longest chain, reported",
   "dropped_unservable": {
@@ -191,7 +191,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.010355696,
+      "milp_solve_secs": 0.016823984,
       "objective": 0.11298892272871287,
       "rolled_up_rqes": 3,
       "rqes": 6,
@@ -314,7 +314,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.000775714,
+      "milp_solve_secs": 0.001820767,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -437,7 +437,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
-      "milp_solve_secs": 0.000639793,
+      "milp_solve_secs": 0.001828216,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -446,7 +446,7 @@
     {
       "active_deployments": 3,
       "bound_ms": null,
-      "candidate_build_secs": 0.028699566,
+      "candidate_build_secs": 0.053497665,
       "candidates": 6,
       "chosen": [
         {
@@ -577,9 +577,9 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.01062765,
+      "milp_solve_secs": 0.017440777,
       "objective": 0.11298892272871287,
-      "planning_secs": 0.039327216,
+      "planning_secs": 0.070938442,
       "rolled_up_rqes": 3,
       "rqes": 6,
       "weights": "cpu"
@@ -703,7 +703,7 @@
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.029395677999999998,
+      "planning_secs": 0.055286391,
       "rolled_up_rqes": 0,
       "rqes": 6,
       "weights": "cpu"
@@ -827,7 +827,7 @@
       "median_latency_ms": 0.04752475247524752,
       "method": "autosketch",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.000174297,
+      "planning_secs": 0.000323183,
       "probes": 18,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -951,10 +951,907 @@
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.012771078,
+      "planning_secs": 0.022636911,
       "rolled_up_rqes": 0,
       "rqes": 6,
       "weights": "cpu"
+    },
+    {
+      "active_deployments": 3,
+      "bound_ms": 0.297029702970297,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.016989132,
+      "objective": 0.004585868590959264,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "bound_ms": 0.297029702970297,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "milp_solve_secs": 0.002080264,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "bound_ms": 0.297029702970297,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "milp_solve_secs": 0.001780218,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 3,
+      "bound_ms": null,
+      "candidate_build_secs": 0.053497665,
+      "candidates": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.017169427,
+      "objective": 0.004585868590959264,
+      "planning_secs": 0.070667092,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "bound_ms": null,
+      "candidates": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.055286189,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "benchmark_secs_paper_rate": 180.0,
+      "bound_ms": null,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "autosketch",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.000323183,
+      "probes": 18,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "bound_ms": null,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.022625966,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "weights": "fargate"
     }
   ],
   "rqes": 6,
@@ -1100,7 +1997,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.010217638,
+      "milp_solve_secs": 0.016865699,
       "objective": 0.11298892272871287,
       "rolled_up_rqes": 3,
       "rqes": 6,
@@ -1224,7 +2121,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.000717157,
+      "milp_solve_secs": 0.001813363,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -1348,7 +2245,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
-      "milp_solve_secs": 0.000607258,
+      "milp_solve_secs": 0.001821063,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -1474,7 +2371,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.000174297,
+      "planning_secs": 0.000323183,
       "probes": 18,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -1613,7 +2510,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.010327851,
+      "milp_solve_secs": 0.016892839,
       "objective": 0.11298892272871287,
       "rolled_up_rqes": 3,
       "rqes": 6,
@@ -1737,7 +2634,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.000771306,
+      "milp_solve_secs": 0.001835232,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -1861,7 +2758,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
-      "milp_solve_secs": 0.000639026,
+      "milp_solve_secs": 0.001784913,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -1987,7 +2884,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.000174297,
+      "planning_secs": 0.000323183,
       "probes": 18,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -2126,7 +3023,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.010257645,
+      "milp_solve_secs": 0.016780946,
       "objective": 0.11298892272871287,
       "rolled_up_rqes": 3,
       "rqes": 6,
@@ -2250,7 +3147,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.000716653,
+      "milp_solve_secs": 0.001819528,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -2374,7 +3271,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
-      "milp_solve_secs": 0.000595684,
+      "milp_solve_secs": 0.00178436,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -2500,7 +3397,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.000174297,
+      "planning_secs": 0.000323183,
       "probes": 18,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -2639,7 +3536,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.010334199,
+      "milp_solve_secs": 0.01673458,
       "objective": 0.11298892272871287,
       "rolled_up_rqes": 3,
       "rqes": 6,
@@ -2763,7 +3660,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.000730101,
+      "milp_solve_secs": 0.001809593,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -2887,7 +3784,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
-      "milp_solve_secs": 0.000640194,
+      "milp_solve_secs": 0.001788171,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -3013,7 +3910,7 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.000174297,
+      "planning_secs": 0.000323183,
       "probes": 18,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -3152,7 +4049,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.157970297029703,
       "method": "asap",
-      "milp_solve_secs": 0.010095303,
+      "milp_solve_secs": 0.016755032,
       "objective": 0.11298892272871287,
       "rolled_up_rqes": 3,
       "rqes": 6,
@@ -3276,7 +4173,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "asap-norollup",
-      "milp_solve_secs": 0.000651824,
+      "milp_solve_secs": 0.001802653,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -3400,7 +4297,7 @@
       "latency_ms": 0.297029702970297,
       "median_latency_ms": 0.04752475247524752,
       "method": "perquery",
-      "milp_solve_secs": 0.000573583,
+      "milp_solve_secs": 0.001792416,
       "objective": 0.22597344712871287,
       "rolled_up_rqes": 0,
       "rqes": 6,
@@ -3526,12 +4423,2577 @@
       "meets_sla": true,
       "method": "autosketch",
       "objective": 0.22597344712871287,
-      "planning_secs": 0.000174297,
+      "planning_secs": 0.000323183,
       "probes": 18,
       "rolled_up_rqes": 0,
       "rqes": 6,
       "sla_ms": 3.0,
       "weights": "cpu"
+    },
+    {
+      "active_deployments": 3,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.01700209,
+      "objective": 0.004585868590959264,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "sla_ms": 0.3,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "milp_solve_secs": 0.001804066,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 0.3,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "milp_solve_secs": 0.001829457,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 0.3,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "benchmark_secs_paper_rate": 180.0,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "meets_sla": true,
+      "method": "autosketch",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.000323183,
+      "probes": 18,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 0.3,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 3,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.016971227,
+      "objective": 0.004585868590959264,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "sla_ms": 0.5,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "milp_solve_secs": 0.001827117,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 0.5,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "milp_solve_secs": 0.001820132,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 0.5,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "benchmark_secs_paper_rate": 180.0,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "meets_sla": true,
+      "method": "autosketch",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.000323183,
+      "probes": 18,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 0.5,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 3,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.016965893,
+      "objective": 0.004585868590959264,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "sla_ms": 1.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "milp_solve_secs": 0.001822271,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 1.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "milp_solve_secs": 0.001807323,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 1.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "benchmark_secs_paper_rate": 180.0,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "meets_sla": true,
+      "method": "autosketch",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.000323183,
+      "probes": 18,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 1.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 3,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.0170009,
+      "objective": 0.004585868590959264,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "sla_ms": 2.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "milp_solve_secs": 0.001815914,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 2.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "milp_solve_secs": 0.001786136,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 2.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "benchmark_secs_paper_rate": 180.0,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "meets_sla": true,
+      "method": "autosketch",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.000323183,
+      "probes": 18,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 2.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 3,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.157970297029703,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.16415524752475252,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "deployment_grouping": [
+            "region",
+            "service",
+            "status"
+          ],
+          "ingest_workers": 1.0,
+          "latency_ms": 0.1358811881188119,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.11298892272871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.112986,
+        "query": 2.922728712871287e-6
+      },
+      "gib": 0.0022061169542455903,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.0011030584573745728,
+        "query": 3.949644491814151e-11,
+        "storage": 0.0011030584573745728
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.157970297029703,
+      "method": "asap",
+      "milp_solve_secs": 0.017037134,
+      "objective": 0.004585868590959264,
+      "rolled_up_rqes": 3,
+      "rqes": 6,
+      "sla_ms": 3.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "asap-norollup",
+      "milp_solve_secs": 0.00180664,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 3.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "infeasible": false,
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "method": "perquery",
+      "milp_solve_secs": 0.001802287,
+      "objective": 0.009162101097559442,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 3.0,
+      "weights": "fargate"
+    },
+    {
+      "active_deployments": 6,
+      "benchmark_secs_paper_rate": 180.0,
+      "chosen": [
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.048400135938572286,
+          "covers_share": null,
+          "deployment": 0,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.00297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 1,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.0004752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 2,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.01188118811881188,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 3,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.07425742574257425,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04837114085833779,
+          "covers_share": null,
+          "deployment": 4,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.04752475247524752,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_service,region,status/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        },
+        {
+          "accuracy_source": "Measured",
+          "asap_accuracy": 0.04855897484361687,
+          "covers_share": null,
+          "deployment": 5,
+          "ingest_workers": 1.0,
+          "latency_ms": 0.297029702970297,
+          "merged_shards": 1,
+          "params": {
+            "alpha": 0.1
+          },
+          "rqe": "synthetic/case/anomaly/interval=300/p99_by_region,endpoint/values/300s",
+          "sketch": "dd",
+          "slide_secs": 300,
+          "window_secs": 300
+        }
+      ],
+      "cpu": 0.22597344712871287,
+      "cpu_parts": {
+        "compaction": 0.0,
+        "ingest": 0.225972,
+        "query": 1.4471287128712872e-6
+      },
+      "gib": 0.002286851426195585,
+      "gib_parts": {
+        "compaction": 0.0,
+        "ingest": 0.001143425703048706,
+        "query": 2.0098172792113653e-11,
+        "storage": 0.001143425703048706
+      },
+      "latency_ms": 0.297029702970297,
+      "median_latency_ms": 0.04752475247524752,
+      "meets_sla": true,
+      "method": "autosketch",
+      "objective": 0.009162101097559442,
+      "planning_secs": 0.000323183,
+      "probes": 18,
+      "rolled_up_rqes": 0,
+      "rqes": 6,
+      "sla_ms": 3.0,
+      "weights": "fargate"
     }
   ],
   "streams": 1,
@@ -3540,6 +7002,11 @@
       "name": "cpu",
       "w_cpu": 1.0,
       "w_mem": 0.0
+    },
+    {
+      "name": "fargate",
+      "w_cpu": 0.0405,
+      "w_mem": 0.00445
     }
   ],
   "workload": "synthetic/case/anomaly/interval=300/tp95"
