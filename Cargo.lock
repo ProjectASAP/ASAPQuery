@@ -106,7 +106,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "aqpbm-core"
 version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#4b76c0fbdd47df9d080e8cf654d2fef57d0285b0"
+source = "git+https://github.com/ProjectASAP/sketch-bench?rev=c750fa6ed6cf742810b2339c89057612dfa39c86#c750fa6ed6cf742810b2339c89057612dfa39c86"
 dependencies = [
  "anyhow",
  "aqpbm-datagen",
@@ -122,7 +122,7 @@ dependencies = [
 [[package]]
 name = "aqpbm-datagen"
 version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#4b76c0fbdd47df9d080e8cf654d2fef57d0285b0"
+source = "git+https://github.com/ProjectASAP/sketch-bench?rev=c750fa6ed6cf742810b2339c89057612dfa39c86#c750fa6ed6cf742810b2339c89057612dfa39c86"
 dependencies = [
  "rand 0.9.5",
  "rand_distr",
@@ -2459,8 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "rqe-optimizer"
-version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#4b76c0fbdd47df9d080e8cf654d2fef57d0285b0"
+version = "0.5.0"
 dependencies = [
  "aqpbm-core",
  "csv",
