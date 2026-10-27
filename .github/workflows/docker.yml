@@ -10,6 +10,8 @@ on:
     paths:
       - 'asap-common/installation/**'
       - 'asap-planner-rs/**'
+      - 'rqe-optimizer/Cargo.toml'
+      - 'rqe-optimizer/src/**'
       - 'asap-query-engine/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/**'

@@ -152,7 +152,7 @@ fn main() -> anyhow::Result<()> {
 
     if args.planner == PlannerArg::Milp {
         anyhow::bail!(
-            "--planner milp is temporarily disabled; use --planner saved for sketch-bench eval plans"
+            "--planner milp is temporarily disabled; use --planner saved for rqe-optimizer eval plans"
         );
     }
 

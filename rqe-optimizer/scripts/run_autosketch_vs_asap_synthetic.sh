@@ -7,7 +7,7 @@
 #   rqe-optimizer/scripts/run_autosketch_vs_asap_synthetic.sh TABLES_DIR plot
 #
 # TABLES_DIR holds the tables and plan.tsv of
-# `export_autosketch_eval_table.py --synthetic` (the workload). SATURATION_DIR
+# `sketch-bench/scripts/export_autosketch_eval_table.py --synthetic` (the workload). SATURATION_DIR
 # holds the curves and the cost table of sketch-bench/scripts/study_saturation.py, the
 # same inputs the planner reads. `run` evaluates every plan.tsv
 # row, JOBS at a time, at every weight setting and SLA of #777; a run over

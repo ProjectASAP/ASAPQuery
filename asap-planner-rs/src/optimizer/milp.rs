@@ -74,7 +74,7 @@ pub enum MilpError {
     Solver(String),
 }
 
-/// The cheapest plan. Only families in sketch-bench's `DEPLOYABLE_FAMILIES`
+/// The cheapest plan. Only families in rqe-optimizer's `DEPLOYABLE_FAMILIES`
 /// are candidates unless `allow_undeployable_families`, whose plan can be
 /// studied but not deployed. `accuracy` is what a deployment achieves for a
 /// Raqe: in production sketch-bench's saturation curves
@@ -503,7 +503,7 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
     // the Raqe has no field for those labels, so it is priced from the
     // bucket grouping's shape. Key count is bounded by the series count, but
     // accuracy curves measured per series may not match summed values; needs
-    // key labels in sketch-bench's Raqe.
+    // key labels in rqe-optimizer's Raqe.
     let grouping_labels: LabelSet = match capability {
         Capability::TopKByValue | Capability::TopKByCount => req
             .topk_by_labels

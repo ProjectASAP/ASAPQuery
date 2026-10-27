@@ -690,7 +690,7 @@ fn whole_ms(secs: f64) -> anyhow::Result<u64> {
     Ok(ms.round() as u64)
 }
 
-/// The rules of sketch-bench's `is_eligible` that need no workload facts or
+/// The rules of rqe-optimizer's `is_eligible` that need no workload facts or
 /// accuracy: a pick that breaks them belongs to another workload table.
 /// Grouping is left to the converter's roll-up check.
 fn can_serve(r: &Raqe, d: &Deployment) -> bool {

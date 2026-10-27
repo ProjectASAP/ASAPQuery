@@ -1,2 +1,4 @@
 target/
 .git/
+rqe-optimizer/results/
+rqe-optimizer/data/

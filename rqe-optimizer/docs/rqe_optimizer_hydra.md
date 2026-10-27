@@ -253,7 +253,7 @@ them all; `hydra-kll` is measured in that same run, alongside `hydra-cms`,
    means a bug.
 6. **Merges.** Accuracy and cost of merged grids at the shard counts
    workloads need, with records split by sample (interleaved), not only in
-   contiguous chunks (`sketch-bench/src/wrappers/mod.rs`); exactness checks
+   contiguous chunks (`sketch-bench/sketch-bench/src/wrappers/mod.rs`); exactness checks
    for CMS, CountSketch and HLL; merge curves for KLL and UnivMon cells.
 7. **Cost table.** Hydra rows in `study_saturation.py` (`SKETCHES`,
    `OPTIMIZER_FAMILIES`) and `approxbench atomic-costs`: `m_h` (including
