@@ -11,10 +11,12 @@ ProjectASAP/ASAPQuery#777 (`docs/evaluation/autosketch-vs-planner.md`).
 
 The crate moved here from ProjectASAP/sketch-bench, which still measures the
 sketches and exports the tables the runner reads: the saturation study
-(`scripts/study_saturation.py`), the cost table, and the eval-table exporters
-(`scripts/export_autosketch_eval_table.py`, `scripts/case_study_tables.py`,
-`scripts/export_case_studies.py`). Paths written `sketch-bench/...` are in that
-repo, and commands using `$SKETCH_BENCH` run from a checkout of it.
+(`sketch-bench/scripts/study_saturation.py`), the cost table, and the
+eval-table exporters (`sketch-bench/scripts/export_autosketch_eval_table.py`,
+`sketch-bench/scripts/case_study_tables.py`,
+`sketch-bench/scripts/export_case_studies.py`). Paths written
+`sketch-bench/...` are in that repo, and commands using `$SKETCH_BENCH` run
+from a checkout of it.
 `sketch-bench#N` is an issue or PR there.
 
 ## Layout
