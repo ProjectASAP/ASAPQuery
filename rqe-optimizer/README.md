@@ -7,7 +7,8 @@ This page covers the data it reads and the results committed here: what each
 file is, how to read it, and how to rerun or reuse it. The models themselves
 are in `docs/rqe_optimizer_cost_model.md`, `docs/rqe_optimizer_candidates.md`
 and `docs/rqe_optimizer_hydra.md`. The evaluation plan is
-ProjectASAP/ASAPQuery#777 (`docs/evaluation/autosketch-vs-planner.md`).
+ProjectASAP/ASAPQuery#777 (closed; `docs/evaluation/autosketch-vs-planner.md`
+on its branch, `docs/autosketch-vs-planner-eval`).
 
 The crate moved here from ProjectASAP/sketch-bench, which still measures the
 sketches and exports the tables the runner reads: the saturation study
@@ -18,6 +19,10 @@ eval-table exporters (`sketch-bench/scripts/export_autosketch_eval_table.py`,
 `sketch-bench/...` are in that repo, and commands using `$SKETCH_BENCH` run
 from a checkout of it.
 `sketch-bench#N` is an issue or PR there.
+
+The CloudLab rsync skips `results/` and `data/` (`.rsyncignore`), so to run the
+eval on a node, copy the inputs it reads there yourself, e.g.
+`rsync -a rqe-optimizer/results/autosketch-vs-asap-inputs NODE:/scratch/sketch_db_for_prometheus/code/rqe-optimizer/results/`.
 
 ## Layout
 

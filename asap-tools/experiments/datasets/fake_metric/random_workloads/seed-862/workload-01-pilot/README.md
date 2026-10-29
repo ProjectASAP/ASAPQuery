@@ -18,19 +18,19 @@ over 500 series read the curves at their first 1,000 keys (the table's
 (sketch-bench f885d7e: queries reading the same RQE share it).
 
 Regenerate, with `SB` a sketch-bench checkout at the table's
-`sketch_bench_revision`, from this repository's root:
+`sketch_bench_revision` (for the exporter), from this repository's root:
 
 ```bash
 DIR=asap-tools/experiments/datasets/fake_metric/random_workloads/seed-862
 OUT=$DIR/workload-01-pilot; SAT=$(mktemp -d); TMP=$(mktemp -d)
-cp -r $SB/rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/
-cp -r $SB/rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/* $SAT/
-(cd $SB && cargo build --release -p rqe-optimizer --examples)
+cp -r rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/
+cp -r rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/* $SAT/
+cargo build --release -p rqe-optimizer --examples
 python3 $SB/scripts/export_autosketch_eval_table.py \
   --random-manifest $DIR/workload-01.json --out $OUT/eval_table.json
-$SB/target/release/examples/autosketch_vs_asap synthetic --table $OUT/eval_table.json \
+target/release/examples/autosketch_vs_asap synthetic --table $OUT/eval_table.json \
   --target p95 --runs 1 --saturation-dir $SAT --out $TMP/tp95.json
-python3 $SB/scripts/extract_autosketch_plans.py $TMP/tp95.json $OUT/plans.json.gz
+python3 rqe-optimizer/scripts/extract_autosketch_plans.py $TMP/tp95.json $OUT/plans.json.gz
 cargo run --release --manifest-path asap-planner-rs/Cargo.toml --bin asap-planner -- \
   --planner saved --workload-table $OUT/eval_table.json --plan $OUT/plans.json.gz \
   --method asap --weights cpu --output_dir $OUT \

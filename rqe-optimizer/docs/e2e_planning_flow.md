@@ -54,7 +54,7 @@ This expansion is done by hand today.
 
 Where workloads are written down:
 
-- **sketch-bench:** `raqes()` in
+- **rqe-optimizer:** `raqes()` in
   [`rqe-optimizer/examples/small_problem.rs`](../examples/small_problem.rs)
   is Rust code; edit it and rebuild.
 - **ASAPQuery:** `asap-optimizer-cli --milp` reads the planner's workload YAML
@@ -134,7 +134,7 @@ Run it on a quiet machine. We use CloudLab `clnode109`. Cost and timing runs
 must be the only job on the machine.
 
 ```bash
-cargo build -p aqpbm-cli --release
+(cd $SKETCH_BENCH && cargo build -p aqpbm-cli --release)
 D=SATURATION_DIR
 
 # Accuracy grid to N = 1e7, with merge curves (KLL needs them, sketch-bench#158; top-k
@@ -174,7 +174,8 @@ python3 $SKETCH_BENCH/scripts/study_saturation.py --phase optimizer-cost --out $
 
 Accuracy runs split cleanly across machines; only the cost table needs a
 machine to itself.
-1. Build `approxbench` once and copy it, with `scripts/` and `configs/`, to
+1. Build sketch-bench's `approxbench` once and copy it, with sketch-bench's
+   `scripts/` and `configs/`, to
    each machine. The machines must share the OS and libc.
 2. Give each machine a disjoint set of points: whole families with
    `--families`, or a CSV of points with `--points-from`. Each machine writes
@@ -205,7 +206,7 @@ curves of `out_grid_1e7_cost`.
 
 ## 4. Running the optimizer
 
-### sketch-bench: `small_problem`
+### rqe-optimizer: `small_problem`
 
 ```bash
 cargo run --release -p rqe-optimizer --example small_problem -- \

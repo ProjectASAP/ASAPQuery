@@ -232,7 +232,8 @@ zcat plans/synthetic-templatesmultigroup-shared1.plans.json.gz | jq '.plans[]
 ## Reproduce
 
 ```sh
-cargo build --release -p aqpbm-cli -p rqe-optimizer --bins --examples
+cargo build --release -p rqe-optimizer --examples
+(cd $SKETCH_BENCH && cargo build --release -p aqpbm-cli --bins)
 DIR=rqe-optimizer/results/autosketch-vs-asap-hydra
 # saturation dir = the sketch-bench#138 curves + this cost table and Hydra study:
 SAT=$(mktemp -d); cp -r rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/

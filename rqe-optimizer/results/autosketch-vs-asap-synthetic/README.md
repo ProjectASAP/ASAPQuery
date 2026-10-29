@@ -155,7 +155,7 @@ workload: RQEs, streams, targets and data shapes.
 ## Reproduce
 
 ```sh
-cargo build -p aqpbm-cli --release
+(cd $SKETCH_BENCH && cargo build -p aqpbm-cli --release)
 # Accuracy grid with merge curves (parallel), then the targeted 1e9 points.
 python3 $SKETCH_BENCH/scripts/study_saturation.py --phase accuracy --n-max 1e7 --seeds 3 \
     --jobs 48 --merge-shards-list 1,4,16,64 --out DIR/out_grid_1e7_cost
