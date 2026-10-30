@@ -10,3 +10,9 @@ promql-compliance/runner/differential-report.json
 /.agent/
 
 /**/*.log
+
+# rqe-optimizer: only the saturation inputs' CSVs are committed
+rqe-optimizer/**/*.csv
+!rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/**/*.csv
+!rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/**/*.csv
+__pycache__/

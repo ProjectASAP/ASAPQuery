@@ -6,6 +6,7 @@ on:
     paths:
       - 'asap-query-engine/**'
       - 'asap-planner-rs/**'
+      - 'rqe-optimizer/**'
       - 'asap-common/dependencies/rs/**'
       - 'asap-common/tests/**'
       - 'asap-common/sketch-core/**'
@@ -18,6 +19,7 @@ on:
     paths:
       - 'asap-query-engine/**'
       - 'asap-planner-rs/**'
+      - 'rqe-optimizer/**'
       - 'asap-common/dependencies/rs/**'
       - 'asap-common/tests/**'
       - 'asap-common/sketch-core/**'

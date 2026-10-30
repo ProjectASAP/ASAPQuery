@@ -12,6 +12,8 @@ on:
     paths:
       - 'asap-query-engine/**'
       - 'asap-planner-rs/**'
+      - 'rqe-optimizer/Cargo.toml'
+      - 'rqe-optimizer/src/**'
       - 'asap-quickstart/**'
       - '.github/workflows/accuracy_performance.yml'
       - 'benchmarks/**'

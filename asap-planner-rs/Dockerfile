@@ -17,6 +17,8 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
 COPY asap-planner-rs/Cargo.toml ./asap-planner-rs/
+COPY rqe-optimizer/Cargo.toml ./rqe-optimizer/
+COPY rqe-optimizer/src ./rqe-optimizer/src
 
 # Create dummy source files so Cargo can resolve all workspace members
 RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs && \

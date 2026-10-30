@@ -9,6 +9,7 @@ members = [
     "asap-common/tests/compare_patterns",
     "asap-query-engine",
     "asap-planner-rs",
+    "rqe-optimizer",
 ]
 
 [workspace.package]

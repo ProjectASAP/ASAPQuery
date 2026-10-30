@@ -1,0 +1,13 @@
+[package]
+name = "rqe-optimizer"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+description = "v1 brute-force solver for the RQE -> sketch-deployment mapping problem (docs/rqe_sketch_deployment_v1.md). Consumes aqpbm-core's AtomicCostEntry directly so a real atomic-cost export can be dropped in later without a translation layer."
+
+[dependencies]
+# The atomic-cost table's row types: sketch-bench measures and exports the table.
+aqpbm-core = { git = "https://github.com/ProjectASAP/sketch-bench", rev = "c750fa6ed6cf742810b2339c89057612dfa39c86", default-features = false }
+serde_json.workspace = true
+good_lp = { version = "1.15", default-features = false, features = ["highs"] }
+csv = "1"

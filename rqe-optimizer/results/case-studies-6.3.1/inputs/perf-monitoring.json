@@ -1,0 +1,340 @@
+{
+ "schema_version": 1,
+ "plan": "\u00a76.3.1 case studies",
+ "inputs": {},
+ "workloads": [
+  {
+   "dataset": "case/perf-monitoring",
+   "rqes": [
+    {
+     "id": "case/perf-monitoring/quantile_by_job_p0.5/values/1s",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_by_job_p0.5",
+     "kind": "values",
+     "range": "1s",
+     "instant": false,
+     "lookback_secs": 0.005,
+     "interval_secs": 15,
+     "min_N": 1000.0,
+     "max_N": 1000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/job/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_by_job_p0.9/values/1s",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_by_job_p0.9",
+     "kind": "values",
+     "range": "1s",
+     "instant": false,
+     "lookback_secs": 0.005,
+     "interval_secs": 15,
+     "min_N": 1000.0,
+     "max_N": 1000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/job/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_over_time_p0.5/values/1m",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_over_time_p0.5",
+     "kind": "values",
+     "range": "1m",
+     "instant": false,
+     "lookback_secs": 60,
+     "interval_secs": 15,
+     "min_N": 12000.0,
+     "max_N": 12000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/series/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_over_time_p0.9/values/1m",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "range": "1m",
+     "instant": false,
+     "lookback_secs": 60,
+     "interval_secs": 15,
+     "min_N": 12000.0,
+     "max_N": 12000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/series/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_over_time_p0.9/values/10m",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "range": "10m",
+     "instant": false,
+     "lookback_secs": 600,
+     "interval_secs": 60,
+     "min_N": 120000.0,
+     "max_N": 120000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/series/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_over_time_p0.9/values/30m",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "range": "30m",
+     "instant": false,
+     "lookback_secs": 1800,
+     "interval_secs": 60,
+     "min_N": 360000.0,
+     "max_N": 360000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/series/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_over_time_p0.9/values/6h",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "range": "6h",
+     "instant": false,
+     "lookback_secs": 21600,
+     "interval_secs": 1800,
+     "min_N": 4320000.0,
+     "max_N": 4320000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/series/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "case/perf-monitoring/quantile_over_time_p0.9/values/24h",
+     "dataset": "case/perf-monitoring",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "range": "24h",
+     "instant": false,
+     "lookback_secs": 86400,
+     "interval_secs": 1800,
+     "min_N": 17280000.0,
+     "max_N": 17280000.0,
+     "queries_per_instance": 1,
+     "stream": "cpu_usage/series/dist",
+     "metric": "cpu_usage",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    }
+   ],
+   "e2e": {
+    "metrics": {
+     "cpu_usage": {
+      "labels": [
+       {
+        "cardinality": 10,
+        "name": "job"
+       },
+       {
+        "cardinality": 1000,
+        "child_of": "job",
+        "name": "label_0"
+       }
+      ],
+      "samples_per_sec_per_series": 200,
+      "type": "gauge",
+      "values": {
+       "dist": {
+        "pareto": 2.0
+       }
+      }
+     }
+    }
+   }
+  }
+ ]
+}
