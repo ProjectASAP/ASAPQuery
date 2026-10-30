@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""A replay table for paced-feeder from Alibaba v2022 MSMetrics: pod CPU
-utilization in the random workloads' label shape (4 region x 5 service x 10
+"""A replay table for paced-feeder from Alibaba v2022 per-pod metrics (MSMetrics
+CPU by default, or an MSRTMCR call rate with --column) in the random workloads'
+label shape (4 region x 5 service x 10
 job x 50 label_0), so their plans apply unchanged.
 
 Each job is one microservice and each label_0 one of its pods; region and
@@ -17,22 +18,32 @@ paced-feeder loops (one trace step per sample).
 
 Usage: python3 make_replay.py MSMetricsUpdate_0.csv MSMetricsUpdate_1.csv \
     --out replay [--table eval_table.json]
+       python3 make_replay.py MSRTMCR_*.tar.gz --column providerrpc_mcr --out calls
 """
 
 import argparse
 import csv
+import io
 import json
 import random
+import tarfile
 from collections import defaultdict
 
 REGIONS, SERVICES, JOBS, PODS = 4, 5, 10, 50
 
 
 def rows(paths):
+    """The CSV rows of `paths`: plain CSVs, or tarballs of them."""
     for path in paths:
-        with open(path, newline="") as f:
-            for r in csv.DictReader(f):
-                yield r
+        if path.endswith(".tar.gz"):
+            with tarfile.open(path) as tar:
+                for member in tar:
+                    if member.isfile():
+                        text = io.TextIOWrapper(tar.extractfile(member), newline="")
+                        yield from csv.DictReader(text)
+        else:
+            with open(path, newline="") as f:
+                yield from csv.DictReader(f)
 
 
 def main():
@@ -40,6 +51,7 @@ def main():
     parser.add_argument("csv", nargs="+")
     parser.add_argument("--out", required=True)
     parser.add_argument("--seed", type=int, default=862)
+    parser.add_argument("--column", default="cpu_utilization", help="the value column")
     parser.add_argument("--table", help="workload table whose `data` gets the replay")
     args = parser.parse_args()
 
@@ -72,7 +84,7 @@ def main():
 
     start = min(int(s) for s in steps)
     out = sorted(
-        (int(r["timestamp"]) - start, *labels[r["msinstanceid"]], r["cpu_utilization"])
+        (int(r["timestamp"]) - start, *labels[r["msinstanceid"]], r[args.column])
         for r in rows(args.csv)
         if r["msinstanceid"] in labels
     )
@@ -90,7 +102,7 @@ def write_table(table_path, out_path, rows, steps):
     paced-feeder's series order (mixed radix, label_0 fastest)."""
     by_series = {}
     for offset, *_, label_0, value in rows:  # sorted by offset
-        by_series.setdefault(label_0, []).append(round(float(value), 6))
+        by_series.setdefault(label_0, []).append(round(float(value or 0), 6))
     values = []
     for r in range(REGIONS):
         for s in range(SERVICES):
