@@ -17,8 +17,11 @@ over 500 series read the curves at their first 1,000 keys (the table's
 `../workload-NN-pilot/` hold workloads 02-10's plans, made the same way
 (sketch-bench f885d7e: queries reading the same RQE share it).
 
-Regenerate, with `SB` a sketch-bench checkout at the table's
-`sketch_bench_revision` (for the exporter), from this repository's root:
+Regenerate, with `SKETCH_BENCH` a sketch-bench checkout at the table's
+`sketch_bench_revision` (for the exporter), from this repository's root. The
+runner and plan extractor come from this repository's `rqe-optimizer`, so to
+reproduce the committed plans exactly, check out the commit that last changed
+them (`git log -1 -- $DIR/workload-01-pilot/plans.json.gz`) first:
 
 ```bash
 DIR=asap-tools/experiments/datasets/fake_metric/random_workloads/seed-862
@@ -26,7 +29,7 @@ OUT=$DIR/workload-01-pilot; SAT=$(mktemp -d); TMP=$(mktemp -d)
 cp -r rqe-optimizer/results/autosketch-vs-asap-inputs/saturation/out_* $SAT/
 cp -r rqe-optimizer/results/autosketch-vs-asap-hydra/inputs/saturation/* $SAT/
 cargo build --release -p rqe-optimizer --examples
-python3 $SB/scripts/export_autosketch_eval_table.py \
+python3 $SKETCH_BENCH/scripts/export_autosketch_eval_table.py \
   --random-manifest $DIR/workload-01.json --out $OUT/eval_table.json
 target/release/examples/autosketch_vs_asap synthetic --table $OUT/eval_table.json \
   --target p95 --runs 1 --saturation-dir $SAT --out $TMP/tp95.json
