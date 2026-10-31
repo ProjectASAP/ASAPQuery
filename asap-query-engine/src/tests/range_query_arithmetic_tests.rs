@@ -371,7 +371,7 @@ mod tests {
 
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for (host, value) in topk_candidates {
-            sketch.inner.update(host, *value);
+            sketch.update(host, value.round() as i32);
         }
         let topk_output = PrecomputedOutput::new(0, WINDOW_MS, None, 1);
         store
@@ -507,7 +507,7 @@ mod tests {
         for (agg_id, candidates) in [(1u64, candidates_a), (2u64, candidates_b)] {
             let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
             for (host, value) in candidates {
-                sketch.inner.update(host, *value);
+                sketch.update(host, value.round() as i32);
             }
             let output = PrecomputedOutput::new(0, WINDOW_MS, None, agg_id);
             store

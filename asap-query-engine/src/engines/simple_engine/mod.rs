@@ -5464,7 +5464,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
         ));
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for (host, value) in [("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)] {
-            sketch.inner.update(host, value);
+            sketch.update(host, value as i32);
         }
         let output = PrecomputedOutput::new(2000, 3000, None, 1);
         store
