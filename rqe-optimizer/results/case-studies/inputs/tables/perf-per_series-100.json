@@ -1,0 +1,275 @@
+{
+ "schema_version": 1,
+ "plan": "sketch-bench case studies (\u00a76.3.1)",
+ "workloads": [
+  {
+   "dataset": "synthetic/case/perf/per_series=100",
+   "rqes": [
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_by_job_p0.5/values/0.01s",
+     "query_id": "quantile_by_job_p0.5",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "job/dist",
+     "metric": "data",
+     "lookback_secs": 0.01,
+     "interval_secs": 15,
+     "label_set": {
+      "groups": 10,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_by_job_p0.9/values/0.01s",
+     "query_id": "quantile_by_job_p0.9",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "job/dist",
+     "metric": "data",
+     "lookback_secs": 0.01,
+     "interval_secs": 15,
+     "label_set": {
+      "groups": 10,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_over_time_p0.5/values/60s",
+     "query_id": "quantile_over_time_p0.5",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "series/dist",
+     "metric": "data",
+     "lookback_secs": 60,
+     "interval_secs": 15,
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_over_time_p0.9/values/60s",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "series/dist",
+     "metric": "data",
+     "lookback_secs": 60,
+     "interval_secs": 15,
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_over_time_p0.9/values/600s",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "series/dist",
+     "metric": "data",
+     "lookback_secs": 600,
+     "interval_secs": 60,
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_over_time_p0.9/values/1800s",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "series/dist",
+     "metric": "data",
+     "lookback_secs": 1800,
+     "interval_secs": 60,
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_over_time_p0.9/values/21600s",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "series/dist",
+     "metric": "data",
+     "lookback_secs": 21600,
+     "interval_secs": 1800,
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    },
+    {
+     "id": "synthetic/case/perf/per_series=100/quantile_over_time_p0.9/values/86400s",
+     "query_id": "quantile_over_time_p0.9",
+     "kind": "values",
+     "capability": "quantile",
+     "stream": "series/dist",
+     "metric": "data",
+     "lookback_secs": 86400,
+     "interval_secs": 1800,
+     "label_set": {
+      "groups": 10000,
+      "arrival_rate_per_sec": 1000000,
+      "keys_per_window": null
+     },
+     "queries_per_instance": 1,
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ]
+    }
+   ],
+   "schemas": {},
+   "e2e": {
+    "metrics": {
+     "data": {
+      "samples_per_sec_per_series": 100
+     }
+    }
+   }
+  }
+ ]
+}

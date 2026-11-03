@@ -1,0 +1,4 @@
+# Eval results and inputs; the build needs only Cargo.toml and src/.
+# Patterns apply to the whole rsync, so they are anchored to this crate.
+/rqe-optimizer/results/
+/rqe-optimizer/data/

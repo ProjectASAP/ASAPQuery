@@ -1,4 +1,4 @@
-//! Writes a plan solved elsewhere, sketch-bench `autosketch_vs_asap`'s plan
+//! Writes a plan solved elsewhere, rqe-optimizer `autosketch_vs_asap`'s plan
 //! file, as the planner's streaming and inference YAML, without re-solving.
 //! The workload comes from the eval table's `e2e` block: its PromQL or SQL
 //! queries, the plan RQEs each reads, and the metrics' labels. A query's RQE
@@ -690,7 +690,7 @@ fn whole_ms(secs: f64) -> anyhow::Result<u64> {
     Ok(ms.round() as u64)
 }
 
-/// The rules of sketch-bench's `is_eligible` that need no workload facts or
+/// The rules of rqe-optimizer's `is_eligible` that need no workload facts or
 /// accuracy: a pick that breaks them belongs to another workload table.
 /// Grouping is left to the converter's roll-up check.
 fn can_serve(r: &Raqe, d: &Deployment) -> bool {

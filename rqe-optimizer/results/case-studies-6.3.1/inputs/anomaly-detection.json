@@ -1,0 +1,341 @@
+{
+ "schema_version": 1,
+ "plan": "\u00a76.3.1 case studies",
+ "inputs": {},
+ "workloads": [
+  {
+   "dataset": "case/anomaly-detection",
+   "rqes": [
+    {
+     "id": "case/anomaly-detection/t16_p99_latency_by_service/values/5m",
+     "dataset": "case/anomaly-detection",
+     "query_id": "t16_p99_latency_by_service",
+     "kind": "values",
+     "range": "5m",
+     "instant": false,
+     "lookback_secs": 300,
+     "interval_secs": 15,
+     "min_N": 24000000.0,
+     "max_N": 24000000.0,
+     "queries_per_instance": 1,
+     "stream": "http/latency",
+     "metric": "http",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 25,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ],
+     "grouping": [
+      "service"
+     ],
+     "covers_share": null,
+     "covered_groups": 25,
+     "min_covered_share": 0.00865139678854864,
+     "covered_min_N": 5190838.073129184,
+     "max_covered_share": 0.2984147190557715,
+     "covered_max_N": 179048831.4334629
+    },
+    {
+     "id": "case/anomaly-detection/t16_p99_latency_by_region/values/5m",
+     "dataset": "case/anomaly-detection",
+     "query_id": "t16_p99_latency_by_region",
+     "kind": "values",
+     "range": "5m",
+     "instant": false,
+     "lookback_secs": 300,
+     "interval_secs": 15,
+     "min_N": 150000000.0,
+     "max_N": 150000000.0,
+     "queries_per_instance": 1,
+     "stream": "http/latency",
+     "metric": "http",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 4,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ],
+     "grouping": [
+      "region"
+     ],
+     "covers_share": null,
+     "covered_groups": 4,
+     "min_covered_share": 0.17956822136382072,
+     "covered_min_N": 107740932.81829244,
+     "max_covered_share": 0.35913644272764145,
+     "covered_max_N": 215481865.63658488
+    },
+    {
+     "id": "case/anomaly-detection/t16_p99_latency_by_region,service/values/5m",
+     "dataset": "case/anomaly-detection",
+     "query_id": "t16_p99_latency_by_region,service",
+     "kind": "values",
+     "range": "5m",
+     "instant": false,
+     "lookback_secs": 300,
+     "interval_secs": 60,
+     "min_N": 6000000.0,
+     "max_N": 6000000.0,
+     "queries_per_instance": 1,
+     "stream": "http/latency",
+     "metric": "http",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 100,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ],
+     "grouping": [
+      "region",
+      "service"
+     ],
+     "covers_share": null,
+     "covered_groups": 100,
+     "min_covered_share": 0.00155351593363235,
+     "covered_min_N": 932109.5601794099,
+     "max_covered_share": 0.10717160065925829,
+     "covered_max_N": 64302960.395554975
+    },
+    {
+     "id": "case/anomaly-detection/t16_p99_latency_by_service,endpoint/values/5m",
+     "dataset": "case/anomaly-detection",
+     "query_id": "t16_p99_latency_by_service,endpoint",
+     "kind": "values",
+     "range": "5m",
+     "instant": false,
+     "lookback_secs": 300,
+     "interval_secs": 60,
+     "min_N": 960000.0,
+     "max_N": 960000.0,
+     "queries_per_instance": 1,
+     "stream": "http/latency",
+     "metric": "http",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 625,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ],
+     "grouping": [
+      "service",
+      "endpoint"
+     ],
+     "covers_share": null,
+     "covered_groups": 625,
+     "min_covered_share": 7.484666639290972e-05,
+     "covered_min_N": 44907.99983574583,
+     "max_covered_share": 0.08905134454913503,
+     "covered_max_N": 53430806.72948102
+    },
+    {
+     "id": "case/anomaly-detection/t16_p99_latency_by_region,service,status/values/5m",
+     "dataset": "case/anomaly-detection",
+     "query_id": "t16_p99_latency_by_region,service,status",
+     "kind": "values",
+     "range": "5m",
+     "instant": false,
+     "lookback_secs": 300,
+     "interval_secs": 300,
+     "min_N": 1500000.0,
+     "max_N": 1500000.0,
+     "queries_per_instance": 1,
+     "stream": "http/latency",
+     "metric": "http",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 400,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ],
+     "grouping": [
+      "region",
+      "service",
+      "status"
+     ],
+     "covers_share": null,
+     "covered_groups": 400,
+     "min_covered_share": 6.820313854971292e-05,
+     "covered_min_N": 40921.88312982775,
+     "max_covered_share": 0.07528151460943021,
+     "covered_max_N": 45168908.765658125
+    },
+    {
+     "id": "case/anomaly-detection/t16_p99_latency_by_region,endpoint/values/5m",
+     "dataset": "case/anomaly-detection",
+     "query_id": "t16_p99_latency_by_region,endpoint",
+     "kind": "values",
+     "range": "5m",
+     "instant": false,
+     "lookback_secs": 300,
+     "interval_secs": 300,
+     "min_N": 240000.0,
+     "max_N": 240000.0,
+     "queries_per_instance": 1,
+     "stream": "http/latency",
+     "metric": "http",
+     "capability": "quantile",
+     "label_set": {
+      "groups": 2500,
+      "arrival_rate_per_sec": 2000000,
+      "keys_per_window": null
+     },
+     "assumptions": [],
+     "families": [
+      {
+       "family": "kll",
+       "sketch": "kll-percall",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      },
+      {
+       "family": "dd",
+       "sketch": "dd",
+       "target": 0.01,
+       "grid_param": 2.0,
+       "grid_K": null
+      }
+     ],
+     "grouping": [
+      "region",
+      "endpoint"
+     ],
+     "covers_share": null,
+     "covered_groups": 2500,
+     "min_covered_share": 1.3440082759186053e-05,
+     "covered_min_N": 8064.049655511632,
+     "max_covered_share": 0.0319815831014899,
+     "covered_max_N": 19188949.86089394
+    }
+   ],
+   "schemas": {
+    "http": {
+     "labels": [
+      {
+       "name": "region",
+       "cardinality": 4,
+       "skew": 0.5
+      },
+      {
+       "name": "service",
+       "cardinality": 25,
+       "skew": 1.1
+      },
+      {
+       "name": "endpoint",
+       "cardinality": 25,
+       "child_of": "service",
+       "skew": 1.1
+      },
+      {
+       "name": "status",
+       "cardinality": 4,
+       "skew": 2.0
+      }
+     ],
+     "rate": 2000000,
+     "values": {
+      "user_id": {
+       "zipf": 0.8,
+       "keys": 1000000
+      },
+      "latency": {
+       "pareto": 2.0,
+       "scaled_by": "service",
+       "anomaly": {
+        "label": "endpoint",
+        "factor": 10
+       }
+      }
+     }
+    }
+   }
+  }
+ ]
+}

@@ -23,6 +23,8 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
 COPY asap-planner-rs/Cargo.toml ./asap-planner-rs/
+COPY rqe-optimizer/Cargo.toml ./rqe-optimizer/
+COPY rqe-optimizer/src ./rqe-optimizer/src
 
 # Create dummy source files so Cargo can resolve all workspace members
 # All explicit [[bin]] targets in Cargo.toml must have stubs here for the dependency cache layer
