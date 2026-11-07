@@ -8,7 +8,10 @@ Each job is one microservice and each label_0 one of its pods; region and
 service only group microservices. Label values follow the feeder's table
 convention: a child's value is its parent's, a `.`, and its index (`job="3.1.7"`).
 Microservices are drawn by `--seed` among those with at least 50 pods that
-report at every step of the input; pods are their first 50 by name.
+report a value at every step of the input; pods are their first 50 by name.
+Values are multiplied by `--scale` (1e4) and rounded to 2 decimals: Count-Min
+top-k counters round to integers, so unscaled 0-1 utilizations would count as
+0 or 1.
 
 Writes `<out>.csv` (`offset_ms,region,service,job,label_0,value`, sorted by
 offset, offsets from the first step) and `<out>_mapping.csv` (labels to
@@ -18,7 +21,7 @@ paced-feeder loops (one trace step per sample).
 
 Usage: python3 make_replay.py MSMetricsUpdate_0.csv MSMetricsUpdate_1.csv \
     --out replay [--table eval_table.json]
-       python3 make_replay.py MSRTMCR_*.tar.gz --column providerrpc_mcr --out calls
+       python3 make_replay.py MSRTMCR_*.tar.gz --column providerrpc_mcr --scale 1 --out calls
 """
 
 import argparse
@@ -52,6 +55,7 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--seed", type=int, default=862)
     parser.add_argument("--column", default="cpu_utilization", help="the value column")
+    parser.add_argument("--scale", type=float, default=1e4)
     parser.add_argument("--table", help="workload table whose `data` gets the replay")
     args = parser.parse_args()
 
@@ -59,7 +63,8 @@ def main():
     pods = defaultdict(set)  # msname -> pods
     for r in rows(args.csv):
         steps.add(r["timestamp"])
-        seen[r["msinstanceid"]].add(r["timestamp"])
+        if r[args.column]:
+            seen[r["msinstanceid"]].add(r["timestamp"])
         pods[r["msname"]].add(r["msinstanceid"])
     full = {p for p, s in seen.items() if len(s) == len(steps)}
     eligible = sorted(m for m, ps in pods.items() if len(ps & full) >= PODS)
@@ -84,9 +89,13 @@ def main():
 
     start = min(int(s) for s in steps)
     out = sorted(
-        (int(r["timestamp"]) - start, *labels[r["msinstanceid"]], r[args.column])
+        (
+            int(r["timestamp"]) - start,
+            *labels[r["msinstanceid"]],
+            round(round(float(r[args.column]), 6) * args.scale, 2),
+        )
         for r in rows(args.csv)
-        if r["msinstanceid"] in labels
+        if r["msinstanceid"] in labels and r[args.column]
     )
     with open(f"{args.out}.csv", "w", newline="") as f:
         w = csv.writer(f)
@@ -102,7 +111,7 @@ def write_table(table_path, out_path, rows, steps):
     paced-feeder's series order (mixed radix, label_0 fastest)."""
     by_series = {}
     for offset, *_, label_0, value in rows:  # sorted by offset
-        by_series.setdefault(label_0, []).append(round(float(value or 0), 6))
+        by_series.setdefault(label_0, []).append(value)
     values = []
     for r in range(REGIONS):
         for s in range(SERVICES):

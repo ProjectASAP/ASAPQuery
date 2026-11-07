@@ -43,7 +43,7 @@ cols = ", ".join(
 t = time.time()
 con.execute(
     f"""
-COPY (SELECT CAST(c1/1000000 AS INTEGER) AS start_s, CAST(c2/1000000 AS INTEGER) AS end_s,
+COPY (SELECT (c1 // 1000000)::INTEGER AS start_s, (c2 // 1000000)::INTEGER AS end_s,
              c3 AS job, c4 AS task, c5 AS machine, c6 AS cpu, c7 AS mem, c8 AS amem, c14 AS max_cpu, c19 AS agg
       FROM read_csv('{G}/task_usage/part-*-of-00500.csv.gz', header=false, columns={{{cols}}}, filename=true))
 TO '{OUT}/task_usage.parquet' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 1000000)"""

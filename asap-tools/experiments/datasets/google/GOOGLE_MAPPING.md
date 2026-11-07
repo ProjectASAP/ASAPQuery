@@ -171,7 +171,7 @@ Other windows tried (full tables in `scratch/summary.txt`):
      - Sort job IDs as ints, then `random.Random(862).sample(eligible, 200)` gives exactly the subset measured here.
      - Optionally drop tasks whose CPU is zero at every step before taking the first 50.
   6. **Labels.** Order the chosen jobs by (user, job). Use `region = i // 50`, `service = f"{region}.{i // 10 % 5}"`, `job = f"{service}.{i % 10}"`, and `label_0 = f"{job}.{k}"`.
-  7. **Mapping CSV.** Write columns `region, service, job, label_0, user, job_id, task_index`.
+  7. **Mapping CSV.** Write columns `region, service, job, label_0, google_job_id, task_index, user`.
   8. **Offsets.** `offset_ms = (step − 7490) × 300,000`. The value is CPU × 1e6.
   9. **Table.** `write_table` is unchanged: 864 steps, series-major.
   10. **Implementation.** Don't hold per-pod timestamp sets the way the Alibaba script does. The window has 116M rows and 2.85M tasks, which would take more than 10 GB in Python sets.

@@ -3,30 +3,20 @@
 separability under two region/service groupings.
 
 usage: analyze_subset.py SCRATCH DAY0 NDAYS THRESH P [--seed 862]
+(needs dataset-analysis/requirements.txt, for fit_skew)
 """
 
 import argparse
 import json
 import random
+import sys
+from pathlib import Path
+
 import duckdb
 import numpy as np
-from scipy.optimize import minimize_scalar
 
-ZIPF_THETA_BOUNDS = (0.0, 5.0)
-
-
-def zipf_mle(weights):  # copied from asap-tools/dataset-analysis/fit_skew.py
-    w = np.sort(np.asarray(weights, dtype=float))[::-1]
-    w = w[w > 0]
-    if len(w) < 2:
-        return float("nan")
-    log_rank = np.log(np.arange(1, len(w) + 1))
-    total, weighted_log_rank = w.sum(), (w * log_rank).sum()
-
-    def nll(s):
-        return s * weighted_log_rank + total * np.log(np.exp(-s * log_rank).sum())
-
-    return float(minimize_scalar(nll, bounds=ZIPF_THETA_BOUNDS, method="bounded").x)
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "dataset-analysis"))
+from fit_skew import zipf_mle  # noqa: E402
 
 
 def topk_stats(totals, k):

@@ -15,6 +15,7 @@ with the same outputs and label convention (a child's value is its parent's, a
   every step, sorted as integers; tasks are their first 50 by index);
 - region/service are blocks of 50/10 of the chosen jobs ordered by (user, job),
   so one user's jobs share services;
+- rows with no CPU rate are dropped before the mean;
 - values are CPU rate clipped at 1.0, times `--scale` (1e6), rounded to 2
   decimals: Count-Min top-k counters round to integers, and x1e4 would zero
   about 6% of samples.
@@ -59,9 +60,12 @@ def main():
     parser.add_argument("--threads", type=int, default=8)
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="duckdb-tmp-") as tmp:
+        build(args, tmp)
 
+
+def build(args, tmp):
     con = duckdb.connect()
-    tmp = tempfile.mkdtemp(dir=args.out, prefix="duckdb-tmp-")
     con.execute(
         f"SET memory_limit='{args.memory_limit}'; SET threads={args.threads}; SET temp_directory='{tmp}'; "
         "SET preserve_insertion_order=false; SET enable_progress_bar=false"
@@ -85,7 +89,7 @@ def main():
                                      'column8':'VARCHAR','column9':'VARCHAR','column10':'VARCHAR','column11':'VARCHAR',
                                      'column12':'VARCHAR','column13':'VARCHAR','column14':'VARCHAR','column15':'VARCHAR',
                                      'column16':'VARCHAR','column17':'VARCHAR','column18':'VARCHAR','column19':'VARCHAR'}}))
-        WHERE start_us >= {lo} AND start_us < {hi}
+        WHERE start_us >= {lo} AND start_us < {hi} AND cpu IS NOT NULL
         GROUP BY ALL"""
     )
     con.execute(
@@ -112,6 +116,9 @@ def main():
             {"chosen": chosen},
         ).fetchall()
     )
+    users = {
+        j: users.get(j) or "" for j in chosen
+    }  # jobs with no named user sort first
     ordered = sorted(chosen, key=lambda j: (users[j], j))
 
     # series index in paced-feeder's order: ((i_job * PODS) + k), i_job = r*50 + s*10 + j
@@ -155,26 +162,32 @@ def main():
         )
         w.writerows(m[:7] for m in mapping)
 
-    con.execute("CREATE TABLE sel (job BIGINT, task INTEGER, series INTEGER)")
-    con.executemany(
-        "INSERT INTO sel VALUES (?, ?, ?)", [(m[4], m[5], m[7]) for m in mapping]
+    con.execute(
+        "CREATE TABLE sel (region VARCHAR, service VARCHAR, job_label VARCHAR, label_0 VARCHAR,"
+        " job BIGINT, task INTEGER, series INTEGER)"
     )
-    got = con.execute(
-        f"""SELECT series, t, round(least(cpu, 1.0) * {args.scale}, 2) AS v
-                          FROM cells JOIN sel USING (job, task)"""
-    ).fetchnumpy()
+    con.executemany(
+        "INSERT INTO sel VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [(*m[:6], m[7]) for m in mapping],
+    )
+    con.execute(
+        f"""CREATE TABLE replay AS
+            SELECT series, t, region, service, job_label, label_0,
+                   round(least(cpu, 1.0) * {args.scale}, 2) AS v
+            FROM cells JOIN sel USING (job, task)"""
+    )
+    got = con.execute("SELECT series, t, v FROM replay").fetchnumpy()
     n = len(mapping)
     values = np.full((n, STEPS), np.nan)
     values[got["series"], got["t"]] = got["v"]
     assert n == REGIONS * SERVICES * JOBS * PODS and not np.isnan(values).any()
 
-    labels = {m[7]: m[:4] for m in mapping}
-    with open(f"{args.out}/replay.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["offset_ms", "region", "service", "job", "label_0", "value"])
-        for t in range(STEPS):
-            for s in range(n):
-                w.writerow([t * STEP_US // 1000, *labels[s], values[s, t]])
+    con.execute(
+        f"""COPY (SELECT t::BIGINT * {STEP_US // 1000} AS offset_ms, region, service,
+                         job_label AS job, label_0, v AS value
+                  FROM replay ORDER BY t, series)
+            TO '{args.out}/replay.csv' (HEADER)"""
+    )
 
     table = json.load(open(args.table))
     data = table["workloads"][0]["e2e"]["metrics"]["data"]
@@ -182,7 +195,6 @@ def main():
     with open(f"{args.out}/replay_table_google.json", "w") as f:
         json.dump(table, f)
     con.close()
-    os.rmdir(tmp) if not os.listdir(tmp) else None
     print(f"{n} series x {STEPS} steps -> {args.out}/replay_table_google.json")
 
 
