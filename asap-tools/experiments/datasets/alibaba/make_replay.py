@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""A replay table for paced-feeder from Alibaba v2022 MSMetrics: pod CPU
-utilization in the random workloads' label shape (4 region x 5 service x 10
+"""A replay table for paced-feeder from Alibaba v2022 per-pod metrics (MSMetrics
+CPU by default, or an MSRTMCR call rate with --column) in the random workloads'
+label shape (4 region x 5 service x 10
 job x 50 label_0), so their plans apply unchanged.
 
 Each job is one microservice and each label_0 one of its pods; region and
 service only group microservices. Label values follow the feeder's table
 convention: a child's value is its parent's, a `.`, and its index (`job="3.1.7"`).
 Microservices are drawn by `--seed` among those with at least 50 pods that
-report at every step of the input; pods are their first 50 by name.
+report a value at every step of the input; pods are their first 50 by name.
+Values are multiplied by `--scale` (1e4) and rounded to 2 decimals: Count-Min
+top-k counters round to integers, so unscaled 0-1 utilizations would count as
+0 or 1.
 
 Writes `<out>.csv` (`offset_ms,region,service,job,label_0,value`, sorted by
 offset, offsets from the first step) and `<out>_mapping.csv` (labels to
@@ -17,22 +21,32 @@ paced-feeder loops (one trace step per sample).
 
 Usage: python3 make_replay.py MSMetricsUpdate_0.csv MSMetricsUpdate_1.csv \
     --out replay [--table eval_table.json]
+       python3 make_replay.py MSRTMCR_*.tar.gz --column providerrpc_mcr --scale 1 --out calls
 """
 
 import argparse
 import csv
+import io
 import json
 import random
+import tarfile
 from collections import defaultdict
 
 REGIONS, SERVICES, JOBS, PODS = 4, 5, 10, 50
 
 
 def rows(paths):
+    """The CSV rows of `paths`: plain CSVs, or tarballs of them."""
     for path in paths:
-        with open(path, newline="") as f:
-            for r in csv.DictReader(f):
-                yield r
+        if path.endswith(".tar.gz"):
+            with tarfile.open(path) as tar:
+                for member in tar:
+                    if member.isfile():
+                        text = io.TextIOWrapper(tar.extractfile(member), newline="")
+                        yield from csv.DictReader(text)
+        else:
+            with open(path, newline="") as f:
+                yield from csv.DictReader(f)
 
 
 def main():
@@ -40,6 +54,8 @@ def main():
     parser.add_argument("csv", nargs="+")
     parser.add_argument("--out", required=True)
     parser.add_argument("--seed", type=int, default=862)
+    parser.add_argument("--column", default="cpu_utilization", help="the value column")
+    parser.add_argument("--scale", type=float, default=1e4)
     parser.add_argument("--table", help="workload table whose `data` gets the replay")
     args = parser.parse_args()
 
@@ -47,7 +63,8 @@ def main():
     pods = defaultdict(set)  # msname -> pods
     for r in rows(args.csv):
         steps.add(r["timestamp"])
-        seen[r["msinstanceid"]].add(r["timestamp"])
+        if r[args.column]:
+            seen[r["msinstanceid"]].add(r["timestamp"])
         pods[r["msname"]].add(r["msinstanceid"])
     full = {p for p, s in seen.items() if len(s) == len(steps)}
     eligible = sorted(m for m, ps in pods.items() if len(ps & full) >= PODS)
@@ -72,9 +89,13 @@ def main():
 
     start = min(int(s) for s in steps)
     out = sorted(
-        (int(r["timestamp"]) - start, *labels[r["msinstanceid"]], r["cpu_utilization"])
+        (
+            int(r["timestamp"]) - start,
+            *labels[r["msinstanceid"]],
+            round(round(float(r[args.column]), 6) * args.scale, 2),
+        )
         for r in rows(args.csv)
-        if r["msinstanceid"] in labels
+        if r["msinstanceid"] in labels and r[args.column]
     )
     with open(f"{args.out}.csv", "w", newline="") as f:
         w = csv.writer(f)
@@ -90,7 +111,7 @@ def write_table(table_path, out_path, rows, steps):
     paced-feeder's series order (mixed radix, label_0 fastest)."""
     by_series = {}
     for offset, *_, label_0, value in rows:  # sorted by offset
-        by_series.setdefault(label_0, []).append(round(float(value), 6))
+        by_series.setdefault(label_0, []).append(value)
     values = []
     for r in range(REGIONS):
         for s in range(SERVICES):
