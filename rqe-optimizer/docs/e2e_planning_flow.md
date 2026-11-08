@@ -189,8 +189,8 @@ machine to itself.
    It refuses a point that appears in two parts and mismatched headers.
 4. Run `--phase optimizer-cost` alone on one machine.
 
-On asap_sketchlib 0.3.0, five 56-core nodes run the default grid and the
-targeted 1e9 points in about 10 minutes.
+Five 56-core nodes run the default grid and the targeted 1e9 points in
+about 10 minutes.
 
 `SaturationCurves::load` expects exactly this layout:
 

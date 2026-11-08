@@ -13,7 +13,7 @@ schema (the hyperperiod there is `H`).
 
 ## 1. What Hydra is in sketch-bench
 
-All five combinations wrap `asap_sketchlib::Hydra` (0.3.0; Manousis et al.,
+All five combinations wrap `asap_sketchlib::Hydra` (Manousis et al.,
 VLDB 2022, arXiv:2208.04927). The `polars` rows of the same names are exact
 baselines.
 
@@ -46,7 +46,8 @@ baselines.
 | `hydra-univmon` | UnivMon: heap 1000, 5 × 2048, 8 layers; grid 2 × 8 | `R·W·layers·((sr·sc + sr)·8 + heap·entry)` |
 
 `hydra-univmon` is registered as four statistics: cardinality, L1, L2 and
-entropy. Each footprint adds `(R·W + 1)` cell headers.
+entropy. The reported footprint is `Hydra::memory_bytes`: every cell's own
+`memory_bytes`, plus the grid struct and the schema's labels.
 
 ## 2. Accuracy guarantee per combination
 
@@ -234,12 +235,12 @@ them all; `hydra-kll` is measured in that same run, alongside `hydra-cms`,
 `hydra-cs`, `hydra-hll` and `hydra-univmon`, under every item below.
 
 1. **Target grouping.** Comparators score only column 0
-   (`sketch-bench/aqpbm-cli/src/rows/mod.rs`); they must score any named subset of the
+   (`sketch-bench/sketch-bench/src/rows/mod.rs`); they must score any named subset of the
    schema, and the wrapper must query any subset, not only prefixes
    (`hydra_shared.rs` `query`).
 2. **Exact baseline.** The `polars` baselines build untagged subkeys
    (`polars_shared.rs`), so overlapping label values alias there but not in
-   the 0.3.0 sketch (sketch-bench#74); tag them the same way.
+   the sketch (sketch-bench#74); tag them the same way.
 3. **Data.** Hierarchical labels with set cardinality per label, per-parent
    fan-out and skew; the result records `|Λ|`, the target grouping's
    cardinality, every group's `N_q`, and the fanned-out mass `M`.
