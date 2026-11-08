@@ -12,7 +12,7 @@ performance monitoring 0.105 vCPU (2 MVs), anomaly detection 0.114 (3).
 
 ## Findings
 
-Four knobs change the plan in ways that are not obvious from the workload.
+Five knobs change the plan in ways that are not obvious from the workload.
 Costs are ASAP's cheapest plan, vCPU (MVs).
 
 ### 1. Performance monitoring: a latency SLA builds a hierarchy of windows
@@ -91,19 +91,32 @@ ingest, and the planner splits the frequent coarse queries off to a
 (service, region) MV. A latency SLA has the same effect at 25 endpoints:
 2 MVs at 30 ms (0.076), 3 at 10 ms (0.113), 5 at 3 ms (0.188).
 
+### 5. Anomaly detection: millisecond latency SLAs
+
+The cheapest anomaly plan answers a batch in 3.3 ms, so only SLAs below that
+change it. They do change it, and the cost more than triples:
+
+| Batch SLA | ASAP | Change |
+|---|---|---|
+| none (3.3 ms) | 0.114 (3) | the base plan |
+| 2 ms | 0.151 (4) | the 15 s queries roll up from a (service, region) MV instead of (region, service, status) |
+| 1 ms | 0.301 (4) | |
+| 0.3 ms | 0.377 (6) | |
+
+Real, but at SLAs few dashboards need.
+
 ### Knobs that do not change the plan
 
 - **Series count** (performance, 1e4–1e5) and **ingest rate** (anomaly,
-  2.5e5–2e7 samples/s): every cost scales linearly and the plan is unchanged.
+  2.5e5–2e7 samples/s), with no SLA: every cost scales linearly and the plan
+  is unchanged. Under a latency SLA this does not hold: query latency grows
+  with the data, so the SLA at which each plan change happens moves with it.
 - **Status cardinality** (anomaly, 2–16) and **endpoints without the
   drill-down** (2–100): `by (service)` moves between the (service, endpoint)
   and (region, service, status) MVs, whichever has fewer groups to merge,
   but the cost changes by < 1%.
 - **One interval for every anomaly query** (15 s, 1 min, 5 min): the same 3
   MVs with window = interval.
-- **Anomaly batch SLA** (0.3–3 ms; the cheapest plan is 3.3 ms): at 2 ms the
-  15 s queries roll up from a (service, region) MV instead of
-  (region, service, status). Real, but at sub-ms SLAs.
 
 ## Suggested §6.3.1 text
 
@@ -147,12 +160,69 @@ the CPU-only results are unchanged, cost for cost). With memory priced
 - **Performance monitoring, 15 s refresh of the long dashboard:** a 2 min
   window sliding every 15 s serves 10m–24h, as under CPU weights (0.106 $/h;
   LiteOllyPerQuery 0.140, AutoSketch 29.6).
-- **Anomaly detection:** the same plans as CPU-only (3 MVs for the six
-  queries; with the drill-down, 1 MV at 25 endpoints and 2 at 100).
+- **Anomaly detection:** the same plans as CPU-only for the six queries
+  (3 MVs at every endpoint count). With the drill-down, also 1 MV up to 25
+  endpoints and 2 at 100, but 2 at 50 (0.0033 $/h), where CPU weights pick 1.
 
+## Every method on the base workloads
 
-- CPU weights only: memory is free, so the base performance plan holds
-  18 GiB of 15 s windows. Fargate weights would favor coarser windows.
+`base-0`'s result files also hold the runner's baselines. What each method
+deploys, CPU weights, no SLA:
+
+### Performance monitoring
+
+Three dashboards over `cpu_usage` (the mixed workload's data: 1e4 series in
+10 jobs, 200 samples/s each):
+
+```
+// repeating every 15s
+quantile by (job) (0.5, cpu_usage)            quantile by (job) (0.9, cpu_usage)
+quantile_over_time(0.5, cpu_usage[1m])        quantile_over_time(0.9, cpu_usage[1m])
+// repeating every 1 min
+quantile_over_time(0.9, cpu_usage[10m])       quantile_over_time(0.9, cpu_usage[30m])
+// repeating every 30 min
+quantile_over_time(0.9, cpu_usage[6h])        quantile_over_time(0.9, cpu_usage[24h])
+```
+
+| Method | Cost, CPU (vCPU) | Deployments | What it deploys |
+|---|---|---|---|
+| ASAP | 0.10 | 2 | DDSketch (α = 0.1) per job over each scrape, for both instant queries; DDSketch per series in 15 s tumbling windows, for all six `quantile_over_time` queries (both quantiles, every lookback), merging 4 to 5,760 windows per query |
+| PerQuery | 0.31 | 8 | one DDSketch per query, each with its own tumbling window (15 s, 60 s or 1,800 s) |
+| AutoSketch-Adapted | 4.14 | 8 | one sliding DDSketch per query, window = lookback, slide = repeat interval; the 24 h query keeps 48 overlapping windows, each sample inserted into each |
+
+ASAP's cheapest CPU-only plan holds 18 GiB and takes 23.8 s per batch (the
+24 h query merges 5,760 windows per series). With memory priced (Fargate
+weights) it picks 3 deployments, 0.53 GiB and 493 ms: 0.0075 $/h, against
+PerQuery's 0.014 and AutoSketch's 0.17.
+
+### Anomaly detection
+
+p99 request latency over 5 min on `requests` (region × service × endpoint ×
+status), every group held to the target:
+
+```
+// repeating every 15s
+quantile by (service) (0.99, request_latency[5m])           quantile by (region) (0.99, request_latency[5m])
+// repeating every 1 min
+quantile by (service, region) (0.99, request_latency[5m])   quantile by (service, endpoint) (0.99, request_latency[5m])
+// repeating every 5 min
+quantile by (service, region, status) (0.99, request_latency[5m])   quantile by (region, endpoint) (0.99, request_latency[5m])
+```
+
+| Method | Cost, CPU (vCPU) | Deployments | What it deploys |
+|---|---|---|---|
+| ASAP | 0.11 | 3 | DDSketch per (region, service, status) group in 15 s windows, rolled up to answer by (service), (region), (region, service) and (region, service, status); its own DDSketch for (service, endpoint) and for (region, endpoint), which (region, service, status) cannot produce |
+| PerQuery | 0.23 | 6 | one DDSketch per query, at its own grouping and repeat interval |
+| AutoSketch-Adapted | 1.96 | 6 | one sliding 5 min DDSketch per query |
+
+A DDSketch merge is the sketch of the pooled data, so a rolled-up answer is
+the coarse group's p99, not a quantile of quantiles.
+
+## Caveats
+
+- The findings use CPU weights: memory is free, so the base performance plan
+  holds 18 GiB of 15 s windows. [Fargate prices](#fargate-prices) shows where
+  pricing memory changes the plan.
 - The drill-down covers groups holding ≥ 1% of requests: at every group, the
   smallest (region, service, endpoint, status) groups fall below the
   saturation curves' first N (1e3 items) and the query is unservable.
