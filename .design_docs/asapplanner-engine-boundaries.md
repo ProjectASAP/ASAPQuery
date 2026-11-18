@@ -107,12 +107,12 @@ enum AnswerSource {
 }
 
 enum EngineQueryResult {
-    Ready { labels: KeyByLabelNames, result: QueryResult },
+    Ready { result: QueryResult },     // label/column names live inside QueryResult
     NotReady,                          // summaries don't yet cover the query → fallback
 }
 
 enum QueryOutcome {
-    Ready { labels, result, source: AnswerSource },
+    Ready { result: QueryResult, source: AnswerSource },
     NotAnswerable(NotAnswerableReason),                 // → FallbackClient
     Failed(QueryEngineError),                           // → error response
 }
@@ -139,7 +139,7 @@ How these fit together:
 - **`QueryDispatcher`** orchestrates every query in the same three steps:
   resolve it to an `AnswerSource`, execute it, and map the result to an answer,
   a fallback or an error. Putting this in `HttpServer` would repeat it in every
-  handler (instant, range, RQE). Putting it in `QueryEngine` would repeat plan
+  handler (instant, range). Putting it in `QueryEngine` would repeat plan
   matching and fallback policy in every engine implementation. The dispatcher
   does it once, so engines only execute. `QueryResolver` is a trait only so
   capability matching (T2) can be replaced without touching the dispatcher.
@@ -159,8 +159,8 @@ async fn handle(http_req) -> Response {
         Err(e) => return adapter.format_error(e),
     };
     match dispatcher.dispatch(&req).await {
-        QueryOutcome::Ready { labels, result, .. } =>
-            adapter.format_success(labels, result),   // errors on unsupported result variants
+        QueryOutcome::Ready { result, .. } =>
+            adapter.format_success(result),           // errors on unsupported result variants
         QueryOutcome::NotAnswerable(_) => match fallback {
             Some(f) => f.execute(&req).await,
             None => adapter.format_unsupported(),
@@ -176,7 +176,7 @@ impl QueryDispatcher {
             return QueryOutcome::NotAnswerable(Unmatched);
         };
         match self.engine.execute(&plan, &source, req).await {
-            Ok(EngineQueryResult::Ready { labels, result }) => QueryOutcome::Ready { labels, result, source },
+            Ok(EngineQueryResult::Ready { result }) => QueryOutcome::Ready { result, source },
             Ok(EngineQueryResult::NotReady) => QueryOutcome::NotAnswerable(NotReady),
             Err(e) => self.error_policy(e),   // NotAnswerable(EngineError(e)) or Failed(e); see Q3
         }
@@ -266,6 +266,15 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
     support** (for example, PromQL given `Table`, or SQL given `Matrix`).
 30. **Engine implementations are selected by a command-line flag**, so old and
     new engines can coexist during the migration.
+31. **Label names live inside `QueryResult`.** `Vector` and `Matrix` carry their
+    output label names, as `Table` carries its columns. This replaces today's
+    separate `KeyByLabelNames` next to the result
+    (`QueryExecutionResult {query_output_labels, query_result}`), so every
+    variant is self-describing.
+32. **The RQE endpoint bypasses the dispatcher.** RQE requests are a JSON
+    expression tree, not a query text, so they don't fit `QueryRequest` or the
+    resolvers. The test-only endpoint keeps calling the old `SimpleEngine`
+    directly until it is removed (decision 15).
 
 ## Tabled
 
@@ -293,20 +302,13 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
   back (`NotAnswerable(EngineError)`) or fail (`Failed`)? Today it fails with a
   500. Does the policy need to tell "plan not executable by this engine" apart
   from "execution failed"? If not, a single error type is enough.
-- **Q9. Call direction between `PlanProvider` and `PlanInstaller`.** Decision 21
-  (push) means the provider calls the installer when a new plan exists. If the
-  installer calls the provider instead, the installer has to decide when to ask
-  (pull).
+- **Q9. Plan components.** Are `PlanProvider` and `PlanInstaller` separate
+  components, and which one decides when to replan? This may revise decision 21.
 - **Q10. Engine method errors and backpressure.** What errors do `install`,
   `ingest` and `flush` return? When the engine is overloaded, does `ingest` wait
   until it can accept the batch, or return an error immediately (so a
-  remote-write source can return 503)?
-- **Q11. Label names next to `QueryResult`.** Today output label names
-  (`KeyByLabelNames`) travel separately from `QueryResult`
-  (`QueryExecutionResult {query_output_labels, query_result}`). `Table` carries
-  its own column names, so should label names move into the `Vector`/`Matrix`
-  variants?
-- **Q12. RQE path.** RQE requests are an expression tree (JSON), not a query
-  text, so they don't fit `QueryRequest` or the resolvers. Should the test-only
-  RQE endpoint keep calling the old `SimpleEngine` directly until it is removed,
-  instead of going through the dispatcher?
+  remote-write source can return 503)? Today it waits: samples go to workers
+  over bounded channels (`channel_buffer_size`, default 10,000) and
+  `send().await` blocks when a channel is full, so the remote-write HTTP response
+  is delayed. An error happens only if a worker's channel is closed, and the
+  source then returns 500. A decode error returns 400.
