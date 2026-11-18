@@ -49,7 +49,8 @@ Changed:
   data is dropped.
 - `QueryTracker` → `QueryWorkloadTracker`. It emits ASAPPlanner's
   `PlanningWorkload`.
-- `HttpServer` holds `Arc<dyn QueryEngine>` instead of `Arc<SimpleEngine>`.
+- `HttpServer` holds a `QueryDispatcher` (which holds `Arc<dyn QueryEngine>`)
+  instead of `Arc<SimpleEngine>`, except with the old engines (decision 34).
 
 Replaced:
 - `PlannerClient` (calls asap-planner-rs) → no trait. `QueryWorkloadTracker`
@@ -71,7 +72,7 @@ Signatures are indicative. Method-level details are still open.
 
 ```rust
 struct InstalledPlan {                 // ASAPQuery's validated view of an InstallablePlan
-    id: PlanId,
+    id: PlanId,                        // counter, incremented per install
     plan: InstallablePlan,             // + derived summaries, refresh groups, raw retention
 }
 
@@ -85,9 +86,9 @@ trait IngestEngine {
     install(plan); ingest(SampleBatch); flush(); shutdown();
 }
 
-trait QueryEngine {                   // steps through range queries itself
+trait QueryEngine {                   // holds its installed plan; steps through range queries itself
     install(plan);
-    execute(plan, &AnswerSource, &QueryRequest) -> Result<EngineQueryResult, QueryEngineError>;
+    execute(&AnswerSource, &QueryRequest) -> Result<EngineQueryResult, QueryEngineError>;
 }
 
 trait QueryResolver {                  // chained: planned resolver, then capability resolver
@@ -102,17 +103,17 @@ struct QueryDispatcher { resolvers, engine }   // called by HttpServer for every
 //   engine → Ready              → Ready
 
 enum AnswerSource {
-    Planned { root: PhysicalASAPNodeId },               // matched InstallablePlan.query_texts
-    CapabilityMatched { matched: CapabilityMatch },     // contents tabled (T2)
+    Planned { plan: PlanId, root: PhysicalASAPNodeId }, // matched InstallablePlan.query_texts
+    CapabilityMatched { plan: PlanId, matched: CapabilityMatch },  // contents tabled (T2)
 }
 
 enum EngineQueryResult {
     Ready { result: QueryResult },     // label/column names live inside QueryResult
-    NotReady,                          // summaries don't yet cover the query → fallback
+    NotReady,                          // summaries don't cover the whole query → fallback
 }
 
 enum QueryOutcome {
-    Ready { result: QueryResult, source: AnswerSource },
+    Ready { result: QueryResult, source: AnswerSource },   // source: for logging
     NotAnswerable(NotAnswerableReason),                 // → FallbackClient
     Failed(QueryEngineError),                           // → error response
 }
@@ -151,6 +152,9 @@ How these fit together:
 
 ## Query path (pseudocode)
 
+New engines only. With the old engines (decision 34), `HttpServer` calls
+`SimpleEngine` directly, as today.
+
 ```rust
 // HttpServer: one handler shape for instant and range queries.
 async fn handle(http_req) -> Response {
@@ -171,11 +175,13 @@ async fn handle(http_req) -> Response {
 
 impl QueryDispatcher {
     async fn dispatch(&self, req: &QueryRequest) -> QueryOutcome {
-        let plan = self.current_plan();   // set by PlanInstaller; one snapshot for the whole query
-        let Some(source) = self.resolvers.iter().find_map(|r| r.resolve(&plan, req)) else {
+        let plan = self.current_plan();   // set by PlanInstaller; None before the first install
+        let Some(source) = plan.and_then(|p| self.resolvers.iter().find_map(|r| r.resolve(&p, req))) else {
             return QueryOutcome::NotAnswerable(Unmatched);
         };
-        match self.engine.execute(&plan, &source, req).await {
+        // The engine compares source's PlanId with its installed plan; a mismatch
+        // (a plan swap between resolve and execute) returns NotReady.
+        match self.engine.execute(&source, req).await {
             Ok(EngineQueryResult::Ready { result }) => QueryOutcome::Ready { result, source },
             Ok(EngineQueryResult::NotReady) => QueryOutcome::NotAnswerable(NotReady),
             Err(e) => self.error_policy(e),   // NotAnswerable(EngineError(e)) or Failed(e); see Q3
@@ -186,8 +192,59 @@ impl QueryDispatcher {
 // Planned resolver: exact match against the plan's query texts.
 fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
     let i = plan.query_texts().position(|q| q == req.query)?;
-    Some(AnswerSource::Planned { root: plan.dag().roots[i] })
+    Some(AnswerSource::Planned { plan: plan.id, root: plan.dag().roots[i] })
 }
+```
+
+## Startup, plan install and ingest path (pseudocode)
+
+New engines only. With the old engines (decision 34), wiring is as today.
+
+```rust
+// main: the deployment owns the stores and injects them (decision 8).
+let summaries = Arc::new(InMemorySummaryStore::new());
+let raw = Arc::new(InMemoryRawDataStore::new());
+let (ingest_engine, query_engine) = engines_for(cli.engine, summaries.clone(), raw.clone());  // decision 30
+let dispatcher = Arc::new(QueryDispatcher::new(resolvers, query_engine.clone()));
+let installer = Arc::new(PlanInstaller::new(ingest_engine.clone(), query_engine.clone(), dispatcher.clone()));
+if let Some(path) = cli.plan_file {
+    installer.install(InstallablePlan::from_json(&read(path))?);   // failure → no plan; queries fall back
+}
+for source in ingest_sources { spawn(source.run(ingest_engine.clone())); }  // decision 23
+spawn(QueryWorkloadTracker::new(installer.clone()).run());
+HttpServer::new(adapter, dispatcher, fallback).run().await;
+
+impl PlanInstaller {
+    fn install(&self, plan: InstallablePlan) -> Result<()> {
+        let plan = InstalledPlan::validate(plan, self.next_id())?;  // reject → current plan stays (26)
+        // All-or-nothing across the three: if any step fails, the current plan stays (27).
+        self.ingest_engine.install(plan.clone())?;
+        self.query_engine.install(plan.clone())?;
+        self.dispatcher.set_plan(plan);
+        Ok(())
+    }
+}
+
+// QueryWorkloadTracker: the data plane decides when to replan (decision 21).
+loop {
+    // records queries the HttpServer reports
+    if self.should_replan() {
+        let plan = asap_planner::plan_installable(self.workload(), DEPLOYMENT_CAPABILITIES)?;
+        let _ = self.installer.install(plan);
+    }
+}
+
+// An IngestSource, e.g. the remote-write handler.
+async fn handle_remote_write(body: Bytes) -> StatusCode {
+    let Ok(batch) = decode(body) else { return StatusCode::BAD_REQUEST };
+    match engine.ingest(batch).await {   // waits under backpressure (decision 33)
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,   // engine gone
+    }
+}
+
+// IngestEngine::ingest, at the boundary: uses its installed plan to decide what
+// to keep; writes RawDataStore and SummaryStore, keying summaries by its PlanId.
 ```
 
 ## Decisions
@@ -284,6 +341,24 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
     channel is full, delaying the remote-write HTTP response. `ingest` returns an
     error only if the engine is gone (today a closed worker channel, which leads
     to a 500).
+34. **The old engines bypass the new pipeline.** When the flag (decision 30)
+    selects the old engines, `HttpServer` calls `SimpleEngine` directly and
+    ingest uses `PrecomputeEngine`, both driven by asap-planner-rs as today. The
+    dispatcher, resolvers and `PlanInstaller` are used only with the new
+    engines.
+35. **Engines hold their installed plan.** `QueryEngine::execute` takes only the
+    `AnswerSource` and the request, not the plan. `AnswerSource` carries the
+    `PlanId` it was resolved against. If the engine's installed plan differs (a
+    plan swap between resolve and execute), the engine returns `NotReady`, so the
+    query falls back.
+36. **`NotReady` covers the whole query.** If the summaries don't cover the whole
+    query, the result is `NotReady`: for a range query, if any step isn't
+    covered; for an instant query, if its time is past what the summaries cover.
+    There are no partial answers.
+37. **`AnswerSource` in `QueryOutcome::Ready` is for logging only.**
+38. **`PlanId` is a counter**, incremented per install.
+39. **Before the first plan is installed, queries fall back.** The dispatcher has
+    no plan, so every query is `Unmatched`.
 
 ## Tabled
 
@@ -313,3 +388,12 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
   from "execution failed"? If not, a single error type is enough.
 - **Q10. Engine method error types.** What errors do `install` and `flush`
   return? (Backpressure is decided: decision 33.)
+- **Q13. Capabilities per engine implementation.** Decision 28 makes
+  `DeploymentCapabilities` a constant; decision 30 picks the engine by flag. Two
+  new-engine implementations may support different summaries. Should each engine
+  implementation define its own constant, selected together with the engine?
+- **Q14. Ingest before the first plan.** Does `IngestEngine::ingest` drop
+  batches, or keep raw data, before any plan is installed?
+- **Q15. `InstalledPlan` contents.** Does it add anything beyond
+  `InstallablePlan` + `PlanId` (for example, precomputed summaries, refresh
+  groups and raw retention), or is it just that pair?
