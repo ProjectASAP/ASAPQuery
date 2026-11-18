@@ -73,7 +73,7 @@ Signatures are indicative. Method-level details are still open.
 ```rust
 struct InstalledPlan {                 // ASAPQuery's validated view of an InstallablePlan
     id: PlanId,                        // counter, incremented per install
-    plan: InstallablePlan,             // + derived summaries, refresh groups, raw retention
+    plan: InstallablePlan,             // nothing else; derived data is computed from it
 }
 
 struct PlanInstaller {                 // validates and installs into both engines + dispatcher
@@ -359,6 +359,12 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
 38. **`PlanId` is a counter**, incremented per install.
 39. **Before the first plan is installed, queries fall back.** The dispatcher has
     no plan, so every query is `Unmatched`.
+40. **One capabilities constant.** There is one old engine and one new engine,
+    and only the new engine uses ASAPPlanner, so a single
+    `DeploymentCapabilities` constant is enough (decision 28).
+41. **Ingest before the first plan is dropped.** `IngestEngine::ingest` discards
+    batches until a plan is installed.
+42. **`InstalledPlan` is just `InstallablePlan` + `PlanId`.**
 
 ## Tabled
 
@@ -388,12 +394,3 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
   from "execution failed"? If not, a single error type is enough.
 - **Q10. Engine method error types.** What errors do `install` and `flush`
   return? (Backpressure is decided: decision 33.)
-- **Q13. Capabilities per engine implementation.** Decision 28 makes
-  `DeploymentCapabilities` a constant; decision 30 picks the engine by flag. Two
-  new-engine implementations may support different summaries. Should each engine
-  implementation define its own constant, selected together with the engine?
-- **Q14. Ingest before the first plan.** Does `IngestEngine::ingest` drop
-  batches, or keep raw data, before any plan is installed?
-- **Q15. `InstalledPlan` contents.** Does it add anything beyond
-  `InstallablePlan` + `PlanId` (for example, precomputed summaries, refresh
-  groups and raw retention), or is it just that pair?
