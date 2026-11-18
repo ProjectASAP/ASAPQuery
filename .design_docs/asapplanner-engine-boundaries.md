@@ -52,8 +52,9 @@ Changed:
 - `HttpServer` holds `Arc<dyn QueryEngine>` instead of `Arc<SimpleEngine>`.
 
 Replaced:
-- `PlannerClient` (calls asap-planner-rs) → `PlanProvider` (returns an
-  ASAPPlanner `InstallablePlan`).
+- `PlannerClient` (calls asap-planner-rs) → no trait. `QueryWorkloadTracker`
+  calls ASAPPlanner (`plan_installable`) directly and hands the result to
+  `PlanInstaller`.
 - `StreamingConfig` / `InferenceConfig` → `InstalledPlan`.
 - `Store`, keyed by `(metric, aggregation_id, window)` with `AggregateCore`
   values → `SummaryStore` + `RawDataStore`.
@@ -74,10 +75,11 @@ struct InstalledPlan {                 // ASAPQuery's validated view of an Insta
     plan: InstallablePlan,             // + derived summaries, refresh groups, raw retention
 }
 
-trait PlanProvider {                   // input: PlanningWorkload + DeploymentCapabilities
-    // → InstalledPlan, pushed to PlanInstaller. Implementations: from a plan file,
-    //   or in-process ASAPPlanner.
+struct PlanInstaller {                 // validates and installs into both engines + dispatcher
+    install(InstallablePlan) -> Result<()>;   // on any failure, the current plan stays
 }
+// Callers: startup (plan file, if given) and QueryWorkloadTracker
+// (plan_installable(workload, DeploymentCapabilities) when it decides to replan).
 
 trait IngestEngine {
     install(plan); ingest(SampleBatch); flush(); shutdown();
@@ -87,8 +89,6 @@ trait QueryEngine {                   // steps through range queries itself
     install(plan);
     execute(plan, &AnswerSource, &QueryRequest) -> Result<EngineQueryResult, QueryEngineError>;
 }
-
-struct PlanInstaller { /* installs each new InstalledPlan into both engines */ }
 
 trait QueryResolver {                  // chained: planned resolver, then capability resolver
     resolve(plan, &QueryRequest) -> Option<AnswerSource>;   // None: can't answer it; never fails
@@ -214,7 +214,7 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
    are empty and queries return `NotReady` (→ fallback). Summary keys include
    `PlanId`.
 9. **Capabilities.** The deployment declares one `DeploymentCapabilities`, which
-   `PlanProvider` passes to ASAPPlanner.
+   `QueryWorkloadTracker` passes to ASAPPlanner when it replans.
 10. **Workload.** `QueryWorkloadTracker` emits ASAPPlanner's `PlanningWorkload`.
 11. **Resolution is whole-query.** An `AnswerSource` covers a whole query; there
     is no partial or sub-expression resolution for now.
@@ -237,9 +237,12 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
     configured by deployment config (today's `LateDataPolicy` model). This is
     the simplest option, chosen for now. The alternatives were per-source
     watermarks, lateness stated in the plan, or a combination.
-21. **Plan delivery is push, for now.** `PlanProvider` decides when a new plan
-    exists (for example, the workload changed or the plan file changed) and
-    hands it to `PlanInstaller`.
+21. **Plan delivery: the data plane decides when to replan, with no plan
+    trait.** `QueryWorkloadTracker` decides when to replan, calls ASAPPlanner
+    directly and passes the plan to `PlanInstaller::install`. At startup, a plan
+    file (if given) is loaded and installed the same way. There is no
+    `PlanProvider` or plan-source trait: the plan's origin is simply whoever
+    calls `install`.
 22. **`QueryLanguage` comes from ASAPPlanner.** We use
     `asap_types::workload::QueryLanguage` (`PromQL`, `MetricsQL`,
     `SQL(DataFusionSQL | ClickhouseSQL | ElasticSQL)`, `DataFusion`,
@@ -275,6 +278,12 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
     expression tree, not a query text, so they don't fit `QueryRequest` or the
     resolvers. The test-only endpoint keeps calling the old `SimpleEngine`
     directly until it is removed (decision 15).
+33. **Ingest backpressure: `ingest` waits** until the engine can accept the
+    batch, as today. Today samples go to workers over bounded channels
+    (`channel_buffer_size`, default 10,000) and `send().await` blocks when a
+    channel is full, delaying the remote-write HTTP response. `ingest` returns an
+    error only if the engine is gone (today a closed worker channel, which leads
+    to a 500).
 
 ## Tabled
 
@@ -302,13 +311,5 @@ fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
   back (`NotAnswerable(EngineError)`) or fail (`Failed`)? Today it fails with a
   500. Does the policy need to tell "plan not executable by this engine" apart
   from "execution failed"? If not, a single error type is enough.
-- **Q9. Plan components.** Are `PlanProvider` and `PlanInstaller` separate
-  components, and which one decides when to replan? This may revise decision 21.
-- **Q10. Engine method errors and backpressure.** What errors do `install`,
-  `ingest` and `flush` return? When the engine is overloaded, does `ingest` wait
-  until it can accept the batch, or return an error immediately (so a
-  remote-write source can return 503)? Today it waits: samples go to workers
-  over bounded channels (`channel_buffer_size`, default 10,000) and
-  `send().await` blocks when a channel is full, so the remote-write HTTP response
-  is delayed. An error happens only if a worker's channel is closed, and the
-  source then returns 500. A decode error returns 400.
+- **Q10. Engine method error types.** What errors do `install` and `flush`
+  return? (Backpressure is decided: decision 33.)
