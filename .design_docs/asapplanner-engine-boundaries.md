@@ -91,13 +91,9 @@ trait QueryEngine {                   // holds its installed plan; steps through
     execute(&AnswerSource, &QueryRequest) -> Result<EngineQueryResult, QueryEngineError>;
 }
 
-trait QueryResolver {                  // chained: planned resolver, then capability resolver
-    resolve(plan, &QueryRequest) -> Option<AnswerSource>;   // None: can't answer it; never fails
-}
-
-struct QueryDispatcher { resolvers, engine }   // called by HttpServer for every query
+struct QueryDispatcher { engine }     // called by HttpServer for every query
 // dispatch(&QueryRequest) -> QueryOutcome:
-//   no resolver matches        → NotAnswerable(Unmatched)
+//   no match (planned, then capability) → NotAnswerable(Unmatched)
 //   engine → NotReady           → NotAnswerable(NotReady)
 //   engine → Err(e)             → NotAnswerable(EngineError(e)) or Failed(e), per error policy
 //   engine → Ready              → Ready
@@ -135,19 +131,21 @@ enum SampleBatch {
 ```
 
 How these fit together:
-- **`QueryResolver`** is one matching strategy. `None` means "this resolver
-  can't answer this query".
 - **`QueryDispatcher`** orchestrates every query in the same three steps:
   resolve it to an `AnswerSource`, execute it, and map the result to an answer,
   a fallback or an error. Putting this in `HttpServer` would repeat it in every
   handler (instant, range). Putting it in `QueryEngine` would repeat plan
   matching and fallback policy in every engine implementation. The dispatcher
-  does it once, so engines only execute. `QueryResolver` is a trait only so
-  capability matching (T2) can be replaced without touching the dispatcher.
+  does it once, so engines only execute.
+- **Resolving** is matching only: which plan root, or which capability match,
+  answers this query. It is two private functions of the dispatcher,
+  `resolve_planned` then `resolve_capability`; `None` means no match. It is not
+  a trait because there are only two fixed matchers and capability matching is
+  undesigned (T2).
 - **`AnswerSource`** is passed to `QueryEngine::execute` to tell the engine what
   to run: a DAG root, or a capability match. The engine doesn't redo matching.
 - **`EngineQueryResult`** is what the engine reports. **`QueryOutcome`** is the
-  dispatcher's final verdict to `HttpServer`, combining the resolver result, the
+  dispatcher's final verdict to `HttpServer`, combining the match result, the
   engine result and the error policy.
 
 ## Query path (pseudocode)
@@ -175,8 +173,9 @@ async fn handle(http_req) -> Response {
 
 impl QueryDispatcher {
     async fn dispatch(&self, req: &QueryRequest) -> QueryOutcome {
-        let plan = self.current_plan();   // set by PlanInstaller; None before the first install
-        let Some(source) = plan.and_then(|p| self.resolvers.iter().find_map(|r| r.resolve(&p, req))) else {
+        // Set by PlanInstaller; None before the first install.
+        let Some(plan) = self.current_plan() else { return QueryOutcome::NotAnswerable(Unmatched) };
+        let Some(source) = resolve_planned(&plan, req).or_else(|| resolve_capability(&plan, req)) else {
             return QueryOutcome::NotAnswerable(Unmatched);
         };
         // The engine compares source's PlanId with its installed plan; a mismatch
@@ -189,10 +188,14 @@ impl QueryDispatcher {
     }
 }
 
-// Planned resolver: exact match against the plan's query texts.
-fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
+// Exact match against the plan's query texts.
+fn resolve_planned(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
     let i = plan.query_texts().position(|q| q == req.query)?;
     Some(AnswerSource::Planned { plan: plan.id, root: plan.dag().roots[i] })
+}
+
+fn resolve_capability(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
+    None   // until capability matching is designed (T2)
 }
 ```
 
@@ -205,7 +208,7 @@ New engines only. With the old engines (decision 34), wiring is as today.
 let summaries = Arc::new(InMemorySummaryStore::new());
 let raw = Arc::new(InMemoryRawDataStore::new());
 let (ingest_engine, query_engine) = engines_for(cli.engine, summaries.clone(), raw.clone());  // decision 30
-let dispatcher = Arc::new(QueryDispatcher::new(resolvers, query_engine.clone()));
+let dispatcher = Arc::new(QueryDispatcher::new(query_engine.clone()));
 let installer = Arc::new(PlanInstaller::new(ingest_engine.clone(), query_engine.clone(), dispatcher.clone()));
 if let Some(path) = cli.plan_file {
     installer.install(InstallablePlan::from_json(&read(path))?);   // failure → no plan; queries fall back
@@ -284,9 +287,9 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
     migration.
 16. **`QueryDispatcher`.** It resolves each query, runs the engine and applies
     the fallback and error policy. `HttpServer` calls it.
-17. **One resolver trait.** `QueryResolver` implementations are chained: the
-    planned resolver first, then the capability resolver. Split it into
-    separate traits later if their inputs diverge.
+17. **No resolver trait.** Resolving is two private dispatcher functions, tried
+    in order: `resolve_planned`, then `resolve_capability`. Add a trait only if
+    capability matching later needs to be swappable.
 18. **`PlanInstaller`.** One component installs each new plan into both engines.
 19. **Range queries.** `QueryEngine` receives the whole range request and
     decides how to step through it.
@@ -314,8 +317,8 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
     sending into a channel) that the deployment forwards to the engine, so sources
     know nothing about engines. It isn't chosen for now because it adds stream
     or channel wiring.
-24. **Resolvers can't fail.** `resolve` returns `None` when it can't answer a
-    query; it has no error case.
+24. **Resolving can't fail.** The resolve functions return `None` when they
+    can't answer a query; they have no error case.
 25. **A planned root is a `PhysicalASAPNodeId`.**
 26. **`PlanInstaller` validates incoming plans.** If it rejects a plan, the
     current plan stays installed.
@@ -332,8 +335,8 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
     (`QueryExecutionResult {query_output_labels, query_result}`), so every
     variant is self-describing.
 32. **The RQE endpoint bypasses the dispatcher.** RQE requests are a JSON
-    expression tree, not a query text, so they don't fit `QueryRequest` or the
-    resolvers. The test-only endpoint keeps calling the old `SimpleEngine`
+    expression tree, not a query text, so they don't fit `QueryRequest` or
+    query-text matching. The test-only endpoint keeps calling the old `SimpleEngine`
     directly until it is removed (decision 15).
 33. **Ingest backpressure: `ingest` waits** until the engine can accept the
     batch, as today. Today samples go to workers over bounded channels
@@ -344,7 +347,7 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
 34. **The old engines bypass the new pipeline.** When the flag (decision 30)
     selects the old engines, `HttpServer` calls `SimpleEngine` directly and
     ingest uses `PrecomputeEngine`, both driven by asap-planner-rs as today. The
-    dispatcher, resolvers and `PlanInstaller` are used only with the new
+    dispatcher and `PlanInstaller` are used only with the new
     engines.
 35. **Engines hold their installed plan.** `QueryEngine::execute` takes only the
     `AnswerSource` and the request, not the plan. `AnswerSource` carries the
