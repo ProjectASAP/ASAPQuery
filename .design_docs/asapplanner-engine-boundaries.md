@@ -26,7 +26,7 @@ Terms:
 Kept unchanged:
 - `QueryRequestAdapter`, `QueryResponseAdapter`: still parse requests and format
   `QueryResult`. The request struct they return changes (see `QueryRequest`).
-- `FallbackClient`: unchanged.
+- `FallbackClient`: unchanged, except that it takes the merged `QueryRequest`.
 - Ingest decoders (Prometheus remote write, VictoriaMetrics, OTLP, CSV, JSON).
 
 Changed:
@@ -37,13 +37,16 @@ Changed:
 - `QueryResult {Vector, Matrix}` → adds `Scalar` and `Table {columns, rows}`.
   The SQL response adapters (ClickHouse, Elastic) format `Table`. Today they
   flatten `Vector` into rows of label values plus one value, and return 501 for
-  `Matrix`.
+  `Matrix`. Each response adapter returns an error for result variants it
+  doesn't support.
 - `HttpProtocolAdapter::handle_runtime_info(Arc<dyn Store>)` → takes a
   `RuntimeInfoSource` instead of the store. Contents are tabled (T4).
 - `IngestSource`: its `IngestContext` holds old-engine routing state
   (`SeriesRouter`, `AggregationConfig`-based routing configs). It is replaced by
-  a handle to `IngestEngine`. `OtlpReceiver`, which bypasses `IngestSource`
-  today, moves behind it.
+  a handle to `IngestEngine`. `OtlpReceiver` becomes an ordinary
+  `IngestSource`. Today it runs outside `IngestSource`, and the precompute
+  engine is skipped for OTLP: it decodes points and only logs them, so the
+  data is dropped.
 - `QueryTracker` → `QueryWorkloadTracker`. It emits ASAPPlanner's
   `PlanningWorkload`.
 - `HttpServer` holds `Arc<dyn QueryEngine>` instead of `Arc<SimpleEngine>`.
@@ -88,7 +91,7 @@ trait QueryEngine {                   // steps through range queries itself
 struct PlanInstaller { /* installs each new InstalledPlan into both engines */ }
 
 trait QueryResolver {                  // chained: planned resolver, then capability resolver
-    resolve(plan, &QueryRequest) -> Option<AnswerSource>;
+    resolve(plan, &QueryRequest) -> Option<AnswerSource>;   // None: can't answer it; never fails
 }
 
 struct QueryDispatcher { resolvers, engine }   // called by HttpServer for every query
@@ -99,7 +102,7 @@ struct QueryDispatcher { resolvers, engine }   // called by HttpServer for every
 //   engine → Ready              → Ready
 
 enum AnswerSource {
-    Planned { root: RootRef },                          // matched InstallablePlan.query_texts
+    Planned { root: PhysicalASAPNodeId },               // matched InstallablePlan.query_texts
     CapabilityMatched { matched: CapabilityMatch },     // contents tabled (T2)
 }
 
@@ -130,12 +133,62 @@ enum SampleBatch {
 }
 ```
 
-Why `QueryDispatcher`: every query goes through the same three steps: resolve
-it to an `AnswerSource`, execute it, and map the result to an answer, a fallback
-or an error. Putting this in `HttpServer` would repeat it in every handler
-(instant, range, RQE). Putting it in `QueryEngine` would repeat plan matching
-and fallback policy in every engine implementation. The dispatcher does it once,
-so engines only execute.
+How these fit together:
+- **`QueryResolver`** is one matching strategy. `None` means "this resolver
+  can't answer this query".
+- **`QueryDispatcher`** orchestrates every query in the same three steps:
+  resolve it to an `AnswerSource`, execute it, and map the result to an answer,
+  a fallback or an error. Putting this in `HttpServer` would repeat it in every
+  handler (instant, range, RQE). Putting it in `QueryEngine` would repeat plan
+  matching and fallback policy in every engine implementation. The dispatcher
+  does it once, so engines only execute. `QueryResolver` is a trait only so
+  capability matching (T2) can be replaced without touching the dispatcher.
+- **`AnswerSource`** is passed to `QueryEngine::execute` to tell the engine what
+  to run: a DAG root, or a capability match. The engine doesn't redo matching.
+- **`EngineQueryResult`** is what the engine reports. **`QueryOutcome`** is the
+  dispatcher's final verdict to `HttpServer`, combining the resolver result, the
+  engine result and the error policy.
+
+## Query path (pseudocode)
+
+```rust
+// HttpServer: one handler shape for instant and range queries.
+async fn handle(http_req) -> Response {
+    let req: QueryRequest = match adapter.parse(http_req) {
+        Ok(r) => r,
+        Err(e) => return adapter.format_error(e),
+    };
+    match dispatcher.dispatch(&req).await {
+        QueryOutcome::Ready { labels, result, .. } =>
+            adapter.format_success(labels, result),   // errors on unsupported result variants
+        QueryOutcome::NotAnswerable(_) => match fallback {
+            Some(f) => f.execute(&req).await,
+            None => adapter.format_unsupported(),
+        },
+        QueryOutcome::Failed(e) => adapter.format_error(e),
+    }
+}
+
+impl QueryDispatcher {
+    async fn dispatch(&self, req: &QueryRequest) -> QueryOutcome {
+        let plan = self.current_plan();   // set by PlanInstaller; one snapshot for the whole query
+        let Some(source) = self.resolvers.iter().find_map(|r| r.resolve(&plan, req)) else {
+            return QueryOutcome::NotAnswerable(Unmatched);
+        };
+        match self.engine.execute(&plan, &source, req).await {
+            Ok(EngineQueryResult::Ready { labels, result }) => QueryOutcome::Ready { labels, result, source },
+            Ok(EngineQueryResult::NotReady) => QueryOutcome::NotAnswerable(NotReady),
+            Err(e) => self.error_policy(e),   // NotAnswerable(EngineError(e)) or Failed(e); see Q3
+        }
+    }
+}
+
+// Planned resolver: exact match against the plan's query texts.
+fn resolve(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
+    let i = plan.query_texts().position(|q| q == req.query)?;
+    Some(AnswerSource::Planned { root: plan.dag().roots[i] })
+}
+```
 
 ## Decisions
 
@@ -201,6 +254,18 @@ so engines only execute.
     sending into a channel) that the deployment forwards to the engine, so sources
     know nothing about engines. It isn't chosen for now because it adds stream
     or channel wiring.
+24. **Resolvers can't fail.** `resolve` returns `None` when it can't answer a
+    query; it has no error case.
+25. **A planned root is a `PhysicalASAPNodeId`.**
+26. **`PlanInstaller` validates incoming plans.** If it rejects a plan, the
+    current plan stays installed.
+27. **Install failure.** If installing a plan into either engine fails, the
+    current plan stays installed.
+28. **`DeploymentCapabilities` is a constant** in the code.
+29. **Response adapters return an error for result variants they don't
+    support** (for example, PromQL given `Table`, or SQL given `Matrix`).
+30. **Engine implementations are selected by a command-line flag**, so old and
+    new engines can coexist during the migration.
 
 ## Tabled
 
@@ -215,6 +280,12 @@ so engines only execute.
   accuracy requirements collides today (issue #778). Should `QueryRequest` carry
   requirements?
 - **T4. `RuntimeInfoSource` contents.**
+- **T5. Store method signatures.** What `SummaryStore::get` returns, who
+  allocates `EncodingId`, who triggers eviction (at install time or
+  periodically), and whether `RawDataStore::read` takes predicates.
+- **T6. Ingesting pre-built sketches.** OTLP can carry sketch payloads, which
+  today are decoded and only logged. Should `SampleBatch` accept pre-built
+  summaries? Out of scope for the MVP; to be done later.
 
 ## Open
 
@@ -222,3 +293,20 @@ so engines only execute.
   back (`NotAnswerable(EngineError)`) or fail (`Failed`)? Today it fails with a
   500. Does the policy need to tell "plan not executable by this engine" apart
   from "execution failed"? If not, a single error type is enough.
+- **Q9. Call direction between `PlanProvider` and `PlanInstaller`.** Decision 21
+  (push) means the provider calls the installer when a new plan exists. If the
+  installer calls the provider instead, the installer has to decide when to ask
+  (pull).
+- **Q10. Engine method errors and backpressure.** What errors do `install`,
+  `ingest` and `flush` return? When the engine is overloaded, does `ingest` wait
+  until it can accept the batch, or return an error immediately (so a
+  remote-write source can return 503)?
+- **Q11. Label names next to `QueryResult`.** Today output label names
+  (`KeyByLabelNames`) travel separately from `QueryResult`
+  (`QueryExecutionResult {query_output_labels, query_result}`). `Table` carries
+  its own column names, so should label names move into the `Vector`/`Matrix`
+  variants?
+- **Q12. RQE path.** RQE requests are an expression tree (JSON), not a query
+  text, so they don't fit `QueryRequest` or the resolvers. Should the test-only
+  RQE endpoint keep calling the old `SimpleEngine` directly until it is removed,
+  instead of going through the dispatcher?
