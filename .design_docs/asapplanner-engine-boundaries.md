@@ -473,6 +473,13 @@ Implementation decisions:
   consistent store state, and each window has exactly one state, as the
   executor's `DataStore` contract requires, with no snapshots or locking.
   `ForwardToStore` is tabled (T8).
+- **I17. Only the query engine evicts, by time.** The ingest engine never
+  evicts. The query engine tracks the latest evaluation time it has served
+  (a range query's end) and, after each query, evicts each summary's windows
+  before `latest_T − retention_ms` and raw data past the plan's raw-data
+  retention. This uses the planner's retentions as given; today's read-count
+  policy (`ReadBased`) would need a read count the plan doesn't have. With no
+  queries nothing is evicted, as with `ReadBased` today.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
@@ -510,9 +517,9 @@ Implementation decisions:
   accuracy requirements collides today (issue #778). Should `QueryRequest` carry
   requirements?
 - **T4. `RuntimeInfoSource` contents.**
-- **T5. Store method signatures.** Who triggers eviction (at install time or
-  periodically), and whether `RawDataStore::read` takes predicates. (What
-  `SummaryStore` holds is decided: I6.)
+- **T5. Store method signatures.** Whether `RawDataStore::read` takes
+  predicates (the executor re-applies them, so a store may ignore them). What
+  `SummaryStore` holds and who evicts are decided: I6, I17.
 - **T6. Ingesting pre-built sketches.** OTLP can carry sketch payloads, which
   today are decoded and only logged. Should `RawDataBatch` accept pre-built
   summaries? Out of scope for the MVP; to be done later.
