@@ -382,23 +382,38 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 
 ## Implementation plan
 
-Small single-purpose PRs; the repo stays runnable at every merge.
+A stack of PRs, each on the previous one and each one logical step, so a
+human can review them one at a time. The repo may be broken between PRs.
 
-- **Phase 0, dependency.** ASAPPlanner as a git dependency pinned to a commit
-  (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
-  `asap-planner`).
-- **Phase 1, boundary types with the old engines behind them** (no behavior
-  change): `QueryRequest`; `QueryResult` `Scalar`/`Table`;
-  `RuntimeInfoSource`; `OtlpReceiver` behind `IngestSource`, `handle_ingestion`.
-- **Phase 2, new traits and plumbing, tested with fake engines:** the traits,
-  in-memory stores, `QueryDispatcher`, `PlanInstaller`. Split
-  `PrecomputeEngine` into pipeline + build specification (I9).
-- **Phase 3, new engine path:** `--engine` flag, first engines, `--plan-file`,
-  one PromQL instant query end to end; then ingest via `RawDataBatch`, range
-  queries, the remaining query types; then `QueryWorkloadTracker`.
-- **Phase 4, retire:** pass the gate (I4), then delete `SimpleEngine`,
-  `PrecomputeEngine`, asap-planner-rs, `PlannerClient`,
-  `StreamingConfig`/`InferenceConfig` and the RQE endpoint, one PR each.
+1. **Dependency and interfaces only.** ASAPPlanner as a pinned git dependency
+   (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
+   `asap-planner`). A new module with only the traits, structs and enums of
+   this doc, no implementations and no call-site changes.
+2. **`QueryRequest` replaces `ParsedQueryRequest`/`ParsedRangeQueryRequest`**
+   in adapters, `HttpServer`, `FallbackClient` and `SimpleEngine`. Mechanical.
+3. **`QueryResult` gains `Scalar` and `Table`**; adapters error on variants
+   they don't support.
+4. **In-memory `SummaryStore` and `RawDataStore`**, with unit tests.
+5. **`QueryDispatcher` and `PlanInstaller`**, tested with fake engines
+   (fallback rules, `NotReady`, no plan yet, install-once, error policy).
+6. **Split `PrecomputeEngine` into pipeline + build specification (I9).** No
+   behavior change; old tests pass unchanged.
+7. **Push `IngestEngine`**: plan → build specification (I8), executor kernels,
+   installer validation of supported operators.
+8. **Executor-backed `QueryEngine`**: `DataStore` adapter, thread pool (I15),
+   missing window → `NotReady` (I10), eviction (I17).
+9. **Wiring**: `--engine`, `--plan-file`, `IngestSource` → `IngestEngine`,
+   `OtlpReceiver` behind `IngestSource`, `handle_ingestion`; first end-to-end
+   test (one PromQL instant query).
+10. **Range queries and the remaining query types.**
+11. **`QueryWorkloadTracker`** emits `PlanningWorkload` with the default
+    `AccuracyTarget` (I5).
+12. **I4 gate harness.**
+13. **Deletions, one PR each:** `SimpleEngine`, `PrecomputeEngine`,
+    asap-planner-rs, `PlannerClient`, `StreamingConfig`/`InferenceConfig`, the
+    RQE endpoint.
+
+`RuntimeInfoSource` joins the stack once its contents are decided (T4).
 
 Implementation decisions:
 
