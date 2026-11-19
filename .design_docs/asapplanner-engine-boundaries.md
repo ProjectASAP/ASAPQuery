@@ -457,6 +457,11 @@ Implementation decisions:
   returns `Result<(), InstallError>`, a single type with a message:
   `PlanInstaller` only needs failure (keep the current plan, decision 27) and a
   reason to log. `shutdown` is best-effort and returns nothing.
+- **I14. v1 installs once.** `PlanInstaller` accepts only the first plan;
+  `QueryWorkloadTracker` keeps replanning and logs later plans without
+  installing them, as today's `QueryTracker` does. Plan swap (T1) stays tabled;
+  `install`, `PlanId` in summary keys and `NotReady` on a `PlanId` mismatch
+  already leave room for it.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
@@ -486,7 +491,7 @@ Implementation decisions:
 - **T1. Plan swap semantics.** When a new plan is installed, do we drain and
   rebuild, or run the old and new plans side by side until the new summaries
   cover the needed lookback? This affects `install` versus building engines per
-  plan.
+  plan. v1 sidesteps this (I14).
 - **T2. How a capability match is computed.** Ideally this is an ASAPPlanner API
   (plan a query against the installed summaries, with no new materialization).
   It is not designed yet, so `CapabilityMatch` is a placeholder.
