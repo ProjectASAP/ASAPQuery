@@ -190,7 +190,7 @@ impl QueryDispatcher {
 
 // Exact match against the plan's query texts.
 fn resolve_planned(plan: &InstalledPlan, req: &QueryRequest) -> Option<AnswerSource> {
-    let i = plan.query_texts().position(|q| q == req.query)?;
+    let i = plan.query_texts().position(|q| q.trim() == req.query.trim())?;   // I18
     Some(AnswerSource::Planned { plan: plan.id, root: plan.dag().roots[i] })
 }
 
@@ -480,6 +480,10 @@ Implementation decisions:
   retention. This uses the planner's retentions as given; today's read-count
   policy (`ReadBased`) would need a read count the plan doesn't have. With no
   queries nothing is evicted, as with `ReadBased` today.
+- **I18. Planned queries match by exact text**, after trimming surrounding
+  whitespace. The tracker plans the texts it saw in requests, so repeated
+  queries match; cosmetic variants fall back. Parsing and comparing queries
+  would need a parser per language. Capability matching (T2) is the general fix.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
