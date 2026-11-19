@@ -408,7 +408,7 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
     (`ViewCoverage::definition_id`: a hash of the view's sub-DAG down to its
     `Scan`s, including the summary type), which omits θ (`node.parameters`) and
     window geometry, so two plans can share it while storing states that are
-    not interchangeable. We ask ASAPPlanner for a physical view id that changes
+    not interchangeable. We ask ASAPPlanner (ProjectASAP/ASAPPlanner#1429) for a physical view id that changes
     exactly when stored states are not interchangeable:
     - in: the logical definition (incl. summary type), θ, pane width;
     - out: refresh mode (ingestion or first read) and retention, which change
@@ -429,7 +429,7 @@ may be broken between PRs. The interfaces live in a module of
 `asap-query-engine` (`src/engine_api/`), not a separate crate: nothing outside
 `asap-query-engine` uses them yet.
 
-0. **Blocked on ASAPPlanner adding a physical view id** (decision 44). The
+0. **Blocked on ASAPPlanner adding a physical view id** (decision 44; ProjectASAP/ASAPPlanner#1429). The
    stack starts after that lands upstream.
 1. **Dependency and interfaces only.** ASAPPlanner as a pinned git dependency
    (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
@@ -576,7 +576,7 @@ Implementation decisions:
   cover the needed lookback? This affects `install` versus building engines per
   plan. v1 sidesteps this (I14). A physical `ViewDefinitionId` (decision 44)
   lets a new plan reuse instances an old plan stored.
-- **T2. How a capability match is computed.** Ideally this is an ASAPPlanner API
+- **T2. How a capability match is computed.** Ideally this is an ASAPPlanner API (ProjectASAP/ASAPPlanner#1430)
   (plan a query against the stored views and raw data, with no new
   materialization). Not in v1.
   It is not designed yet, so `CapabilityMatch` is a placeholder.
