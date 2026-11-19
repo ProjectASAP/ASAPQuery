@@ -121,7 +121,7 @@ trait SummaryStore {
 }
 struct SummaryId        { plan: PlanId, node: PhysicalASAPNodeId }      // one summary
 struct SummaryWindowKey { summary: SummaryId, window: (i64, i64) }      // one stored window of it
-struct SummaryState { encoding: EncodingId, bytes: Bytes }  // opaque to the store
+struct SummaryState(Arc<dyn Any + Send + Sync>);   // the engine's native state, opaque to the store (I6)
 
 trait RawDataStore { append(Source, RawDataBatch); read(Source, range); evict(retention, now); }
 
@@ -381,6 +381,66 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
     batches until a plan is installed.
 42. **`InstalledPlan` is just `InstallablePlan` + `PlanId`.**
 
+## Implementation plan
+
+Small single-purpose PRs; the repo stays runnable at every merge.
+
+- **Phase 0, dependency.** ASAPPlanner as a git dependency pinned to a commit
+  (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
+  `asap-planner`).
+- **Phase 1, boundary types with the old engines behind them** (no behavior
+  change): `QueryRequest`; `QueryResult` `Scalar`/`Table`;
+  `RuntimeInfoSource`; `OtlpReceiver` behind `IngestSource`, `handle_ingestion`.
+- **Phase 2, new traits and plumbing, tested with fake engines:** the traits,
+  in-memory stores, `QueryDispatcher`, `PlanInstaller`.
+- **Phase 3, new engine path:** `--engine` flag, first engines, `--plan-file`,
+  one PromQL instant query end to end; then ingest via `RawDataBatch`, range
+  queries, the remaining query types; then `QueryWorkloadTracker`.
+- **Phase 4, retire:** pass the gate (I4), then delete `SimpleEngine`,
+  `PrecomputeEngine`, asap-planner-rs, `PlannerClient`,
+  `StreamingConfig`/`InferenceConfig` and the RQE endpoint, one PR each.
+
+Implementation decisions:
+
+- **I1. The first `QueryEngine` wraps `asap-executor`'s query path.** Its
+  `RunContext` is `!Send`, so it runs on a dedicated engine thread. Its
+  `read_materialized_view` serves states from `SummaryStore` by downcast (I6).
+  The traits let us replace it later (decision 1).
+- **I7. The first `IngestEngine` is our own push-based streaming engine,**
+  modeled on today's precompute engine (route series, per-window updaters in
+  workers, seal into `SummaryStore` when the watermark passes a window's end
+  plus lateness). The executor's ingestion is pull-based: it refreshes each
+  tumbling window once, after it closes, by reading the window's raw rows,
+  so every sample would be buffered for a window even when the plan keeps no
+  raw data. What to build comes from the plan's ingestion subgraphs instead of
+  `AggregationConfig`. States are built with the executor's kernel factory
+  (`AccumulatorUpdater`), so they are the executor's `AggregateCore` and the
+  query engine reads them without conversion. It writes to `RawDataStore` only
+  what the plan's raw-data retention requires.
+- **I2. Phase 1 before the new engine path**, so the dispatcher is built on
+  `QueryRequest` from the start and Phase 1 PRs are useful on their own.
+- **I3. ASAPPlanner is a pinned git dependency.**
+- **I4. Gate for deleting the old engines.** Old and new run different plans,
+  so their answers are not compared with each other. On a fixed set of
+  benchmark workloads: (1) coverage: every query the old engine answers without
+  fallback, the new engine answers too once its summaries cover it; (2)
+  accuracy: every new answer meets the `AccuracyTarget` its query was planned
+  with (ε, allowing δ failures), against the exact
+  answer from the backend (Prometheus or ClickHouse via the fallback client),
+  and exactly-answered queries match exactly. Performance and memory are not
+  part of the gate.
+- **I5. One deployment-wide default `AccuracyTarget`** (config or CLI), which
+  `QueryWorkloadTracker` puts on every query it records. ASAPPlanner treats a
+  query without one as exact, so the planner would never choose sketches. A
+  plan file is planned with its own workload's targets; keep that workload with
+  it so I4 can check against them.
+- **I6. `SummaryStore` holds the engine's native state**, as an opaque
+  `SummaryState(Arc<dyn Any + Send + Sync>)` the engine downcasts. Bytes would
+  cost a decode on every query read (the executor reads summaries as live
+  `AggregateCore` objects; today's `Store` holds them too). Executor types in
+  the trait would tie the store to the executor. A durable store would need an
+  engine encode method, added when durability is.
+
 ## Tabled
 
 - **T1. Plan swap semantics.** When a new plan is installed, do we drain and
@@ -394,9 +454,9 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
   accuracy requirements collides today (issue #778). Should `QueryRequest` carry
   requirements?
 - **T4. `RuntimeInfoSource` contents.**
-- **T5. Store method signatures.** What `SummaryStore::get` returns, who
-  allocates `EncodingId`, who triggers eviction (at install time or
-  periodically), and whether `RawDataStore::read` takes predicates.
+- **T5. Store method signatures.** Who triggers eviction (at install time or
+  periodically), and whether `RawDataStore::read` takes predicates. (What
+  `SummaryStore` holds is decided: I6.)
 - **T6. Ingesting pre-built sketches.** OTLP can carry sketch payloads, which
   today are decoded and only logged. Should `RawDataBatch` accept pre-built
   summaries? Out of scope for the MVP; to be done later.
