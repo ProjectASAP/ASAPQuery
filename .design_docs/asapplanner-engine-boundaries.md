@@ -116,10 +116,11 @@ enum QueryOutcome {
 enum NotAnswerableReason { Unmatched, NotReady, EngineError(QueryEngineError) }
 
 trait SummaryStore {
-    put(SummaryKey, SummaryState); get(plan, summary, range); evict_before(plan, summary, ts);
-    earliest_timestamp_per_summary() -> Map<summary, ts>;   // was get_earliest_timestamp_per_aggregation_id
+    put(SummaryWindowKey, SummaryState); get(SummaryId, range); evict_before(SummaryId, ts);
+    earliest_timestamp_per_summary() -> Map<SummaryId, ts>;   // was get_earliest_timestamp_per_aggregation_id
 }
-struct SummaryKey   { plan: PlanId, summary: PhysicalASAPNodeId, window: (i64, i64) }
+struct SummaryId        { plan: PlanId, node: PhysicalASAPNodeId }      // one summary
+struct SummaryWindowKey { summary: SummaryId, window: (i64, i64) }      // one stored window of it
 struct SummaryState { encoding: EncodingId, bytes: Bytes }  // opaque to the store
 
 trait RawDataStore { append(Source, SampleBatch); read(Source, range); evict(retention, now); }
@@ -237,9 +238,9 @@ loop {
     }
 }
 
-// An IngestSource, e.g. the remote-write handler.
-async fn handle_remote_write(body: Bytes) -> StatusCode {
-    let Ok(batch) = decode(body) else { return StatusCode::BAD_REQUEST };
+// An IngestSource's HTTP handler; the protocol (e.g. Prometheus remote write) picks the decoder.
+async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
+    let Ok(batch) = decoder_for(protocol).decode(body) else { return StatusCode::BAD_REQUEST };
     match engine.ingest(batch).await {   // waits under backpressure (decision 33)
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,   // engine gone
@@ -270,9 +271,13 @@ async fn handle_remote_write(body: Bytes) -> StatusCode {
 7. **Times.** Engines and stores see `i64` ms only. The adapters convert from
    protocol times.
 8. **Stores.** The deployment owns the stores and injects them into both
-   engines. They are in-memory only, with no durability: after a restart they
-   are empty and queries return `NotReady` (→ fallback). Summary keys include
-   `PlanId`.
+   engines. `SummaryStore` and `RawDataStore` are the boundary; whether an
+   implementation keeps data in memory, on disk or both is internal to it. The
+   first implementations are in-memory with no durability: after a restart they
+   are empty and queries return `NotReady` (→ fallback). Summaries are
+   identified by `SummaryId {PlanId, PhysicalASAPNodeId}`. A durable
+   implementation would need summary ids that survive a restart, which a
+   `PlanId` counter (decision 38) does not.
 9. **Capabilities.** The deployment declares one `DeploymentCapabilities`, which
    `QueryWorkloadTracker` passes to ASAPPlanner when it replans.
 10. **Workload.** `QueryWorkloadTracker` emits ASAPPlanner's `PlanningWorkload`.
