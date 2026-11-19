@@ -95,7 +95,7 @@ struct QueryDispatcher { engine }     // called by HttpServer for every query
 // dispatch(&QueryRequest) -> QueryOutcome:
 //   no match (planned, then capability) → NotAnswerable(Unmatched)
 //   engine → NotReady           → NotAnswerable(NotReady)
-//   engine → Err(e)             → NotAnswerable(EngineError(e)) or Failed(e), per error policy
+//   engine → Err(e)             → NotAnswerable(EngineError(e)), logged and counted (I12)
 //   engine → Ready              → Ready
 
 enum AnswerSource {
@@ -111,7 +111,6 @@ enum EngineQueryResult {
 enum QueryOutcome {
     Ready { result: QueryResult, source: AnswerSource },   // source: for logging
     NotAnswerable(NotAnswerableReason),                 // → FallbackClient
-    Failed(QueryEngineError),                           // → error response
 }
 enum NotAnswerableReason { Unmatched, NotReady, EngineError(QueryEngineError) }
 
@@ -146,8 +145,9 @@ How these fit together:
 - **`AnswerSource`** is passed to `QueryEngine::execute` to tell the engine what
   to run: a DAG root, or a capability match. The engine doesn't redo matching.
 - **`EngineQueryResult`** is what the engine reports. **`QueryOutcome`** is the
-  dispatcher's final verdict to `HttpServer`, combining the match result, the
-  engine result and the error policy.
+  dispatcher's final verdict to `HttpServer`, combining the match result and
+  the engine result. Engine errors fall back (I12), so there is no failure
+  variant.
 
 ## Query path (pseudocode)
 
@@ -168,7 +168,6 @@ async fn handle(http_req) -> Response {
             Some(f) => f.execute(&req).await,
             None => adapter.format_unsupported(),
         },
-        QueryOutcome::Failed(e) => adapter.format_error(e),
     }
 }
 
@@ -184,7 +183,7 @@ impl QueryDispatcher {
         match self.engine.execute(&source, req).await {
             Ok(EngineQueryResult::Ready { result }) => QueryOutcome::Ready { result, source },
             Ok(EngineQueryResult::NotReady) => QueryOutcome::NotAnswerable(NotReady),
-            Err(e) => self.error_policy(e),   // NotAnswerable(EngineError(e)) or Failed(e); see Q3
+            Err(e) => { self.count_engine_error(&e); QueryOutcome::NotAnswerable(EngineError(e)) }  // I12
         }
     }
 }
@@ -438,13 +437,19 @@ Implementation decisions:
   executor reads only stored windows that exactly cover the requested range,
   and requires an error for a missing one. Our `DataStore` adapter returns a
   distinct missing-window error, which the engine maps to `NotReady`; other
-  executor errors are `Err` (Q3). A pre-check would duplicate the executor's
+  executor errors are `Err` (I12). A pre-check would duplicate the executor's
   window arithmetic. In a range query, the first missing step makes the whole
   query `NotReady` (decision 36).
 - **I11. Strict evaluation time.** A query is answered at exactly its `T`, or
   is `NotReady`. The engine never rounds `T` down to the newest sealed window
   and never reads the ingest engine's open windows. Queries at "now" therefore
   fall back until the newest window is sealed (T7).
+- **I12. Engine errors fall back** (`NotAnswerable(EngineError)`), and are
+  logged and counted so engine bugs stay visible (the counter is exposed via
+  `RuntimeInfoSource`, T4, or logs). Today they return a 500; falling back
+  still gives the user a correct answer. `QueryOutcome` has no failure variant;
+  only a failing fallback is an error response. The policy doesn't tell error
+  kinds apart, so `QueryEngineError` is a single type.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
@@ -495,9 +500,5 @@ Implementation decisions:
 
 ## Open
 
-- **Q3. Error policy and `QueryEngineError` variants.** Does an engine error fall
-  back (`NotAnswerable(EngineError)`) or fail (`Failed`)? Today it fails with a
-  500. Does the policy need to tell "plan not executable by this engine" apart
-  from "execution failed"? If not, a single error type is enough.
 - **Q10. Engine method error types.** What errors do `install` and `flush`
   return? (Backpressure is decided: decision 33.)
