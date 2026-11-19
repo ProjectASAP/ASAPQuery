@@ -83,7 +83,7 @@ struct PlanInstaller {                 // validates and installs into both engin
 // (plan_installable(workload, DeploymentCapabilities) when it decides to replan).
 
 trait IngestEngine {
-    install(plan); ingest(SampleBatch); flush(); shutdown();
+    install(plan); ingest(RawDataBatch); flush(); shutdown();
 }
 
 trait QueryEngine {                   // holds its installed plan; steps through range queries itself
@@ -117,17 +117,17 @@ enum NotAnswerableReason { Unmatched, NotReady, EngineError(QueryEngineError) }
 
 trait SummaryStore {
     put(SummaryWindowKey, SummaryState); get(SummaryId, range); evict_before(SummaryId, ts);
-    earliest_timestamp_per_summary() -> Map<SummaryId, ts>;   // was get_earliest_timestamp_per_aggregation_id
+    timestamp_range_per_summary() -> Map<SummaryId, (earliest, latest)>;  // was get_earliest_timestamp_per_aggregation_id
 }
 struct SummaryId        { plan: PlanId, node: PhysicalASAPNodeId }      // one summary
 struct SummaryWindowKey { summary: SummaryId, window: (i64, i64) }      // one stored window of it
 struct SummaryState { encoding: EncodingId, bytes: Bytes }  // opaque to the store
 
-trait RawDataStore { append(Source, SampleBatch); read(Source, range); evict(retention, now); }
+trait RawDataStore { append(Source, RawDataBatch); read(Source, range); evict(retention, now); }
 
-enum SampleBatch {
-    TimeSeries { /* (ts, value, structured label set) rows */ },   // Source::TimeSeries
-    Table { schema, rows },                                         // Source::Table
+enum RawDataBatch {                    // raw input only; never data between operators
+    TimeSeries { series: Vec<(LabelSet, Vec<(i64, f64)>)> },   // Source::TimeSeries
+    Table(arrow::RecordBatch),                                  // Source::Table
 }
 ```
 
@@ -253,10 +253,12 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 
 ## Decisions
 
-1. **The contract is ASAPPlanner's plan types, not its executor.** Only
-   ASAPPlanner's `asap-types` plan types (`InstallablePlan`, `PhysicalASAPDAG`,
-   `MaterializedView`, `Source`, …) cross ASAPQuery boundaries. The engine
-   traits must not depend on `asap_executor`, which may change or be retired.
+1. **The contract is ASAPPlanner's plan types, not its executor.** ASAPPlanner's
+   `asap-types` plan types (`InstallablePlan`, `PhysicalASAPDAG`,
+   `MaterializedView`, `Source`, …) cross ASAPQuery boundaries. Executor value
+   types may appear where they fit, but the traits must not depend on the
+   executor's runtime (`compile`, `RunContext`, `DataStore`), which may change or
+   be retired.
 2. **Two engine traits.** `IngestEngine` and `QueryEngine` are the only seams for
    the engines. Adapters, fallback and decoders don't know which engine
    implementation is behind them.
@@ -284,9 +286,14 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 11. **Resolution is whole-query.** An `AnswerSource` covers a whole query; there
     is no partial or sub-expression resolution for now.
 12. **Raw data enters through `IngestSource`** (via `IngestEngine`; see 23).
-13. **Ingest batches.** `SampleBatch` carries structured label sets instead of
-    today's `labels: String`. It is one enum with a `TimeSeries` variant and a
-    `Table` variant, matching the plan's two `Source` kinds.
+13. **Raw data batches.** `RawDataBatch` (named after ASAPPlanner's
+    `read_raw_data`) is raw input only: what `IngestSource` passes to
+    `IngestEngine::ingest` and what `RawDataStore` appends and returns. Data
+    between operators is internal to the engine. It is one enum matching the
+    plan's two `Source` kinds. `TimeSeries` holds per-series structured label
+    sets (instead of today's `labels: String`), since series in one batch have
+    different labels. `Table` is a plain Arrow `RecordBatch`, not the executor's
+    `Batch`, which needs one schema per batch and carries sketch-state columns.
 14. **`QueryResult` gains `Scalar` and `Table`.**
 15. **RQE endpoint.** It is kept for testing only and removed at the end of the
     migration.
@@ -318,7 +325,7 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
     engine decides what goes into `RawDataStore`. Sources never write to stores:
     otherwise every source would need the plan's raw-data retention, and raw data
     the engine rejects as late would still be stored. A cleaner alternative is
-    for sources to be pure producers (`run(self) -> Stream<SampleBatch>`, or
+    for sources to be pure producers (`run(self) -> Stream<RawDataBatch>`, or
     sending into a channel) that the deployment forwards to the engine, so sources
     know nothing about engines. It isn't chosen for now because it adds stream
     or channel wiring.
@@ -391,7 +398,7 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
   allocates `EncodingId`, who triggers eviction (at install time or
   periodically), and whether `RawDataStore::read` takes predicates.
 - **T6. Ingesting pre-built sketches.** OTLP can carry sketch payloads, which
-  today are decoded and only logged. Should `SampleBatch` accept pre-built
+  today are decoded and only logged. Should `RawDataBatch` accept pre-built
   summaries? Out of scope for the MVP; to be done later.
 
 ## Open
