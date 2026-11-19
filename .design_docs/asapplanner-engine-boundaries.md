@@ -15,11 +15,18 @@ stay. This doc defines the traits and boundaries around the new engines. It
 does not cover how the engines are implemented.
 
 Terms:
-- **Summary**: a stored, materialized node of the plan (ASAPPlanner calls it a
-  `MaterializedView`), identified by its `PhysicalASAPNodeId`.
+- **View**: a stored, materialized node of the plan (ASAPPlanner's
+  `MaterializedView`). Three concepts describe what is stored:
+  - **`ViewDefinitionId`**: the computation, physically: what the view computes,
+    its summary type, sketch parameters θ and pane width. Provided by
+    ASAPPlanner (decision 44).
+  - **`ViewInputDataScope`**: the concrete data that went in: the selection's
+    constraints (e.g. label matchers) and the exact pane start and end.
+  - **`ViewInstance`**: the stored state for one definition over one input data
+    scope, plus metadata.
 - **Planned query**: a query whose text is in `InstallablePlan.query_texts`.
 - **Capability-matched query**: a query that is not in the plan but can be
-  answered from the installed summaries.
+  answered from the stored views.
 
 ## Interfaces: before → after
 
@@ -58,7 +65,7 @@ Replaced:
   `PlanInstaller`.
 - `StreamingConfig` / `InferenceConfig` → `InstalledPlan`.
 - `Store`, keyed by `(metric, aggregation_id, window)` with `AggregateCore`
-  values → `SummaryStore` + `RawDataStore`.
+  values → `ViewStore` + `RawDataStore`.
 - `SimpleEngine` (a concrete struct) → `QueryEngine` trait.
 - `PrecomputeEngine` (a concrete struct) → `IngestEngine` trait.
 
@@ -72,7 +79,7 @@ Signatures are indicative. Method-level details are still open.
 
 ```rust
 struct InstalledPlan {                 // ASAPQuery's validated view of an InstallablePlan
-    id: PlanId,                        // counter, incremented per install
+    id: PlanId,                        // the plan's version for the workload: a counter, incremented per install
     plan: InstallablePlan,             // nothing else; derived data is computed from it
 }
 
@@ -105,7 +112,7 @@ enum AnswerSource {
 
 enum EngineQueryResult {
     Ready { result: QueryResult },     // label/column names live inside QueryResult
-    NotReady,                          // summaries don't cover the whole query → fallback
+    NotReady,                          // stored views don't cover the whole query → fallback
 }
 
 enum QueryOutcome {
@@ -114,19 +121,27 @@ enum QueryOutcome {
 }
 enum NotAnswerableReason { Unmatched, NotReady, EngineError(QueryEngineError) }
 
-trait SummaryStore {
-    put(SummaryWindowKey, SummaryState); get(SummaryId, range); evict_before(SummaryId, ts);
-    timestamp_range_per_summary() -> Map<SummaryId, (earliest, latest)>;  // was get_earliest_timestamp_per_aggregation_id
+struct ViewDefinitionId(..);          // ASAPPlanner's physical view id (decision 44)
+struct ViewInputDataScope {           // the concrete data that went in
+    constraints: SelectionConstraints, // from the plan's selection, e.g. label matchers
+    interval: (i64, i64),              // the exact pane (start, end]
 }
-struct SummaryId        { plan: PlanId, node: PhysicalASAPNodeId }      // one summary
-struct SummaryWindowKey { summary: SummaryId, window: (i64, i64) }      // one stored window of it
-struct SummaryState(Arc<dyn Any + Send + Sync>);   // the engine's native state, opaque to the store (I6)
+struct ViewInstanceKey { definition: ViewDefinitionId, scope: ViewInputDataScope }
+struct ViewInstance { state: ViewState, metadata: ViewInstanceMetadata }   // metadata: open, e.g. size
+struct ViewState(Arc<dyn Any + Send + Sync>);   // the engine's native state, opaque to the store (I6)
+
+trait ViewStore {                     // in-memory or on disk; indexing is the implementation's (decision 8)
+    put(ViewInstanceKey, ViewInstance);                        // once; never rewritten (I16)
+    get(&ViewInstanceKey) -> Option<ViewInstance>;
+    instances(&ViewDefinitionId, &SelectionConstraints, interval) -> Vec<(ViewInputDataScope, ViewInstance)>;
+    evict_before(&ViewDefinitionId, ts);
+    timestamp_range_per_view() -> Map<ViewDefinitionId, (earliest, latest)>;  // runtime info; was get_earliest_timestamp_per_aggregation_id
+}
 
 trait RawDataStore { append(Source, RawDataBatch); read(Source, range); evict(retention, now); }
 
 enum RawDataBatch {                    // raw input only; never data between operators
-    TimeSeries { series: Vec<(LabelSet, Vec<(i64, f64)>)> },   // Source::TimeSeries
-    Table(arrow::RecordBatch),                                  // Source::Table
+    TimeSeries { series: Vec<(LabelSet, Vec<(i64, f64)>)> },   // Source::TimeSeries; Table later
 }
 ```
 
@@ -205,9 +220,9 @@ New engines only. With the old engines (decision 34), wiring is as today.
 
 ```rust
 // main: the deployment owns the stores and injects them (decision 8).
-let summaries = Arc::new(InMemorySummaryStore::new());
+let views = Arc::new(InMemoryViewStore::new());
 let raw = Arc::new(InMemoryRawDataStore::new());
-let (ingest_engine, query_engine) = engines_for(cli.engine, summaries.clone(), raw.clone());  // decision 30
+let (ingest_engine, query_engine) = engines_for(cli.engine, views.clone(), raw.clone());  // decision 30
 let dispatcher = Arc::new(QueryDispatcher::new(query_engine.clone()));
 let installer = Arc::new(PlanInstaller::new(ingest_engine.clone(), query_engine.clone(), dispatcher.clone()));
 if let Some(path) = cli.plan_file {
@@ -247,7 +262,7 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 }
 
 // IngestEngine::ingest, at the boundary: uses its installed plan to decide what
-// to keep; writes RawDataStore and SummaryStore, keying summaries by its PlanId.
+// to keep; writes RawDataStore, and ViewStore keyed by (ViewDefinitionId, ViewInputDataScope).
 ```
 
 ## Decisions
@@ -272,13 +287,13 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 7. **Times.** Engines and stores see `i64` ms only. The adapters convert from
    protocol times.
 8. **Stores.** The deployment owns the stores and injects them into both
-   engines. `SummaryStore` and `RawDataStore` are the boundary; whether an
-   implementation keeps data in memory, on disk or both is internal to it. The
-   first implementations are in-memory with no durability: after a restart they
-   are empty and queries return `NotReady` (→ fallback). Summaries are
-   identified by `SummaryId {PlanId, PhysicalASAPNodeId}`. A durable
-   implementation would need summary ids that survive a restart, which a
-   `PlanId` counter (decision 38) does not.
+   engines. `ViewStore` and `RawDataStore` are the boundary; an implementation
+   may keep data in memory, on disk or both, and chooses its own indexing. The
+   store never looks inside a view's state, so the state's structure can change
+   without changing the store. The first implementations are in-memory; after a
+   restart they are empty and queries return `NotReady` (→ fallback). Recovery
+   from a durable store is deferred; `ViewDefinitionId` is the same across
+   restarts, so it can key recovered instances.
 9. **Capabilities.** The deployment declares one `DeploymentCapabilities`, which
    `QueryWorkloadTracker` passes to ASAPPlanner when it replans.
 10. **Workload.** `QueryWorkloadTracker` emits ASAPPlanner's `PlanningWorkload`.
@@ -288,11 +303,13 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 13. **Raw data batches.** `RawDataBatch` (named after ASAPPlanner's
     `read_raw_data`) is raw input only: what `IngestSource` passes to
     `IngestEngine::ingest` and what `RawDataStore` appends and returns. Data
-    between operators is internal to the engine. It is one enum matching the
-    plan's two `Source` kinds. `TimeSeries` holds per-series structured label
-    sets (instead of today's `labels: String`), since series in one batch have
-    different labels. `Table` is a plain Arrow `RecordBatch`, not the executor's
-    `Batch`, which needs one schema per batch and carries sketch-state columns.
+    between operators is internal to the engine. `TimeSeries` holds per-series
+    structured label sets (instead of today's `labels: String`), since series in
+    one batch have different labels. v1 has only `TimeSeries` (I8); a `Table`
+    variant comes with table sources. ASAPPlanner has no such type: the planner
+    handles no data, and the executor's `Batch` has one fixed schema per batch
+    (a time-series `Scan` gives one column per label), so the ingest engine
+    converts into it using the plan's `Scan` schema.
 14. **`QueryResult` gains `Scalar` and `Table`.**
 15. **RQE endpoint.** It is kept for testing only and removed at the end of the
     migration.
@@ -365,12 +382,13 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
     `PlanId` it was resolved against. If the engine's installed plan differs (a
     plan swap between resolve and execute), the engine returns `NotReady`, so the
     query falls back.
-36. **`NotReady` covers the whole query.** If the summaries don't cover the whole
-    query, the result is `NotReady`: for a range query, if any step isn't
-    covered; for an instant query, if its time is past what the summaries cover.
+36. **`NotReady` covers the whole query.** If the stored views don't cover the
+    whole query, the result is `NotReady`: for a range query, if any step isn't
+    covered; for an instant query, if its time is past what the views cover.
     There are no partial answers.
 37. **`AnswerSource` in `QueryOutcome::Ready` is for logging only.**
-38. **`PlanId` is a counter**, incremented per install.
+38. **`PlanId` is the plan's version for the workload**: a counter,
+    incremented per install. It is not part of view store keys.
 39. **Before the first plan is installed, queries fall back.** The dispatcher has
     no plan, so every query is `Unmatched`.
 40. **One capabilities constant.** There is one old engine and one new engine,
@@ -379,6 +397,29 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 41. **Ingest before the first plan is dropped.** `IngestEngine::ingest` discards
     batches until a plan is installed.
 42. **`InstalledPlan` is just `InstallablePlan` + `PlanId`.**
+43. **View store model: definition, input data scope, instance.** A
+    `ViewInstance` (state + metadata) is keyed by
+    `(ViewDefinitionId, ViewInputDataScope)`: what was computed, and over which
+    data. The store is opaque to the state's structure (decision 8). This
+    matches the ASAPQuery-backend's store (`SummaryInstanceKey {definition,
+    selection}` over opaque states).
+44. **`ViewDefinitionId` is a physical view id from ASAPPlanner; we wait for
+    it.** ASAPPlanner today has only a logical id
+    (`ViewCoverage::definition_id`: a hash of the view's sub-DAG down to its
+    `Scan`s, including the summary type), which omits θ (`node.parameters`) and
+    window geometry, so two plans can share it while storing states that are
+    not interchangeable. We ask ASAPPlanner for a physical view id that changes
+    exactly when stored states are not interchangeable:
+    - in: the logical definition (incl. summary type), θ, pane width;
+    - out: refresh mode (ingestion or first read) and retention, which change
+      how a state is built or kept, not what it is; the pane's exact start and
+      end, which are in `ViewInputDataScope`.
+
+    We don't compose one ourselves, and our interfaces carry no logical id:
+    reuse across different θ is capability matching (T2), the planner's job.
+45. **`timestamp_range_per_view` stays.** It feeds runtime info (today's
+    `earliest_timestamp_per_aggregation_id`), used to send queries aligned with
+    when views are computed.
 
 ## Implementation plan
 
@@ -388,6 +429,8 @@ may be broken between PRs. The interfaces live in a module of
 `asap-query-engine` (`src/engine_api/`), not a separate crate: nothing outside
 `asap-query-engine` uses them yet.
 
+0. **Blocked on ASAPPlanner adding a physical view id** (decision 44). The
+   stack starts after that lands upstream.
 1. **Dependency and interfaces only.** ASAPPlanner as a pinned git dependency
    (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
    `asap-planner`). A new module with only the traits, structs and enums of
@@ -396,7 +439,7 @@ may be broken between PRs. The interfaces live in a module of
    in adapters, `HttpServer`, `FallbackClient` and `SimpleEngine`. Mechanical.
 3. **`QueryResult` gains `Scalar` and `Table`**; adapters error on variants
    they don't support.
-4. **In-memory `SummaryStore` and `RawDataStore`**, with unit tests.
+4. **In-memory `ViewStore` and `RawDataStore`**, with unit tests.
 5. **`QueryDispatcher` and `PlanInstaller`**, tested with fake engines
    (fallback rules, `NotReady`, no plan yet, install-once, error policy).
 6. **Split `PrecomputeEngine` into pipeline + build specification (I9).** No
@@ -404,7 +447,7 @@ may be broken between PRs. The interfaces live in a module of
 7. **Push `IngestEngine`**: plan → build specification (I8), executor kernels,
    installer validation of supported operators.
 8. **Executor-backed `QueryEngine`**: `DataStore` adapter, thread pool (I15),
-   missing window → `NotReady` (I10), eviction (I17).
+   missing view instance → `NotReady` (I10), eviction (I17).
 9. **Wiring**: `--engine`, `--plan-file`, `IngestSource` → `IngestEngine`,
    `OtlpReceiver` behind `IngestSource`, `handle_ingestion`; first end-to-end
    test (one PromQL instant query).
@@ -422,11 +465,11 @@ Implementation decisions:
 
 - **I1. The first `QueryEngine` wraps `asap-executor`'s query path.** Its
   `RunContext` is `!Send`, so it runs on a dedicated engine thread. Its
-  `read_materialized_view` serves states from `SummaryStore` by downcast (I6).
+  `read_materialized_view` serves states from `ViewStore` by downcast (I6).
   The traits let us replace it later (decision 1).
 - **I7. The first `IngestEngine` is our own push-based streaming engine,**
   modeled on today's precompute engine (route series, per-window updaters in
-  workers, seal into `SummaryStore` when the watermark passes a window's end
+  workers, seal into `ViewStore` when the watermark passes a window's end
   plus lateness). The executor's ingestion is pull-based: it refreshes each
   tumbling window once, after it closes, by reading the window's raw rows,
   so every sample would be buffered for a window even when the plan keeps no
@@ -454,7 +497,7 @@ Implementation decisions:
 - **I10. `NotReady` is detected by running, not by a pre-check.** The
   executor reads only stored windows that exactly cover the requested range,
   and requires an error for a missing one. Our `DataStore` adapter returns a
-  distinct missing-window error, which the engine maps to `NotReady`; other
+  distinct missing-instance error, which the engine maps to `NotReady`; other
   executor errors are `Err` (I12). A pre-check would duplicate the executor's
   window arithmetic. In a range query, the first missing step makes the whole
   query `NotReady` (decision 36).
@@ -478,8 +521,7 @@ Implementation decisions:
 - **I14. v1 installs once.** `PlanInstaller` accepts only the first plan;
   `QueryWorkloadTracker` keeps replanning and logs later plans without
   installing them, as today's `QueryTracker` does. Plan swap (T1) stays tabled;
-  `install`, `PlanId` in summary keys and `NotReady` on a `PlanId` mismatch
-  already leave room for it.
+  `install` and `NotReady` on a `PlanId` mismatch already leave room for it.
 - **I15. The executor-backed `QueryEngine` runs a pool of N engine threads**
   (deployment config, default the CPU count). Each compiles the installed plan
   itself and instantiates it against one shared `DataStore` adapter; queries are
@@ -493,8 +535,9 @@ Implementation decisions:
   `ForwardToStore` is tabled (T8).
 - **I17. Only the query engine evicts, by time.** The ingest engine never
   evicts. The query engine tracks the latest evaluation time it has served
-  (a range query's end) and, after each query, evicts each summary's windows
-  before `latest_T − retention_ms` and raw data past the plan's raw-data
+  (a range query's end) and, after each query, calls
+  `evict_before(ViewDefinitionId, latest_T − retention_ms)` per view and
+  evicts raw data past the plan's raw-data
   retention. This uses the planner's retentions as given; today's read-count
   policy (`ReadBased`) would need a read count the plan doesn't have. With no
   queries nothing is evicted, as with `ReadBased` today.
@@ -508,7 +551,7 @@ Implementation decisions:
 - **I4. Gate for deleting the old engines.** Old and new run different plans,
   so their answers are not compared with each other. On a fixed set of
   benchmark workloads: (1) coverage: every query the old engine answers without
-  fallback, the new engine answers too once its summaries cover it; (2)
+  fallback, the new engine answers too once its views cover it; (2)
   accuracy: every new answer meets the `AccuracyTarget` its query was planned
   with (ε, allowing δ failures), against the exact
   answer from the backend (Prometheus or ClickHouse via the fallback client),
@@ -519,9 +562,9 @@ Implementation decisions:
   query without one as exact, so the planner would never choose sketches. A
   plan file is planned with its own workload's targets; keep that workload with
   it so I4 can check against them.
-- **I6. `SummaryStore` holds the engine's native state**, as an opaque
-  `SummaryState(Arc<dyn Any + Send + Sync>)` the engine downcasts. Bytes would
-  cost a decode on every query read (the executor reads summaries as live
+- **I6. A `ViewInstance` holds the engine's native state**, as an opaque
+  `ViewState(Arc<dyn Any + Send + Sync>)` the engine downcasts. Bytes would
+  cost a decode on every query read (the executor reads views as live
   `AggregateCore` objects; today's `Store` holds them too). Executor types in
   the trait would tie the store to the executor. A durable store would need an
   engine encode method, added when durability is.
@@ -529,19 +572,20 @@ Implementation decisions:
 ## Tabled
 
 - **T1. Plan swap semantics.** When a new plan is installed, do we drain and
-  rebuild, or run the old and new plans side by side until the new summaries
+  rebuild, or run the old and new plans side by side until the new views
   cover the needed lookback? This affects `install` versus building engines per
-  plan. v1 sidesteps this (I14).
+  plan. v1 sidesteps this (I14). A physical `ViewDefinitionId` (decision 44)
+  lets a new plan reuse instances an old plan stored.
 - **T2. How a capability match is computed.** Ideally this is an ASAPPlanner API
-  (plan a query against the installed summaries, with no new materialization).
+  (plan a query against the stored views and raw data, with no new
+  materialization). Not in v1.
   It is not designed yet, so `CapabilityMatch` is a placeholder.
 - **T3. Per-request query requirements.** The same query text with different
   accuracy requirements collides today (issue #778). Should `QueryRequest` carry
   requirements?
 - **T4. `RuntimeInfoSource` contents.**
-- **T5. Store method signatures.** Whether `RawDataStore::read` takes
-  predicates (the executor re-applies them, so a store may ignore them). What
-  `SummaryStore` holds and who evicts are decided: I6, I17.
+- **T5. `RawDataStore::read` predicates.** Whether it takes predicates (the
+  executor re-applies them, so a store may ignore them).
 - **T6. Ingesting pre-built sketches.** OTLP can carry sketch payloads, which
   today are decoded and only logged. Should `RawDataBatch` accept pre-built
   summaries? Out of scope for the MVP; to be done later.
