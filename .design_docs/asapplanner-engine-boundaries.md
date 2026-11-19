@@ -434,6 +434,17 @@ Implementation decisions:
   and where to write it). The old engine supplies an `AggregationConfig`-based
   one and its tests must pass unchanged; the new `IngestEngine` supplies a
   plan-based one (I8). Windowing and lateness logic then exists once.
+- **I10. `NotReady` is detected by running, not by a pre-check.** The
+  executor reads only stored windows that exactly cover the requested range,
+  and requires an error for a missing one. Our `DataStore` adapter returns a
+  distinct missing-window error, which the engine maps to `NotReady`; other
+  executor errors are `Err` (Q3). A pre-check would duplicate the executor's
+  window arithmetic. In a range query, the first missing step makes the whole
+  query `NotReady` (decision 36).
+- **I11. Strict evaluation time.** A query is answered at exactly its `T`, or
+  is `NotReady`. The engine never rounds `T` down to the newest sealed window
+  and never reads the ingest engine's open windows. Queries at "now" therefore
+  fall back until the newest window is sealed (T7).
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
@@ -477,6 +488,10 @@ Implementation decisions:
 - **T6. Ingesting pre-built sketches.** OTLP can carry sketch payloads, which
   today are decoded and only logged. Should `RawDataBatch` accept pre-built
   summaries? Out of scope for the MVP; to be done later.
+
+- **T7. Freshness at "now".** If fallback for queries at "now" dominates in
+  benchmarks, allow a configured staleness tolerance (answer from the newest
+  sealed window) or read the open window's state from the ingest engine.
 
 ## Open
 
