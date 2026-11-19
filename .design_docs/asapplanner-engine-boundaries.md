@@ -382,8 +382,11 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 
 ## Implementation plan
 
-A stack of PRs, each on the previous one and each one logical step, so a
-human can review them one at a time. The repo may be broken between PRs.
+A stack of PRs on top of the design-doc PR (#935), each on the previous one
+and each one logical step, so a human can review them one at a time. The repo
+may be broken between PRs. The interfaces live in a module of
+`asap-query-engine` (`src/engine_api/`), not a separate crate: nothing outside
+`asap-query-engine` uses them yet.
 
 1. **Dependency and interfaces only.** ASAPPlanner as a pinned git dependency
    (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
