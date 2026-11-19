@@ -468,6 +468,11 @@ Implementation decisions:
   dispatched round-robin over per-thread channels. One thread would serialize
   every query, where today's `SimpleEngine` serves them concurrently.
   Compiling per thread avoids relying on the compiled plan being `Send`.
+- **I16. Late data: only `Drop`.** Samples later than the allowed lateness are
+  dropped; a sealed window never changes. Every query run then reads a
+  consistent store state, and each window has exactly one state, as the
+  executor's `DataStore` contract requires, with no snapshots or locking.
+  `ForwardToStore` is tabled (T8).
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
@@ -515,6 +520,8 @@ Implementation decisions:
 - **T7. Freshness at "now".** If fallback for queries at "now" dominates in
   benchmarks, allow a configured staleness tolerance (answer from the newest
   sealed window) or read the open window's state from the ingest engine.
+- **T8. `ForwardToStore` late data.** Merging late samples into sealed windows
+  needs merge-on-read (one state per window) and snapshot reads per query run.
 
 ## Open
 
