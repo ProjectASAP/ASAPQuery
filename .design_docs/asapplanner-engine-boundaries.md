@@ -83,11 +83,11 @@ struct PlanInstaller {                 // validates and installs into both engin
 // (plan_installable(workload, DeploymentCapabilities) when it decides to replan).
 
 trait IngestEngine {
-    install(plan); ingest(RawDataBatch); flush(); shutdown();
+    install(plan) -> Result<(), InstallError>; ingest(RawDataBatch); shutdown();   // closes windows on its own timer
 }
 
 trait QueryEngine {                   // holds its installed plan; steps through range queries itself
-    install(plan);
+    install(plan) -> Result<(), InstallError>;
     execute(&AnswerSource, &QueryRequest) -> Result<EngineQueryResult, QueryEngineError>;
 }
 
@@ -450,6 +450,13 @@ Implementation decisions:
   still gives the user a correct answer. `QueryOutcome` has no failure variant;
   only a failing fallback is an error response. The policy doesn't tell error
   kinds apart, so `QueryEngineError` is a single type.
+- **I13. No `flush` on `IngestEngine`.** Closing idle windows stays inside the
+  engine on its own timer, as today's precompute engine does; nothing outside
+  calls it, and with no durability there is nothing to flush at shutdown. Tests
+  close windows by ingesting samples that advance the watermark. `install`
+  returns `Result<(), InstallError>`, a single type with a message:
+  `PlanInstaller` only needs failure (keep the current plan, decision 27) and a
+  reason to log. `shutdown` is best-effort and returns nothing.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
@@ -500,5 +507,4 @@ Implementation decisions:
 
 ## Open
 
-- **Q10. Engine method error types.** What errors do `install` and `flush`
-  return? (Backpressure is decided: decision 33.)
+None currently.
