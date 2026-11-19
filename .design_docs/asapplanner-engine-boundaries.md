@@ -392,7 +392,8 @@ Small single-purpose PRs; the repo stays runnable at every merge.
   change): `QueryRequest`; `QueryResult` `Scalar`/`Table`;
   `RuntimeInfoSource`; `OtlpReceiver` behind `IngestSource`, `handle_ingestion`.
 - **Phase 2, new traits and plumbing, tested with fake engines:** the traits,
-  in-memory stores, `QueryDispatcher`, `PlanInstaller`.
+  in-memory stores, `QueryDispatcher`, `PlanInstaller`. Split
+  `PrecomputeEngine` into pipeline + build specification (I9).
 - **Phase 3, new engine path:** `--engine` flag, first engines, `--plan-file`,
   one PromQL instant query end to end; then ingest via `RawDataBatch`, range
   queries, the remaining query types; then `QueryWorkloadTracker`.
@@ -417,6 +418,22 @@ Implementation decisions:
   (`AccumulatorUpdater`), so they are the executor's `AggregateCore` and the
   query engine reads them without conversion. It writes to `RawDataStore` only
   what the plan's raw-data retention requires.
+- **I8. Ingest-time operators the push engine runs (v1):** `Scan` of one
+  `TimeSeries` source, `Filter`, `Project`, `Aggregate` (exact), and the
+  sketch builds `SummaryAgg` and `SummaryTumblingWindowChain`. `Table`
+  sources come later. The capabilities constant (decision 28) steers the
+  planner to this subset: `excluded_candidates` excludes every other
+  ingestion-time operator, and `supported_summaries` lists only the executor
+  kernel factory's sketch types. `PlanInstaller` validation (decision 26)
+  rejects a plan that still uses another ingestion-time operator; the current
+  plan stays.
+- **I9. The push engine reuses today's precompute pipeline.** A
+  no-behavior-change PR first splits `PrecomputeEngine` into a generic pipeline
+  (series routing, workers, windows, watermark and late-data policy,
+  backpressure) and a build specification it is given (what to build per series
+  and where to write it). The old engine supplies an `AggregationConfig`-based
+  one and its tests must pass unchanged; the new `IngestEngine` supplies a
+  plan-based one (I8). Windowing and lateness logic then exists once.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
