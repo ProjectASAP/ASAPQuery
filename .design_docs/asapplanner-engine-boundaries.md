@@ -462,6 +462,12 @@ Implementation decisions:
   installing them, as today's `QueryTracker` does. Plan swap (T1) stays tabled;
   `install`, `PlanId` in summary keys and `NotReady` on a `PlanId` mismatch
   already leave room for it.
+- **I15. The executor-backed `QueryEngine` runs a pool of N engine threads**
+  (deployment config, default the CPU count). Each compiles the installed plan
+  itself and instantiates it against one shared `DataStore` adapter; queries are
+  dispatched round-robin over per-thread channels. One thread would serialize
+  every query, where today's `SimpleEngine` serves them concurrently.
+  Compiling per thread avoids relying on the compiled plan being `Send`.
 - **I2. Phase 1 before the new engine path**, so the dispatcher is built on
   `QueryRequest` from the start and Phase 1 PRs are useful on their own.
 - **I3. ASAPPlanner is a pinned git dependency.**
