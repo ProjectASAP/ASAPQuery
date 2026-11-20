@@ -17,9 +17,9 @@ does not cover how the engines are implemented.
 Terms:
 - **View**: a stored, materialized node of the plan (ASAPPlanner's
   `MaterializedView`). Three concepts describe what is stored:
-  - **`ViewDefinitionId`**: the computation, physically: what the view computes,
-    its summary type, sketch parameters θ and pane width. Provided by
-    ASAPPlanner (decision 44).
+  - **`ViewDefinitionId`**: the computation, physically: ASAPPlanner's logical
+    `definition_id` (what the view computes, incl. summary type) plus its
+    physical properties, sketch parameters θ and pane width (decision 44).
   - **`ViewInputDataScope`**: the concrete data that went in: the selection's
     constraints (e.g. label matchers) and the exact pane start and end.
   - **`ViewInstance`**: the stored state for one definition over one input data
@@ -121,7 +121,10 @@ enum QueryOutcome {
 }
 enum NotAnswerableReason { Unmatched, NotReady, EngineError(QueryEngineError) }
 
-struct ViewDefinitionId(..);          // ASAPPlanner's physical view id (decision 44)
+struct ViewDefinitionId {             // decision 44
+    definition_id: DefinitionId,       // ASAPPlanner's logical id
+    physical: PhysicalProperties,      // from ASAPPlanner: θ, pane width
+}
 struct ViewInputDataScope {           // the concrete data that went in
     constraints: SelectionConstraints, // from the plan's selection, e.g. label matchers
     interval: (i64, i64),              // the exact pane (start, end]
@@ -403,20 +406,23 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
     data. The store is opaque to the state's structure (decision 8). This
     matches the ASAPQuery-backend's store (`SummaryInstanceKey {definition,
     selection}` over opaque states).
-44. **`ViewDefinitionId` is a physical view id from ASAPPlanner; we wait for
-    it.** ASAPPlanner today has only a logical id
+44. **`ViewDefinitionId` is ASAPPlanner's logical id plus its physical
+    properties; we wait for them.** ASAPPlanner today has only a logical id
     (`ViewCoverage::definition_id`: a hash of the view's sub-DAG down to its
     `Scan`s, including the summary type), which omits θ (`node.parameters`) and
     window geometry, so two plans can share it while storing states that are
-    not interchangeable. We ask ASAPPlanner (ProjectASAP/ASAPPlanner#1429) for a physical view id that changes
-    exactly when stored states are not interchangeable:
+    not interchangeable. ASAPPlanner (ProjectASAP/ASAPPlanner#1429) keeps the
+    logical id and exposes the physical properties as separate fields on each
+    materialized view; together they change exactly when stored states are not
+    interchangeable:
     - in: the logical definition (incl. summary type), θ, pane width;
     - out: refresh mode (ingestion or first read) and retention, which change
       how a state is built or kept, not what it is; the pane's exact start and
       end, which are in `ViewInputDataScope`.
 
-    We don't compose one ourselves, and our interfaces carry no logical id:
-    reuse across different θ is capability matching (T2), the planner's job.
+    We take both from the plan and don't derive either ourselves. The logical
+    id alone is not a store key; it lets capability matching (T2) find a view
+    that answers a query at a different θ.
 45. **`timestamp_range_per_view` stays.** It feeds runtime info (today's
     `earliest_timestamp_per_aggregation_id`), used to send queries aligned with
     when views are computed.
@@ -429,7 +435,7 @@ may be broken between PRs. The interfaces live in a module of
 `asap-query-engine` (`src/engine_api/`), not a separate crate: nothing outside
 `asap-query-engine` uses them yet.
 
-0. **Blocked on ASAPPlanner adding a physical view id** (decision 44; ProjectASAP/ASAPPlanner#1429). The
+0. **Blocked on ASAPPlanner exposing physical view properties** (decision 44; ProjectASAP/ASAPPlanner#1429). The
    stack starts after that lands upstream.
 1. **Dependency and interfaces only.** ASAPPlanner as a pinned git dependency
    (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
@@ -574,7 +580,7 @@ Implementation decisions:
 - **T1. Plan swap semantics.** When a new plan is installed, do we drain and
   rebuild, or run the old and new plans side by side until the new views
   cover the needed lookback? This affects `install` versus building engines per
-  plan. v1 sidesteps this (I14). A physical `ViewDefinitionId` (decision 44)
+  plan. v1 sidesteps this (I14). A `ViewDefinitionId` that includes physical properties (decision 44)
   lets a new plan reuse instances an old plan stored.
 - **T2. How a capability match is computed.** Ideally this is an ASAPPlanner API (ProjectASAP/ASAPPlanner#1430)
   (plan a query against the stored views and raw data, with no new
