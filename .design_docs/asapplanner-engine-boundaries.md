@@ -435,21 +435,24 @@ may be broken between PRs. The interfaces live in a module of
 `asap-query-engine` (`src/engine_api/`), not a separate crate: nothing outside
 `asap-query-engine` uses them yet.
 
-0. **Blocked on ASAPPlanner exposing physical view properties** (decision 44; ProjectASAP/ASAPPlanner#1429). The
-   stack starts after that lands upstream.
-1. **Dependency and interfaces only.** ASAPPlanner as a pinned git dependency
-   (`asap-types`, renamed to avoid clashing with ASAPQuery's `asap_types`, and
-   `asap-planner`). A new module with only the traits, structs and enums of
-   this doc, no implementations and no call-site changes.
-2. **`QueryRequest` replaces `ParsedQueryRequest`/`ParsedRangeQueryRequest`**
+1. **`QueryRequest` replaces `ParsedQueryRequest`/`ParsedRangeQueryRequest`**
    in adapters, `HttpServer`, `FallbackClient` and `SimpleEngine`. Mechanical.
-3. **`QueryResult` gains `Scalar` and `Table`**; adapters error on variants
+2. **`QueryResult` gains `Scalar` and `Table`**; adapters error on variants
    they don't support.
-4. **In-memory `ViewStore` and `RawDataStore`**, with unit tests.
-5. **`QueryDispatcher` and `PlanInstaller`**, tested with fake engines
-   (fallback rules, `NotReady`, no plan yet, install-once, error policy).
-6. **Split `PrecomputeEngine` into pipeline + build specification (I9).** No
+3. **Split `PrecomputeEngine` into pipeline + build specification (I9).** No
    behavior change; old tests pass unchanged.
+
+Steps 1–3 don't use ASAPPlanner. The rest wait for ASAPPlanner to expose
+physical view properties (decision 44; ProjectASAP/ASAPPlanner#1429).
+
+4. **Dependency and interfaces only.** ASAPPlanner as a git dependency pinned
+   to a commit that includes #1429 (`asap-types`, renamed to avoid clashing
+   with ASAPQuery's `asap_types`, and `asap-planner`). A new module with only
+   the traits, structs and enums of this doc, no implementations and no
+   call-site changes.
+5. **In-memory `ViewStore` and `RawDataStore`**, with unit tests.
+6. **`QueryDispatcher` and `PlanInstaller`**, tested with fake engines
+   (fallback rules, `NotReady`, no plan yet, install-once, error policy).
 7. **Push `IngestEngine`**: plan → build specification (I8), executor kernels,
    installer validation of supported operators.
 8. **Executor-backed `QueryEngine`**: `DataStore` adapter, thread pool (I15),
