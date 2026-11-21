@@ -11,7 +11,7 @@ replacing both engines with ones that execute plans from ASAPPlanner
 (`../ASAPPlanner`). Those plans arrive as an `InstallablePlan`, which wraps a
 `PhysicalASAPDAG` plus the query texts, one per DAG root. This lets us retire
 asap-planner-rs. The protocol adapters, fallback clients and ingest decoders
-stay. This doc defines the traits and boundaries around the new engines. It
+stay, in their own crate, `asap-adapters` (decision 46). This doc defines the traits and boundaries around the new engines. It
 does not cover how the engines are implemented.
 
 Terms:
@@ -426,45 +426,92 @@ async fn handle_ingestion(protocol: IngestProtocol, body: Bytes) -> StatusCode {
 45. **`timestamp_range_per_view` stays.** It feeds runtime info (today's
     `earliest_timestamp_per_aggregation_id`), used to send queries aligned with
     when views are computed.
+46. **Adapters are a separate crate, `asap-adapters`, that depends on the
+    engine crate.**
+    - `asap-adapters` holds everything that talks to an outside system:
+      protocol adapters, `HttpServer`, fallback clients, ingest decoders and
+      `IngestSource` implementations, `QueryWorkloadTracker`, and every
+      binary.
+    - `asap-query-engine` becomes a library: the engines, stores,
+      `QueryDispatcher`, `PlanInstaller` and `engine_api`. `QueryDispatcher`
+      and `PlanInstaller` use only the engine traits; fallback is called from
+      `HttpServer` (decision 5).
+    - Dependencies point one way, adapters → engine, so the engine can't reach
+      HTTP, protocol code or a planner.
+    - The engine crate never depends on a planning algorithm. Today's
+      asap-planner-rs (deleted in the last step) and ASAPPlanner's
+      `asap-planner` (added with `QueryWorkloadTracker`) are used only from
+      `asap-adapters`. The engine crate depends only on ASAPPlanner's
+      `asap-types` plan types (decision 1). A new or remote planner changes
+      only `asap-adapters`.
+    - ASAPPlanner stays a pinned git dependency (I3), not copied in: planning
+      is control-plane logic, not protocol translation.
+
+    Not solved: the engine still depends on ASAPPlanner's plan types (decision
+    1). `asap-adapters` can see everything public in the engine crate;
+    visibility narrows this, and it is fully closed once the old engines are
+    deleted. `handle_runtime_info` still takes the old engine's
+    `Arc<dyn Store>` until T4. There is no separate `engine_api` crate:
+    `HttpServer` calls `SimpleEngine` directly while the old engines are
+    selectable (decision 34), so `asap-adapters` depends on the engine crate
+    anyway.
 
 ## Implementation plan
 
 A stack of PRs on top of the design-doc PR (#935), each on the previous one
 and each one logical step, so a human can review them one at a time. The repo
 may be broken between PRs. The interfaces live in a module of
-`asap-query-engine` (`src/engine_api/`), not a separate crate: nothing outside
-`asap-query-engine` uses them yet.
+`asap-query-engine` (`src/engine_api/`), not a separate crate: their only
+outside user is `asap-adapters`, which depends on the engine crate anyway.
+Split it out only if a second engine crate appears.
 
-1. **`QueryRequest` replaces `ParsedQueryRequest`/`ParsedRangeQueryRequest`**
+1. **Extract `asap-adapters` (decision 46) as a pure move.** `drivers/`
+   (query adapters, fallback, ingest), `query_tracker/`, `planner_client.rs`
+   with its asap-planner-rs dependency, `main.rs` and every binary in
+   `src/bin/` move to the new crate; all of them use `drivers`. The engine
+   crate becomes a library. `tests/sql_query_support.rs` and
+   `tests/e2e_precompute_equivalence.rs` move too, or keep asap-planner-rs as a
+   dev-dependency. The Dockerfiles (`asap-query-engine/Dockerfile`,
+   `asap-quickstart/Dockerfile.queryengine-local`) point at the new crate.
+   `precompute_engine/{csv_ingest,json_ingest,ingest_source}.rs` move too,
+   unless they pull in precompute internals; then they move with the
+   `IngestSource` rewiring (wiring step). No ASAPPlanner dependency is added
+   and there is no behavior change; every test passes unchanged. Imports and
+   `Cargo.toml` are the only changes, so later diffs to adapter signatures,
+   wiring and the tracker each land in one crate. Optional follow-up:
+   `pub(crate)` on engine internals, re-exporting only `engine_api` plus the
+   old engines, stores and precompute types the adapters need until the
+   deletions.
+2. **`QueryRequest` replaces `ParsedQueryRequest`/`ParsedRangeQueryRequest`**
    in adapters, `HttpServer`, `FallbackClient` and `SimpleEngine`. Mechanical.
-2. **`QueryResult` gains `Scalar` and `Table`**; adapters error on variants
+3. **`QueryResult` gains `Scalar` and `Table`**; adapters error on variants
    they don't support.
-3. **Split `PrecomputeEngine` into pipeline + build specification (I9).** No
+4. **Split `PrecomputeEngine` into pipeline + build specification (I9).** No
    behavior change; old tests pass unchanged.
 
-Steps 1–3 don't use ASAPPlanner. The rest wait for ASAPPlanner to expose
+Steps 1–4 don't use ASAPPlanner. The rest wait for ASAPPlanner to expose
 physical view properties (decision 44; ProjectASAP/ASAPPlanner#1429).
 
-4. **Dependency and interfaces only.** ASAPPlanner as a git dependency pinned
+5. **Dependency and interfaces only.** ASAPPlanner as a git dependency pinned
    to a commit that includes #1429 (`asap-types`, renamed to avoid clashing
    with ASAPQuery's `asap_types`, and `asap-planner`). A new module with only
    the traits, structs and enums of this doc, no implementations and no
    call-site changes.
-5. **In-memory `ViewStore` and `RawDataStore`**, with unit tests.
-6. **`QueryDispatcher` and `PlanInstaller`**, tested with fake engines
+6. **In-memory `ViewStore` and `RawDataStore`**, with unit tests.
+7. **`QueryDispatcher` and `PlanInstaller`**, tested with fake engines
    (fallback rules, `NotReady`, no plan yet, install-once, error policy).
-7. **Push `IngestEngine`**: plan → build specification (I8), executor kernels,
+8. **Push `IngestEngine`**: plan → build specification (I8), executor kernels,
    installer validation of supported operators.
-8. **Executor-backed `QueryEngine`**: `DataStore` adapter, thread pool (I15),
+9. **Executor-backed `QueryEngine`**: `DataStore` adapter, thread pool (I15),
    missing view instance → `NotReady` (I10), eviction (I17).
-9. **Wiring**: `--engine`, `--plan-file`, `IngestSource` → `IngestEngine`,
+10. **Wiring**: `--engine`, `--plan-file`, `IngestSource` → `IngestEngine`,
    `OtlpReceiver` behind `IngestSource`, `handle_ingestion`; first end-to-end
    test (one PromQL instant query).
-10. **Range queries and the remaining query types.**
-11. **`QueryWorkloadTracker`** emits `PlanningWorkload` with the default
+11. **Range queries and the remaining query types.**
+12. **`QueryWorkloadTracker`** emits `PlanningWorkload` with the default
     `AccuracyTarget` (I5).
-12. **I4 gate harness.**
-13. **Deletions, one PR each:** `SimpleEngine`, `PrecomputeEngine`,
+13. **I4 gate harness.**
+14. **Deletions, one PR each:** `SimpleEngine`, `PrecomputeEngine`,
     asap-planner-rs, `PlannerClient`, `StreamingConfig`/`InferenceConfig`, the
     RQE endpoint.
 
