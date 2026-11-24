@@ -130,4 +130,4 @@ mod tests {
 - Don't hard-code URLs or configuration - use `AdapterConfig`
 - Handle both GET and POST requests appropriately
 - Return protocol-specific error formats
-- Use existing types from `traits.rs` (`ParsedQueryRequest`, `QueryExecutionResult`)
+- Use existing types: `QueryRequest` from `query_engine_rust::engine_api`, `QueryExecutionResult` from `traits.rs`

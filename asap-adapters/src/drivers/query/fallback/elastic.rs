@@ -1,8 +1,8 @@
 use super::{FallbackClient, FallbackResponse};
-use crate::drivers::query::adapters::ParsedQueryRequest;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use query_engine_rust::data_model::QueryLanguage;
+use query_engine_rust::engine_api::{QueryEval, QueryRequest};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -31,14 +31,11 @@ impl ElasticHttpFallback {
 
 #[async_trait]
 impl FallbackClient for ElasticHttpFallback {
-    async fn execute_query(
-        &self,
-        request: &ParsedQueryRequest,
-    ) -> Result<FallbackResponse, StatusCode> {
+    async fn execute_query(&self, request: &QueryRequest) -> Result<FallbackResponse, StatusCode> {
         debug!("=== FORWARDING TO ELASTICSEARCH ===");
         debug!(
-            "Forwarding query: '{}', time: {}",
-            request.query, request.time
+            "Forwarding query: '{}', eval: {:?}",
+            request.query, request.eval
         );
 
         // Delegate to version with empty headers
@@ -48,13 +45,16 @@ impl FallbackClient for ElasticHttpFallback {
 
     async fn execute_query_with_headers(
         &self,
-        request: &ParsedQueryRequest,
+        request: &QueryRequest,
         headers: HashMap<String, String>,
     ) -> Result<FallbackResponse, StatusCode> {
+        if let QueryEval::Range { .. } = request.eval {
+            return Err(StatusCode::NOT_IMPLEMENTED);
+        }
         debug!("=== FORWARDING TO ELASTICSEARCH ===");
         debug!(
-            "Forwarding query: '{}', time: {}",
-            request.query, request.time
+            "Forwarding query: '{}', eval: {:?}",
+            request.query, request.eval
         );
 
         // Build URL based on query language
@@ -231,9 +231,27 @@ mod tests {
     use super::*;
     use axum::{routing::post, Json, Router};
     use query_engine_rust::data_model::enums::QueryLanguage;
+    use query_engine_rust::engine_api::secs_to_ms;
     use std::time::SystemTime;
     use tokio::net::TcpListener;
     use tokio::time::{sleep, Duration};
+
+    fn instant_request(language: QueryLanguage, query: String, time_ms: i64) -> QueryRequest {
+        QueryRequest {
+            language,
+            query,
+            eval: QueryEval::Instant { time_ms },
+        }
+    }
+
+    fn now_ms() -> i64 {
+        secs_to_ms(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64(),
+        )
+    }
 
     /// Test 1: Basic client creation for Query DSL
     #[test]
@@ -285,13 +303,11 @@ mod tests {
             }
         });
 
-        let request = ParsedQueryRequest {
-            query: serde_json::to_string(&query_dsl).unwrap(),
-            time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
-        };
+        let request = instant_request(
+            QueryLanguage::elastic_querydsl,
+            serde_json::to_string(&query_dsl).unwrap(),
+            now_ms(),
+        );
 
         // Execute query
         let result = fallback.execute_query(&request).await;
@@ -324,10 +340,11 @@ mod tests {
         );
 
         let query_dsl = serde_json::json!({"query": {"match_all": {}}});
-        let request = ParsedQueryRequest {
-            query: serde_json::to_string(&query_dsl).unwrap(),
-            time: 0.0,
-        };
+        let request = instant_request(
+            QueryLanguage::elastic_querydsl,
+            serde_json::to_string(&query_dsl).unwrap(),
+            0,
+        );
 
         let result = fallback.execute_query(&request).await;
         assert!(result.is_ok(), "Query with index should succeed");
@@ -348,10 +365,11 @@ mod tests {
         );
 
         let query_dsl = serde_json::json!({"query": {"invalid": {}}});
-        let request = ParsedQueryRequest {
-            query: serde_json::to_string(&query_dsl).unwrap(),
-            time: 0.0,
-        };
+        let request = instant_request(
+            QueryLanguage::elastic_querydsl,
+            serde_json::to_string(&query_dsl).unwrap(),
+            0,
+        );
 
         let result = fallback.execute_query(&request).await;
 
@@ -375,10 +393,11 @@ mod tests {
         );
 
         let query_dsl = serde_json::json!({"query": {"match_all": {}}});
-        let request = ParsedQueryRequest {
-            query: serde_json::to_string(&query_dsl).unwrap(),
-            time: 0.0,
-        };
+        let request = instant_request(
+            QueryLanguage::elastic_querydsl,
+            serde_json::to_string(&query_dsl).unwrap(),
+            0,
+        );
 
         let result = fallback.execute_query(&request).await;
 
@@ -408,13 +427,11 @@ mod tests {
             "query": "SELECT * FROM logs WHERE status = 200"
         });
 
-        let request = ParsedQueryRequest {
-            query: serde_json::to_string(&sql_query).unwrap(),
-            time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
-        };
+        let request = instant_request(
+            QueryLanguage::elastic_sql,
+            serde_json::to_string(&sql_query).unwrap(),
+            now_ms(),
+        );
 
         // Execute query
         let result = fallback.execute_query(&request).await;
@@ -454,14 +471,38 @@ mod tests {
             "query": "SELECT COUNT(*) FROM logs"
         });
 
-        let request = ParsedQueryRequest {
-            query: serde_json::to_string(&sql_query).unwrap(),
-            time: 0.0,
-        };
+        let request = instant_request(
+            QueryLanguage::elastic_sql,
+            serde_json::to_string(&sql_query).unwrap(),
+            0,
+        );
 
         let result = fallback.execute_query(&request).await;
         assert!(result.is_ok(), "SQL query should succeed");
         // URL should be /_sql, not /some_index/_sql
+    }
+
+    /// Range queries are not supported and must not be sent to Elasticsearch.
+    #[tokio::test]
+    async fn test_range_query_not_implemented() {
+        let fallback = ElasticHttpFallback::new(
+            "http://127.0.0.1:9299".to_string(),
+            "test_index".to_string(),
+            QueryLanguage::elastic_querydsl,
+        );
+        let request = QueryRequest {
+            language: QueryLanguage::elastic_querydsl,
+            query: "{}".to_string(),
+            eval: QueryEval::Range {
+                start_ms: 1700000000000,
+                end_ms: 1700001000000,
+                step_ms: 60000,
+            },
+        };
+
+        let result = fallback.execute_query(&request).await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_IMPLEMENTED);
     }
 
     // ===== Mock Server Helpers =====

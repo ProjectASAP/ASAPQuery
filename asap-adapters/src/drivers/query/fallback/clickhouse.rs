@@ -1,7 +1,7 @@
 use super::{FallbackClient, FallbackResponse};
-use crate::drivers::query::adapters::ParsedQueryRequest;
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use query_engine_rust::engine_api::{QueryEval, QueryRequest};
 use reqwest::Client;
 use tracing::{debug, error};
 
@@ -24,14 +24,14 @@ impl ClickHouseHttpFallback {
 
 #[async_trait]
 impl FallbackClient for ClickHouseHttpFallback {
-    async fn execute_query(
-        &self,
-        request: &ParsedQueryRequest,
-    ) -> Result<FallbackResponse, StatusCode> {
+    async fn execute_query(&self, request: &QueryRequest) -> Result<FallbackResponse, StatusCode> {
+        if let QueryEval::Range { .. } = request.eval {
+            return Err(StatusCode::NOT_IMPLEMENTED);
+        }
         debug!("=== FORWARDING TO CLICKHOUSE ===");
         debug!(
-            "Forwarding query: '{}', time: {}",
-            request.query, request.time
+            "Forwarding query: '{}', eval: {:?}",
+            request.query, request.eval
         );
 
         // Build ClickHouse API URL with database parameter
@@ -104,9 +104,26 @@ impl FallbackClient for ClickHouseHttpFallback {
 mod tests {
     use super::*;
     use axum::{routing::post, Router};
+    use query_engine_rust::data_model::QueryLanguage;
+    use query_engine_rust::engine_api::secs_to_ms;
     use std::time::SystemTime;
     use tokio::net::TcpListener;
     use tokio::time::{sleep, Duration};
+
+    fn sql_request_now(query: &str) -> QueryRequest {
+        QueryRequest {
+            language: QueryLanguage::sql,
+            query: query.to_string(),
+            eval: QueryEval::Instant {
+                time_ms: secs_to_ms(
+                    SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs_f64(),
+                ),
+            },
+        }
+    }
 
     /// Test 1: Basic client creation
     #[test]
@@ -135,13 +152,7 @@ mod tests {
         );
 
         // Create test request
-        let request = ParsedQueryRequest {
-            query: "SELECT 1".to_string(),
-            time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
-        };
+        let request = sql_request_now("SELECT 1");
 
         // Execute query
         let result = fallback.execute_query(&request).await;
@@ -180,13 +191,7 @@ mod tests {
             "test_db".to_string(),
         );
 
-        let request = ParsedQueryRequest {
-            query: "SELECT 1".to_string(),
-            time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
-        };
+        let request = sql_request_now("SELECT 1");
 
         let result = fallback.execute_query(&request).await;
 
@@ -206,13 +211,7 @@ mod tests {
             "default".to_string(),
         );
 
-        let request = ParsedQueryRequest {
-            query: "SELECT * FROM nonexistent_table".to_string(),
-            time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
-        };
+        let request = sql_request_now("SELECT * FROM nonexistent_table");
 
         let result = fallback.execute_query(&request).await;
 
@@ -229,18 +228,32 @@ mod tests {
             "default".to_string(),
         );
 
-        let request = ParsedQueryRequest {
-            query: "SELECT 1".to_string(),
-            time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
-        };
+        let request = sql_request_now("SELECT 1");
 
         let result = fallback.execute_query(&request).await;
 
         // Should return error status code
         assert!(result.is_err(), "Unreachable server should return error");
+    }
+
+    /// Range queries are not supported and must not be sent to ClickHouse.
+    #[tokio::test]
+    async fn test_range_query_not_implemented() {
+        let fallback =
+            ClickHouseHttpFallback::new("http://127.0.0.1:9999".to_string(), "default".to_string());
+        let request = QueryRequest {
+            language: QueryLanguage::sql,
+            query: "SELECT 1".to_string(),
+            eval: QueryEval::Range {
+                start_ms: 1700000000000,
+                end_ms: 1700001000000,
+                step_ms: 60000,
+            },
+        };
+
+        let result = fallback.execute_query(&request).await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_IMPLEMENTED);
     }
 
     // ===== Mock Server Helpers =====

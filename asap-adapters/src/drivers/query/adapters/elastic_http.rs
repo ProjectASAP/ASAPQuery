@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use query_engine_rust::data_model::QueryLanguage;
+use query_engine_rust::engine_api::{secs_to_ms, QueryEval, QueryRequest};
 use query_engine_rust::QueryResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -26,7 +27,7 @@ impl ElasticHttpAdapter {
     }
 
     /// Parse Elasticsearch query from JSON body
-    fn parse_elasticsearch_query(&self, body: &Bytes) -> Result<ParsedQueryRequest, AdapterError> {
+    fn parse_elasticsearch_query(&self, body: &Bytes) -> Result<QueryRequest, AdapterError> {
         let json_body: Value = serde_json::from_slice(body)
             .map_err(|e| AdapterError::ParseError(format!("Invalid JSON: {}", e)))?;
 
@@ -50,7 +51,13 @@ impl ElasticHttpAdapter {
             .unwrap_or_default()
             .as_secs_f64();
 
-        Ok(ParsedQueryRequest { query, time })
+        Ok(QueryRequest {
+            language: self.config.language,
+            query,
+            eval: QueryEval::Instant {
+                time_ms: secs_to_ms(time),
+            },
+        })
     }
 }
 
@@ -59,7 +66,7 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
     async fn parse_get_request(
         &self,
         _query_params: Query<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         // Elasticsearch primarily uses POST for _search queries
         // GET is sometimes used for URI search, but we don't support it
         Err(AdapterError::ProtocolError(
@@ -71,7 +78,7 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
     async fn parse_post_request(
         &self,
         _form_params: Form<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         // Elasticsearch doesn't use form-encoded data
         Err(AdapterError::ProtocolError(
             "Form-encoded POST not supported for Elasticsearch. Use JSON Query DSL.".to_string(),
@@ -79,10 +86,7 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
     }
 
     /// Parse JSON POST request with Elasticsearch Query DSL
-    async fn parse_json_post_request(
-        &self,
-        body: Bytes,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    async fn parse_json_post_request(&self, body: Bytes) -> Result<QueryRequest, AdapterError> {
         debug!("Elasticsearch adapter: parsing JSON POST request");
         self.parse_elasticsearch_query(&body)
     }
@@ -98,7 +102,7 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
     async fn parse_range_get_request(
         &self,
         _query_params: Query<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         Err(AdapterError::ProtocolError(
             "Range queries not supported by Elasticsearch adapter".to_string(),
         ))
@@ -107,7 +111,7 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
     async fn parse_range_post_request(
         &self,
         _form_params: Form<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         Err(AdapterError::ProtocolError(
             "Range queries not supported by Elasticsearch adapter".to_string(),
         ))

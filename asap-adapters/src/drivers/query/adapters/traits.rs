@@ -9,23 +9,8 @@ use promql_utilities::data_model::KeyByLabelNames;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use query_engine_rust::engine_api::QueryRequest;
 use query_engine_rust::engines::QueryResult;
-
-/// Parsed query request data ready for engine processing
-#[derive(Debug, Clone)]
-pub struct ParsedQueryRequest {
-    pub query: String,
-    pub time: f64,
-}
-
-/// Parsed range query request with validated parameters
-#[derive(Debug, Clone)]
-pub struct ParsedRangeQueryRequest {
-    pub query: String,
-    pub start: f64, // epoch seconds
-    pub end: f64,   // epoch seconds
-    pub step: f64,  // seconds, must be multiple of tumbling window
-}
 
 /// Result of query execution (before formatting for protocol)
 #[derive(Debug, Clone)]
@@ -59,7 +44,9 @@ impl std::fmt::Display for AdapterError {
 impl std::error::Error for AdapterError {}
 
 /// Trait for parsing incoming HTTP requests into internal query format
-/// Handles Axum extractors directly for different request types (GET/POST)
+/// Handles Axum extractors directly for different request types (GET/POST).
+/// Instant-query parsers return `QueryEval::Instant`; range parsers return
+/// `QueryEval::Range`.
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait QueryRequestAdapter: Send + Sync {
@@ -67,21 +54,18 @@ pub trait QueryRequestAdapter: Send + Sync {
     async fn parse_get_request(
         &self,
         query_params: Query<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError>;
+    ) -> Result<QueryRequest, AdapterError>;
 
     /// Parse a POST request with form data
     async fn parse_post_request(
         &self,
         form_params: Form<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError>;
+    ) -> Result<QueryRequest, AdapterError>;
 
     /// Parse a POST request with JSON body (for Elasticsearch)
     /// Default implementation returns an error - adapters that support JSON
     /// POST requests should override this method.
-    async fn parse_json_post_request(
-        &self,
-        _body: Bytes,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    async fn parse_json_post_request(&self, _body: Bytes) -> Result<QueryRequest, AdapterError> {
         Err(AdapterError::ProtocolError(
             "JSON POST requests not supported by this adapter".to_string(),
         ))
@@ -94,13 +78,13 @@ pub trait QueryRequestAdapter: Send + Sync {
     async fn parse_range_get_request(
         &self,
         query_params: Query<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError>;
+    ) -> Result<QueryRequest, AdapterError>;
 
     /// Parse a POST request for range queries
     async fn parse_range_post_request(
         &self,
         form_params: Form<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError>;
+    ) -> Result<QueryRequest, AdapterError>;
 
     /// Get the HTTP path for range queries (e.g., "/api/v1/query_range")
     fn get_range_query_endpoint(&self) -> &'static str;

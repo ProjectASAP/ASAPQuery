@@ -10,6 +10,6 @@ pub use config::AdapterConfig;
 pub use factory::create_http_adapter;
 pub use prometheus_http::{PrometheusHttpAdapter, PrometheusResponse};
 pub use traits::{
-    AdapterError, HttpProtocolAdapter, ParsedQueryRequest, ParsedRangeQueryRequest,
-    QueryExecutionResult, QueryRequestAdapter, QueryResponseAdapter,
+    AdapterError, HttpProtocolAdapter, QueryExecutionResult, QueryRequestAdapter,
+    QueryResponseAdapter,
 };
