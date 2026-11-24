@@ -44,8 +44,10 @@ struct DuckDBResponse {
 impl FallbackClient for DuckDBHttpFallback {
     async fn execute_query(
         &self,
-        request: &ParsedQueryRequest,
-    ) -> Result<Json<Value>, StatusCode> {
+        request: &QueryRequest,
+    ) -> Result<FallbackResponse, StatusCode> {
+        // Match on request.eval; return Err(StatusCode::NOT_IMPLEMENTED)
+        // for QueryEval::Range if the backend has no range queries.
         ...
     }
 
@@ -106,7 +108,7 @@ mod tests {
 ## FallbackClient Trait Methods
 
 ### Required: `execute_query()`
-- Accepts a `ParsedQueryRequest` (query string + time)
+- Accepts a `QueryRequest` (`query_engine_rust::engine_api`: language, query string, and instant or range evaluation times in epoch ms)
 - Makes external call to backend
 - Returns `Json<Value>` response
 - Should handle all error cases gracefully

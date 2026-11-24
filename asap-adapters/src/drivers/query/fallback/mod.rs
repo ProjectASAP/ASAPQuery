@@ -6,7 +6,7 @@ use axum::{
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::drivers::query::adapters::{ParsedQueryRequest, ParsedRangeQueryRequest};
+use query_engine_rust::engine_api::QueryRequest;
 
 /// Response format from fallback backend
 #[derive(Debug, Clone)]
@@ -40,21 +40,19 @@ impl IntoResponse for FallbackResponse {
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait FallbackClient: Send + Sync {
-    /// Execute a query against the fallback backend
+    /// Execute an instant or range query against the fallback backend
     ///
     /// # Arguments
-    /// * `request` - The parsed query request (query string, time, etc.)
+    /// * `request` - The parsed query request (query string, evaluation times)
     ///
     /// # Returns
-    /// Protocol-specific response from the fallback backend (JSON or Text)
-    async fn execute_query(
-        &self,
-        request: &ParsedQueryRequest,
-    ) -> Result<FallbackResponse, StatusCode>;
+    /// Protocol-specific response from the fallback backend (JSON or Text);
+    /// `NOT_IMPLEMENTED` for an evaluation the backend doesn't support
+    async fn execute_query(&self, request: &QueryRequest) -> Result<FallbackResponse, StatusCode>;
 
     async fn execute_query_with_headers(
         &self,
-        request: &ParsedQueryRequest,
+        request: &QueryRequest,
         _headers: HashMap<String, String>,
     ) -> Result<FallbackResponse, StatusCode> {
         // Default implementation delegates to execute_query
@@ -68,21 +66,6 @@ pub trait FallbackClient: Send + Sync {
     async fn get_runtime_info(&self) -> Result<Value, StatusCode> {
         // Default implementation: return empty object
         Ok(serde_json::json!({}))
-    }
-
-    async fn execute_range_query(
-        &self,
-        _request: &ParsedRangeQueryRequest,
-    ) -> Result<FallbackResponse, StatusCode> {
-        Err(StatusCode::NOT_IMPLEMENTED)
-    }
-
-    async fn execute_range_query_with_headers(
-        &self,
-        request: &ParsedRangeQueryRequest,
-        _headers: HashMap<String, String>,
-    ) -> Result<FallbackResponse, StatusCode> {
-        self.execute_range_query(request).await
     }
 
     async fn get_runtime_info_with_headers(

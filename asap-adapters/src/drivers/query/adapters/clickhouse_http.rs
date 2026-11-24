@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use promql_utilities::data_model::KeyByLabelNames;
+use query_engine_rust::engine_api::{secs_to_ms, QueryEval, QueryRequest};
 use query_engine_rust::engines::QueryResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -15,7 +16,6 @@ use tracing::debug;
 
 /// ClickHouse HTTP protocol adapter
 pub struct ClickHouseHttpAdapter {
-    #[allow(dead_code)]
     config: AdapterConfig,
 }
 
@@ -28,20 +28,26 @@ impl ClickHouseHttpAdapter {
     fn parse_params_common(
         &self,
         params: &HashMap<String, String>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         // Extract query parameter (required)
         let query = params
             .get("query")
             .ok_or_else(|| AdapterError::MissingParameter("query".to_string()))?
             .clone();
 
-        // ClickHouse doesn't use a time parameter, but ParsedQueryRequest requires it
+        // ClickHouse doesn't use a time parameter, but QueryRequest requires it
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
 
-        Ok(ParsedQueryRequest { query, time })
+        Ok(QueryRequest {
+            language: self.config.language,
+            query,
+            eval: QueryEval::Instant {
+                time_ms: secs_to_ms(time),
+            },
+        })
     }
 }
 
@@ -50,7 +56,7 @@ impl QueryRequestAdapter for ClickHouseHttpAdapter {
     async fn parse_get_request(
         &self,
         Query(params): Query<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         debug!(
             "ClickHouse adapter: parsing GET request with params: {:?}",
             params
@@ -61,7 +67,7 @@ impl QueryRequestAdapter for ClickHouseHttpAdapter {
     async fn parse_post_request(
         &self,
         Form(params): Form<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         debug!(
             "ClickHouse adapter: parsing POST request with params: {:?}",
             params
@@ -76,7 +82,7 @@ impl QueryRequestAdapter for ClickHouseHttpAdapter {
     async fn parse_range_get_request(
         &self,
         _query_params: Query<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         Err(AdapterError::ProtocolError(
             "Range queries not supported by ClickHouse adapter".to_string(),
         ))
@@ -85,7 +91,7 @@ impl QueryRequestAdapter for ClickHouseHttpAdapter {
     async fn parse_range_post_request(
         &self,
         _form_params: Form<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         Err(AdapterError::ProtocolError(
             "Range queries not supported by ClickHouse adapter".to_string(),
         ))
@@ -198,6 +204,7 @@ mod tests {
     use super::*;
     use promql_utilities::data_model::KeyByLabelNames;
     use query_engine_rust::data_model::enums::{QueryLanguage, QueryProtocol};
+    use query_engine_rust::engine_api::ms_to_secs;
     use query_engine_rust::engines::QueryResult;
 
     fn create_test_adapter() -> ClickHouseHttpAdapter {
@@ -226,8 +233,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs_f64();
+        let QueryEval::Instant { time_ms } = parsed.eval else {
+            panic!("expected an instant query, got {:?}", parsed.eval);
+        };
         assert!(
-            (parsed.time - now).abs() < 1.0,
+            (ms_to_secs(time_ms) - now).abs() < 1.0,
             "Time should be within 1 second of current time"
         );
     }
@@ -249,8 +259,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs_f64();
+        let QueryEval::Instant { time_ms } = parsed.eval else {
+            panic!("expected an instant query, got {:?}", parsed.eval);
+        };
         assert!(
-            (parsed.time - now).abs() < 1.0,
+            (ms_to_secs(time_ms) - now).abs() < 1.0,
             "Time should be within 1 second of current time"
         );
     }
@@ -389,8 +402,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs_f64();
+        let QueryEval::Instant { time_ms } = parsed.eval else {
+            panic!("expected an instant query, got {:?}", parsed.eval);
+        };
         assert!(
-            (parsed.time - now).abs() < 1.0,
+            (ms_to_secs(time_ms) - now).abs() < 1.0,
             "Time should be within 1 second of current time"
         );
     }

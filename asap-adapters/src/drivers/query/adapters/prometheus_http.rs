@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use promql_utilities::data_model::KeyByLabelNames;
+use query_engine_rust::engine_api::{secs_to_ms, QueryEval, QueryRequest};
 use query_engine_rust::engines::QueryResult;
 use query_engine_rust::utils::http::{
     convert_query_result_to_prometheus, convert_range_result_to_prometheus,
@@ -59,10 +60,7 @@ impl PrometheusHttpAdapter {
     }
 
     /// Helper to parse query parameters (used by both GET and POST)
-    fn parse_params(
-        &self,
-        params: &HashMap<String, String>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    fn parse_params(&self, params: &HashMap<String, String>) -> Result<QueryRequest, AdapterError> {
         let query = params
             .get("query")
             .ok_or_else(|| AdapterError::MissingParameter("query".to_string()))?
@@ -80,14 +78,20 @@ impl PrometheusHttpAdapter {
                 .as_secs_f64()
         };
 
-        Ok(ParsedQueryRequest { query, time })
+        Ok(QueryRequest {
+            language: self.config.language,
+            query,
+            eval: QueryEval::Instant {
+                time_ms: secs_to_ms(time),
+            },
+        })
     }
 
     /// Helper to parse range query parameters
     fn parse_range_params(
         &self,
         params: &HashMap<String, String>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         let query = params
             .get("query")
             .ok_or_else(|| AdapterError::MissingParameter("query".to_string()))?
@@ -111,23 +115,28 @@ impl PrometheusHttpAdapter {
             .parse::<f64>()
             .map_err(|e| AdapterError::InvalidParameter(format!("Invalid step: {}", e)))?;
 
-        // Basic validation
-        if start >= end {
+        let (start_ms, end_ms, step_ms) = (secs_to_ms(start), secs_to_ms(end), secs_to_ms(step));
+
+        // Basic validation, at the millisecond precision the request carries
+        if start_ms >= end_ms {
             return Err(AdapterError::InvalidParameter(
                 "start must be before end".to_string(),
             ));
         }
-        if step <= 0.0 {
+        if step_ms <= 0 {
             return Err(AdapterError::InvalidParameter(
                 "step must be positive".to_string(),
             ));
         }
 
-        Ok(ParsedRangeQueryRequest {
+        Ok(QueryRequest {
+            language: self.config.language,
             query,
-            start,
-            end,
-            step,
+            eval: QueryEval::Range {
+                start_ms,
+                end_ms,
+                step_ms,
+            },
         })
     }
 }
@@ -137,7 +146,7 @@ impl QueryRequestAdapter for PrometheusHttpAdapter {
     async fn parse_get_request(
         &self,
         Query(params): Query<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         debug!(
             "Prometheus adapter: parsing GET request with params: {:?}",
             params
@@ -148,7 +157,7 @@ impl QueryRequestAdapter for PrometheusHttpAdapter {
     async fn parse_post_request(
         &self,
         Form(params): Form<HashMap<String, String>>,
-    ) -> Result<ParsedQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         debug!(
             "Prometheus adapter: parsing POST request with params: {:?}",
             params
@@ -163,7 +172,7 @@ impl QueryRequestAdapter for PrometheusHttpAdapter {
     async fn parse_range_get_request(
         &self,
         Query(params): Query<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         debug!(
             "Prometheus adapter: parsing range GET request with params: {:?}",
             params
@@ -174,7 +183,7 @@ impl QueryRequestAdapter for PrometheusHttpAdapter {
     async fn parse_range_post_request(
         &self,
         Form(params): Form<HashMap<String, String>>,
-    ) -> Result<ParsedRangeQueryRequest, AdapterError> {
+    ) -> Result<QueryRequest, AdapterError> {
         debug!(
             "Prometheus adapter: parsing range POST request with params: {:?}",
             params
@@ -330,9 +339,50 @@ mod tests {
         assert!(result.is_ok());
         let parsed = result.unwrap();
         assert_eq!(parsed.query, "sum(metric)");
-        assert_eq!(parsed.start, 1700000000.0);
-        assert_eq!(parsed.end, 1700001000.0);
-        assert_eq!(parsed.step, 60.0);
+        assert_eq!(parsed.language, QueryLanguage::promql);
+        assert_eq!(
+            parsed.eval,
+            QueryEval::Range {
+                start_ms: 1700000000000,
+                end_ms: 1700001000000,
+                step_ms: 60000,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_params_converts_time_to_ms() {
+        let adapter = create_test_adapter();
+        let mut params = HashMap::new();
+        params.insert("query".to_string(), "sum(metric)".to_string());
+        params.insert("time".to_string(), "1095211880.820".to_string());
+
+        let parsed = adapter.parse_params(&params).unwrap();
+
+        assert_eq!(parsed.language, QueryLanguage::promql);
+        assert_eq!(
+            parsed.eval,
+            QueryEval::Instant {
+                time_ms: 1095211880820
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_range_params_sub_millisecond_step_rejected() {
+        // A step under 0.5 ms rounds to 0 ms; accepting it would hand the
+        // engine a zero step.
+        let adapter = create_test_adapter();
+        let mut params = HashMap::new();
+        params.insert("query".to_string(), "sum(metric)".to_string());
+        params.insert("start".to_string(), "1700000000".to_string());
+        params.insert("end".to_string(), "1700001000".to_string());
+        params.insert("step".to_string(), "0.0004".to_string());
+
+        match adapter.parse_range_params(&params).unwrap_err() {
+            AdapterError::InvalidParameter(msg) => assert!(msg.contains("step must be positive")),
+            other => panic!("expected InvalidParameter, got {other:?}"),
+        }
     }
 
     #[test]

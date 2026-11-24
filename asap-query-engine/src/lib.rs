@@ -8,6 +8,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 pub mod data_model;
 pub mod drivers;
+pub mod engine_api;
 pub mod engines;
 pub mod precompute_engine;
 pub mod precompute_operators;

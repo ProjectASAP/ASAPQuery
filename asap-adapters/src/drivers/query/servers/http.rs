@@ -1,4 +1,3 @@
-use crate::drivers::query::adapters::{ParsedQueryRequest, ParsedRangeQueryRequest};
 use axum::{
     body::Bytes,
     extract::{Form, Query, State},
@@ -18,6 +17,7 @@ use crate::drivers::query::adapters::{
     create_http_adapter, AdapterConfig, HttpProtocolAdapter, PrometheusResponse,
 };
 use asap_types::rqe_expr::RqeExpr;
+use query_engine_rust::engine_api::{ms_to_secs, QueryEval, QueryRequest};
 use query_engine_rust::engines::{QueryExecutionError, RqeQueryError, SimpleEngine};
 use query_engine_rust::utils::http::convert_query_result_to_prometheus;
 
@@ -168,13 +168,42 @@ impl HttpServer {
     }
 }
 
+/// Formats an adapter that returned the wrong evaluation kind for its
+/// endpoint. Adapters guarantee the kind, so this is a bug, not bad input.
+async fn wrong_eval_response(state: &AppState, expected: &str, eval: &QueryEval) -> Response {
+    use crate::drivers::query::adapters::AdapterError;
+    warn!(
+        "Adapter {} returned {:?} for {} query endpoint",
+        state.adapter.adapter_name(),
+        eval,
+        expected
+    );
+    match state
+        .adapter
+        .format_error_response(&AdapterError::ProtocolError(format!(
+            "adapter returned {:?} for an {} query",
+            eval, expected
+        )))
+        .await
+    {
+        Ok(json) => json.into_response(),
+        Err(status) => status.into_response(),
+    }
+}
+
 /// Core query execution logic shared between GET and POST handlers
 async fn process_query_request(
     state: &AppState,
-    parsed_request: &ParsedQueryRequest,
+    parsed_request: &QueryRequest,
     start_time: Instant,
     headers: HashMap<String, String>,
 ) -> Response {
+    let QueryEval::Instant { time_ms } = parsed_request.eval else {
+        return wrong_eval_response(state, "instant", &parsed_request.eval).await;
+    };
+    // SimpleEngine and the tracker take float seconds.
+    let time = ms_to_secs(time_ms);
+
     // Check if handling is enabled
     if !state.config.handle_http_requests {
         debug!("HTTP request handling is disabled");
@@ -205,18 +234,18 @@ async fn process_query_request(
 
     // Record query for passive auto-discovery (if tracker is enabled)
     if let Some(tracker) = &state.query_tracker {
-        tracker.record_instant(&parsed_request.query, parsed_request.time);
+        tracker.record_instant(&parsed_request.query, time);
     }
 
     // Step 2: Execute query with engine (using parsed request)
     let query_start_time = Instant::now();
     debug!(
         "About to call query_engine.handle_query with query='{}' and time={}",
-        parsed_request.query, parsed_request.time
+        parsed_request.query, time
     );
     match state
         .query_engine
-        .handle_query(parsed_request.query.clone(), parsed_request.time)
+        .handle_query(parsed_request.query.clone(), time)
     {
         Ok(Some((query_output_labels, query_result))) => {
             let query_duration = query_start_time.elapsed();
@@ -320,8 +349,8 @@ async fn handle_instant_query(
     let parsed_request = match state.adapter.parse_get_request(query_params).await {
         Ok(req) => {
             debug!(
-                "Successfully parsed - query: '{}', time: {}",
-                req.query, req.time
+                "Successfully parsed - query: '{}', eval: {:?}",
+                req.query, req.eval
             );
             req
         }
@@ -367,8 +396,8 @@ async fn handle_instant_query_post(
         match state.adapter.parse_json_post_request(body).await {
             Ok(req) => {
                 debug!(
-                    "Successfully parsed JSON POST - query: '{}', time: {}",
-                    req.query, req.time
+                    "Successfully parsed JSON POST - query: '{}', eval: {:?}",
+                    req.query, req.eval
                 );
                 req
             }
@@ -427,8 +456,8 @@ async fn handle_instant_query_post(
         match state.adapter.parse_post_request(Form(params)).await {
             Ok(req) => {
                 debug!(
-                    "Successfully parsed POST - query: '{}', time: {}",
-                    req.query, req.time
+                    "Successfully parsed POST - query: '{}', eval: {:?}",
+                    req.query, req.eval
                 );
                 req
             }
@@ -573,17 +602,32 @@ async fn handle_metrics() -> impl IntoResponse {
 /// Core range query execution logic shared between GET and POST handlers
 async fn process_range_query_request(
     state: &AppState,
-    parsed_request: &ParsedRangeQueryRequest,
+    parsed_request: &QueryRequest,
     start_time: Instant,
     headers: HashMap<String, String>,
 ) -> Response {
+    let QueryEval::Range {
+        start_ms,
+        end_ms,
+        step_ms,
+    } = parsed_request.eval
+    else {
+        return wrong_eval_response(state, "range", &parsed_request.eval).await;
+    };
+    // SimpleEngine and the tracker take float seconds.
+    let (start, end, step) = (
+        ms_to_secs(start_ms),
+        ms_to_secs(end_ms),
+        ms_to_secs(step_ms),
+    );
+
     // Check if handling is enabled
     if !state.config.handle_http_requests {
         debug!("HTTP request handling is disabled for range query");
         if let Some(fallback) = &state.fallback {
             debug!("Forwarding range query to fallback due to disabled handling");
             return match fallback
-                .execute_range_query_with_headers(parsed_request, headers)
+                .execute_query_with_headers(parsed_request, headers)
                 .await
             {
                 Ok(response) => response.into_response(),
@@ -607,26 +651,21 @@ async fn process_range_query_request(
 
     // Record query for passive auto-discovery (if tracker is enabled)
     if let Some(tracker) = &state.query_tracker {
-        tracker.record_range(
-            &parsed_request.query,
-            parsed_request.start,
-            parsed_request.end,
-            parsed_request.step,
-        );
+        tracker.record_range(&parsed_request.query, start, end, step);
     }
 
     // Execute range query with engine
     let query_start_time = Instant::now();
     debug!(
         "Executing range query: '{}' from {} to {} step {}",
-        parsed_request.query, parsed_request.start, parsed_request.end, parsed_request.step
+        parsed_request.query, start, end, step
     );
 
     match state.query_engine.handle_range_query_promql(
         parsed_request.query.clone(),
-        parsed_request.start,
-        parsed_request.end,
-        parsed_request.step,
+        start,
+        end,
+        step,
     ) {
         Ok(Some((query_output_labels, query_result))) => {
             let query_duration = query_start_time.elapsed();
@@ -663,7 +702,7 @@ async fn process_range_query_request(
                     total_duration.as_secs_f64() * 1000.0
                 );
                 match fallback
-                    .execute_range_query_with_headers(parsed_request, headers)
+                    .execute_query_with_headers(parsed_request, headers)
                     .await
                 {
                     Ok(response) => response.into_response(),
@@ -714,8 +753,8 @@ async fn handle_range_query(
     let parsed_request = match state.adapter.parse_range_get_request(query_params).await {
         Ok(req) => {
             debug!(
-                "Successfully parsed range query - query: '{}', start: {}, end: {}, step: {}",
-                req.query, req.start, req.end, req.step
+                "Successfully parsed range query - query: '{}', eval: {:?}",
+                req.query, req.eval
             );
             req
         }
@@ -775,8 +814,8 @@ async fn handle_range_query_post(
     let parsed_request = match state.adapter.parse_range_post_request(Form(params)).await {
         Ok(req) => {
             debug!(
-                "Successfully parsed range POST - query: '{}', start: {}, end: {}, step: {}",
-                req.query, req.start, req.end, req.step
+                "Successfully parsed range POST - query: '{}', eval: {:?}",
+                req.query, req.eval
             );
             req
         }
