@@ -9,6 +9,7 @@ use axum::{
 };
 use query_engine_rust::data_model::QueryLanguage;
 use query_engine_rust::engine_api::{secs_to_ms, QueryEval, QueryRequest};
+use query_engine_rust::engines::query_result::TableValue;
 use query_engine_rust::QueryResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -132,7 +133,8 @@ impl QueryResponseAdapter for ElasticHttpAdapter {
             "SKETCH HIT: serving {} rows from precomputed sketches",
             match &result.query_result {
                 QueryResult::Vector(v) => v.values.len(),
-                QueryResult::Matrix(_) => 0,
+                QueryResult::Table(t) => t.rows.len(),
+                QueryResult::Matrix(_) | QueryResult::Scalar(_) => 0,
             }
         );
 
@@ -154,7 +156,34 @@ impl QueryResponseAdapter for ElasticHttpAdapter {
                     })
                 })
                 .collect(),
-            QueryResult::Matrix(_) => {
+            QueryResult::Table(table) => {
+                if !table.is_rectangular() {
+                    error!("Elasticsearch adapter: table rows don't match its columns");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+                table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        let source: serde_json::Map<String, Value> = table
+                            .columns
+                            .iter()
+                            .zip(row)
+                            .map(|(column, cell)| {
+                                let value = match cell {
+                                    TableValue::String(s) => json!(s),
+                                    TableValue::Float(f) => json!(f),
+                                };
+                                (column.clone(), value)
+                            })
+                            .collect();
+                        json!({
+                            "_source": source
+                        })
+                    })
+                    .collect()
+            }
+            QueryResult::Matrix(_) | QueryResult::Scalar(_) => {
                 return Err(StatusCode::NOT_IMPLEMENTED);
             }
         };
@@ -296,6 +325,7 @@ mod tests {
     use super::*;
     use promql_utilities::data_model::KeyByLabelNames;
     use query_engine_rust::data_model::enums::{QueryLanguage, QueryProtocol};
+    use query_engine_rust::engines::query_result::{Sample, Table};
     use query_engine_rust::engines::QueryResult;
 
     fn create_test_adapter() -> ElasticHttpAdapter {
@@ -470,6 +500,62 @@ mod tests {
         // Verify Elasticsearch response structure
         assert!(json_response.get("hits").is_some());
         assert!(json_response["hits"].get("total").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_format_table_response() {
+        let adapter = create_test_adapter();
+        let result = QueryExecutionResult {
+            query_output_labels: KeyByLabelNames::empty(),
+            query_result: QueryResult::Table(Table {
+                columns: vec!["host".to_string(), "p99".to_string()],
+                rows: vec![vec![
+                    TableValue::String("host1".to_string()),
+                    TableValue::Float(2.5),
+                ]],
+            }),
+        };
+
+        let response = adapter.format_success_response(&result).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json_response: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(json_response["hits"]["total"]["value"], json!(1));
+        assert_eq!(
+            json_response["hits"]["hits"][0]["_source"],
+            json!({"host": "host1", "p99": 2.5})
+        );
+    }
+
+    #[tokio::test]
+    async fn test_format_ragged_table_is_server_error() {
+        let adapter = create_test_adapter();
+        let result = QueryExecutionResult {
+            query_output_labels: KeyByLabelNames::empty(),
+            query_result: QueryResult::Table(Table {
+                columns: vec!["host".to_string(), "p99".to_string()],
+                rows: vec![vec![TableValue::String("host1".to_string())]],
+            }),
+        };
+
+        let status = adapter.format_success_response(&result).await.unwrap_err();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_format_scalar_not_implemented() {
+        let adapter = create_test_adapter();
+        let result = QueryExecutionResult {
+            query_output_labels: KeyByLabelNames::empty(),
+            query_result: QueryResult::Scalar(Sample::new(1000, 1.0)),
+        };
+
+        let status = adapter.format_success_response(&result).await.unwrap_err();
+
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 
     /// Test: Format error response

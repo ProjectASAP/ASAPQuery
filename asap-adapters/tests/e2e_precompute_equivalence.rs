@@ -1720,6 +1720,7 @@ async fn assert_grouped_topk_range_dag_matches_legacy_range(
     let row_count = match result {
         QueryResult::Matrix(matrix) => matrix.values.len(),
         QueryResult::Vector(vector) => vector.values.len(),
+        other => panic!("grouped topk should return series, got {other:?}"),
     };
     // Each job has four differently frequent instances. The lowest-ranked
     // instance per job is removed, leaving three rows in each of three jobs.

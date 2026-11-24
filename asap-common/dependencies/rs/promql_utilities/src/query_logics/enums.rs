@@ -99,6 +99,8 @@ impl std::str::FromStr for Statistic {
 pub enum QueryResultType {
     InstantVector,
     RangeVector,
+    Scalar,
+    Table,
 }
 
 impl std::fmt::Display for QueryResultType {
@@ -107,6 +109,8 @@ impl std::fmt::Display for QueryResultType {
         match self {
             QueryResultType::InstantVector => write!(f, "instant_vector"),
             QueryResultType::RangeVector => write!(f, "range_vector"),
+            QueryResultType::Scalar => write!(f, "scalar"),
+            QueryResultType::Table => write!(f, "table"),
         }
     }
 }

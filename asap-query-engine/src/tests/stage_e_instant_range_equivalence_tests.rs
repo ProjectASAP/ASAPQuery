@@ -285,6 +285,7 @@ mod tests {
                 .map(|e| (e.labels.labels, e.value))
                 .collect(),
             QueryResult::Matrix(_) => panic!("{case_name}: instant query returned a Matrix"),
+            other => panic!("{case_name}: instant query returned {other:?}"),
         };
 
         // start must be strictly < end (validate_range_query_params); end is
@@ -317,6 +318,7 @@ mod tests {
                 })
                 .collect(),
             QueryResult::Vector(_) => panic!("{case_name}: range query returned a Vector"),
+            other => panic!("{case_name}: range query returned {other:?}"),
         };
 
         instant_pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -525,6 +527,7 @@ mod tests {
         let elements = match result {
             QueryResult::Matrix(m) => m.values,
             QueryResult::Vector(_) => panic!("expected a Matrix"),
+            other => panic!("expected a Matrix, got {other:?}"),
         };
 
         assert_eq!(
@@ -570,6 +573,7 @@ mod tests {
                 .map(|e| (e.labels.labels, e.value))
                 .collect(),
             QueryResult::Matrix(_) => panic!("expected a Vector"),
+            other => panic!("expected a Vector, got {other:?}"),
         };
 
         let (_, range_result) = engine
@@ -586,6 +590,7 @@ mod tests {
                 })
                 .collect(),
             QueryResult::Vector(_) => panic!("expected a Matrix"),
+            other => panic!("expected a Matrix, got {other:?}"),
         };
 
         assert_eq!(
@@ -616,6 +621,7 @@ mod tests {
         let elements = match result {
             QueryResult::Matrix(m) => m.values,
             QueryResult::Vector(_) => panic!("expected a Matrix"),
+            other => panic!("expected a Matrix, got {other:?}"),
         };
 
         assert_eq!(
@@ -655,6 +661,7 @@ mod tests {
         let elements = match result {
             QueryResult::Matrix(m) => m.values,
             QueryResult::Vector(_) => panic!("expected a Matrix"),
+            other => panic!("expected a Matrix, got {other:?}"),
         };
 
         assert_eq!(
