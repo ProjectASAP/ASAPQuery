@@ -92,7 +92,7 @@ The script executes these phases in order:
 cd $REPO_ROOT/asap-tools
 
 # Make your code changes
-vim asap-query-engine/src/main.rs
+vim asap-adapters/src/main.rs
 
 # Deploy changes
 ./deploy_changes.sh <num_nodes> <cloudlab_username> <hostname_suffix>

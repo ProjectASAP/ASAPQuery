@@ -55,7 +55,7 @@ Pre-run steps for sketchdb mode
    (load tester + planner input).
 
 2. Ensure the release binaries are built on the CloudLab node:
-     cargo build --release   (in ~/code/asap-query-engine)
+     cargo build --release   (in ~/code/asap-adapters)
      cargo build --release   (in ~/code/asap-planner-rs)
 
    asap-planner runs automatically in SQL mode during the experiment to

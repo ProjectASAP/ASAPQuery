@@ -90,7 +90,7 @@ After making code changes locally, use `deploy_changes.sh` to sync and rebuild o
 
 ```bash
 # Make your changes
-vim asap-query-engine/src/main.rs
+vim asap-adapters/src/main.rs
 
 # Deploy changes
 cd $REPO_ROOT/asap-tools
