@@ -6,9 +6,10 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
 
-/// A message sent from the router to a worker.
+/// A message sent from the router to a worker. `B` is the build type the
+/// workers run (see `WindowedBuild`); an "aggregation" here is one build.
 #[derive(Debug)]
-pub enum WorkerMessage {
+pub enum WorkerMessage<B = AggregationConfig> {
     /// A batch of samples for the same series, routed by series key.
     /// Used in `pass_raw_samples` mode where no aggregation is needed.
     RawSamples {
@@ -34,21 +35,30 @@ pub enum WorkerMessage {
     Flush,
     /// Graceful shutdown.
     Shutdown,
-    /// Push a new set of aggregation configs to this worker.
+    /// Push a new set of aggregation builds to this worker.
     /// Workers replace their local map on receipt; new agg_ids are picked up
     /// lazily the next time a matching sample arrives.
-    UpdateAggConfigs(HashMap<u64, Arc<AggregationConfig>>),
+    UpdateAggConfigs(HashMap<u64, Arc<B>>),
 }
 
 /// Routes incoming samples to one of N workers based on a consistent hash.
-#[derive(Clone)]
-pub struct SeriesRouter {
-    senders: Vec<mpsc::Sender<WorkerMessage>>,
+pub struct SeriesRouter<B = AggregationConfig> {
+    senders: Vec<mpsc::Sender<WorkerMessage<B>>>,
     num_workers: usize,
 }
 
-impl SeriesRouter {
-    pub fn new(senders: Vec<mpsc::Sender<WorkerMessage>>) -> Self {
+// Manual impl: cloning the senders must not require `B: Clone`.
+impl<B> Clone for SeriesRouter<B> {
+    fn clone(&self) -> Self {
+        Self {
+            senders: self.senders.clone(),
+            num_workers: self.num_workers,
+        }
+    }
+}
+
+impl<B: Send + Sync> SeriesRouter<B> {
+    pub fn new(senders: Vec<mpsc::Sender<WorkerMessage<B>>>) -> Self {
         let num_workers = senders.len();
         Self {
             senders,
@@ -62,11 +72,11 @@ impl SeriesRouter {
     /// Messages within a single worker are sent sequentially to preserve ordering.
     pub async fn route_group_batch(
         &self,
-        messages: Vec<WorkerMessage>,
+        messages: Vec<WorkerMessage<B>>,
         _ingest_received_at: Instant,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Group messages by target worker index
-        let mut per_worker: HashMap<usize, Vec<WorkerMessage>> = HashMap::new();
+        let mut per_worker: HashMap<usize, Vec<WorkerMessage<B>>> = HashMap::new();
         for msg in messages {
             let worker_idx = match &msg {
                 WorkerMessage::GroupSamples {
@@ -113,7 +123,7 @@ impl SeriesRouter {
     /// Broadcast updated aggregation configs to all workers.
     pub async fn broadcast_update_agg_configs(
         &self,
-        agg_configs: HashMap<u64, Arc<AggregationConfig>>,
+        agg_configs: HashMap<u64, Arc<B>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for (i, sender) in self.senders.iter().enumerate() {
             sender

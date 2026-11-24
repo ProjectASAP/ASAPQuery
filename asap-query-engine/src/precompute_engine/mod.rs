@@ -1,4 +1,6 @@
 pub mod accumulator_factory;
+pub mod aggregation_spec;
+pub mod build_spec;
 pub mod config;
 pub mod csv_ingest;
 mod engine;
@@ -6,13 +8,16 @@ mod ingest_handler;
 pub mod ingest_source;
 pub mod json_ingest;
 pub mod output_sink;
+pub mod pipeline;
 pub mod series_buffer;
 pub mod series_router;
 pub mod window_manager;
 pub mod worker;
 
+pub use build_spec::{BuildSpec, SeriesRouting, WindowedBuild};
 pub use csv_ingest::{CsvFileIngestConfig, CsvFileIngestSource};
-pub use engine::{PrecomputeEngine, PrecomputeEngineHandle, PrecomputeWorkerDiagnostics};
+pub use engine::{PrecomputeEngine, PrecomputeEngineHandle};
 pub use ingest_handler::{HttpIngestConfig, HttpIngestSource};
 pub use ingest_source::{IngestContext, IngestSource};
 pub use json_ingest::{JsonFileIngestConfig, JsonFileIngestSource, TimestampUnit};
+pub use pipeline::{PipelineHandle, PrecomputePipeline, PrecomputeWorkerDiagnostics};

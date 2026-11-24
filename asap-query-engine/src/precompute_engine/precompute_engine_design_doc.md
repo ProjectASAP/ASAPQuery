@@ -169,9 +169,26 @@ prevents a cold worker from blocking the entire system.
 
 ## 3. Components
 
-### 3.1 PrecomputeEngine (`mod.rs`)
+### 3.1 PrecomputeEngine, pipeline and build specification
 
-Top-level orchestrator. On `run()`:
+The engine is split in two:
+
+- **`PrecomputePipeline<R: SeriesRouting>`** (`pipeline.rs`) owns series
+  routing to workers, workers, windows, watermarks, late-data policy and
+  backpressure. It writes every closed window to its `OutputSink`.
+- **`BuildSpec<R>`** (`build_spec.rs`), given to `run()` and swapped through
+  `PipelineHandle::update_spec`, says what to build: `R: SeriesRouting`
+  decides which builds (by id) and group key each series feeds, and each
+  build is a `WindowedBuild` (window geometry, pane updaters, how a closed
+  window becomes the written state, per-group state carried across windows,
+  whether late samples may be forwarded).
+
+`PrecomputeEngine` (`engine.rs`) is the pipeline given the
+`AggregationConfig`-based spec (`aggregation_spec.rs`): `RoutingConfigSet`
+routes by metric and spatial filter, and each `AggregationConfig` is a
+`WindowedBuild`.
+
+`PrecomputePipeline::run()`:
 
 1. Creates one `mpsc::channel<WorkerMessage>` per worker.
 2. Constructs a `SeriesRouter` with the sender halves.
@@ -182,9 +199,8 @@ Top-level orchestrator. On `run()`:
 
 ```rust
 pub struct PrecomputeEngine {
-    config: PrecomputeEngineConfig,
+    pipeline: PrecomputePipeline<RoutingConfigSet>,
     streaming_config: Arc<StreamingConfig>,
-    output_sink: Arc<dyn OutputSink>,
 }
 ```
 
@@ -1250,9 +1266,12 @@ A lighter alternative: **periodic pane snapshots** written to disk at each flush
 
 | File | Purpose |
 |------|---------|
-| `precompute_engine/mod.rs` | Orchestrator, HTTP ingest handler |
+| `precompute_engine/engine.rs` | `PrecomputeEngine`: pipeline + `AggregationConfig` spec from a `StreamingConfig` |
+| `precompute_engine/pipeline.rs` | `PrecomputePipeline`: workers, flush timer, ingest sources |
+| `precompute_engine/build_spec.rs` | `BuildSpec`, `SeriesRouting`, `WindowedBuild` (the pipeline/spec seam) |
+| `precompute_engine/aggregation_spec.rs` | `AggregationConfig` as `WindowedBuild`, `RoutingConfigSet` as `SeriesRouting` |
 | `precompute_engine/config.rs` | `PrecomputeEngineConfig`, `LateDataPolicy` |
-| `precompute_engine/worker.rs` | Per-shard processing, aggregation, window management |
+| `precompute_engine/worker.rs` | Per-shard processing, window management, watermarks, late data |
 | `precompute_engine/series_router.rs` | Hash-based series → worker routing |
 | `precompute_engine/series_buffer.rs` | Per-series BTreeMap sample buffer |
 | `precompute_engine/window_manager.rs` | Tumbling/sliding window logic |

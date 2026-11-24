@@ -1,15 +1,12 @@
-use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, PrecomputedOutput};
-use crate::precompute_engine::accumulator_factory::{
-    create_accumulator_updater, AccumulatorUpdater,
-};
+use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
+use crate::precompute_engine::accumulator_factory::AccumulatorUpdater;
+use crate::precompute_engine::build_spec::WindowedBuild;
 use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::{WindowBoundary, WindowManager, WindowManagerError};
-use crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
-use asap_types::aggregation_config::AggregationConfig;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -21,16 +18,13 @@ use tracing::{debug, debug_span, info, warn};
 /// All raw series sharing the same grouping label values feed into the same
 /// accumulator, producing one output per (group_key, window) — exactly like
 /// Arroyo's `GROUP BY window, key`.
-struct GroupState {
-    config: Arc<AggregationConfig>,
+struct GroupState<B: WindowedBuild> {
+    config: Arc<B>,
     window_manager: WindowManager,
     /// Active panes keyed by pane_start_ms.
     active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
-    /// Key population emitted by the previous non-empty DeltaSetAggregator
-    /// window for this (aggregation_id, group_key). DeltaSetAggregator outputs
-    /// are differences between consecutive window populations, so this state
-    /// must live at group scope rather than inside a single pane updater.
-    delta_set_previous_keys: HashSet<KeyByLabelValues>,
+    /// The build's state carried between this group's closed windows.
+    cross_window_state: B::CrossWindowState,
     /// Per-group watermark: tracks the maximum timestamp seen across all
     /// series in this group on this worker.
     previous_watermark_ms: i64,
@@ -55,7 +49,7 @@ struct GroupState {
     pane_wall_clock_last_touch_ms: BTreeMap<i64, i64>,
 }
 
-impl GroupState {
+impl<B: WindowedBuild> GroupState<B> {
     /// Drop wall-clock-last-touch entries whose pane no longer exists in
     /// `active_panes`. Called after window-close cycles in
     /// `process_group_samples` and `flush_all` so the bookkeeping doesn't
@@ -82,22 +76,22 @@ pub struct WorkerRuntimeConfig {
 
 /// Worker that processes samples for a shard of the group space.
 ///
-/// Unlike the old per-series design, this worker maintains accumulators
-/// keyed by `(agg_id, group_key)`. Multiple raw series with the same
+/// This worker maintains accumulators keyed by `(agg_id, group_key)`, where
+/// `agg_id` names one build `B`. Multiple raw series with the same
 /// grouping label values share a single accumulator, producing one merged
 /// output per window — matching Arroyo's `GROUP BY` semantics.
-pub struct Worker {
+pub struct PipelineWorker<B: WindowedBuild> {
     id: usize,
-    receiver: mpsc::Receiver<WorkerMessage>,
+    receiver: mpsc::Receiver<WorkerMessage<B>>,
     output_sink: Arc<dyn OutputSink>,
     /// Map from (agg_id, group_key) to per-group state.
     /// Per-group state, keyed by `agg_id` then by an interned `Arc<str>`
     /// group key. Nesting lets the per-sample hot path look up by `&str`
     /// (no allocation); the group-key string is allocated once, on first
     /// sight of the group, and shared via the `Arc`.
-    group_states: HashMap<u64, HashMap<Arc<str>, GroupState>>,
-    /// Aggregation configs, keyed by aggregation_id.
-    agg_configs: HashMap<u64, Arc<AggregationConfig>>,
+    group_states: HashMap<u64, HashMap<Arc<str>, GroupState<B>>>,
+    /// Builds, keyed by agg_id.
+    agg_configs: HashMap<u64, Arc<B>>,
     /// Allowed lateness in ms.
     allowed_lateness_ms: i64,
     /// When true, skip aggregation and pass raw samples through.
@@ -123,13 +117,13 @@ pub struct Worker {
     now_ms_fn: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
-impl Worker {
+impl<B: WindowedBuild> PipelineWorker<B> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
-        receiver: mpsc::Receiver<WorkerMessage>,
+        receiver: mpsc::Receiver<WorkerMessage<B>>,
         output_sink: Arc<dyn OutputSink>,
-        agg_configs: HashMap<u64, Arc<AggregationConfig>>,
+        agg_configs: HashMap<u64, Arc<B>>,
         runtime_config: WorkerRuntimeConfig,
         group_count: Arc<AtomicUsize>,
         worker_watermark: Arc<AtomicI64>,
@@ -298,15 +292,14 @@ impl Worker {
                                     if let Some(accumulator) =
                                         merge_panes_for_window(&mut active_panes, &pane_starts)
                                     {
-                                        let accumulator = match finalize_closed_accumulator(
+                                        let accumulator = match state.config.finalize_window(
                                             accumulator,
-                                            &state.config,
-                                            &mut state.delta_set_previous_keys,
+                                            &mut state.cross_window_state,
                                         ) {
                                             Ok(accumulator) => accumulator,
                                             Err(e) => {
                                                 warn!(
-                                                    "Worker {}: failed to finalize DeltaSetAggregator \
+                                                    "Worker {}: failed to finalize window \
                                                      for removed agg_id={}: {}",
                                                     self.id, agg_id, e
                                                 );
@@ -376,7 +369,7 @@ impl Worker {
         &mut self,
         agg_id: u64,
         group_key: &str,
-    ) -> Result<Option<&mut GroupState>, WindowManagerError> {
+    ) -> Result<Option<&mut GroupState<B>>, WindowManagerError> {
         // Fast path: group already exists — borrow-based lookup, no allocation.
         let exists = self
             .group_states
@@ -389,13 +382,13 @@ impl Worker {
             };
             let gs = GroupState {
                 window_manager: WindowManager::new(
-                    config.window_size_ms,
-                    config.slide_interval_ms,
+                    config.window_size_ms(),
+                    config.slide_interval_ms(),
                     WindowBoundary::OpenClosed,
                 )?,
                 config,
                 active_panes: BTreeMap::new(),
-                delta_set_previous_keys: HashSet::new(),
+                cross_window_state: B::CrossWindowState::default(),
                 previous_watermark_ms: i64::MIN,
                 pane_wall_clock_last_touch_ms: BTreeMap::new(),
             };
@@ -497,19 +490,20 @@ impl Worker {
                         );
                         continue;
                     }
-                    LateDataPolicy::ForwardToStore
-                        if state.config.aggregation_type == AggregationType::DeltaSetAggregator =>
-                    {
+                    LateDataPolicy::ForwardToStore if !state.config.forwards_late_samples() => {
                         warn!(
-                            "Dropping late DeltaSetAggregator sample for evicted pane ({}, {}]: ForwardToStore is unsupported for stateful key deltas",
+                            "Dropping late sample for evicted pane ({}, {}]: ForwardToStore is unsupported for agg_id={}",
                             pane_start,
-                            pane_end
+                            pane_end,
+                            agg_id
                         );
                         continue;
                     }
                     LateDataPolicy::ForwardToStore => {
-                        let mut updater = create_accumulator_updater(&state.config)?;
-                        apply_sample(&mut *updater, series_key, *val, *ts, &state.config);
+                        let mut updater = state.config.new_pane()?;
+                        state
+                            .config
+                            .apply_sample(&mut *updater, series_key, *val, *ts);
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
                             window_start as u64,
@@ -539,12 +533,12 @@ impl Worker {
                 .insert(pane_start, now_ms);
             let updater = match state.active_panes.entry(pane_start) {
                 std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(create_accumulator_updater(&state.config)?)
-                }
+                std::collections::btree_map::Entry::Vacant(e) => e.insert(state.config.new_pane()?),
             };
 
-            apply_sample(&mut **updater, series_key, *val, *ts, &state.config);
+            state
+                .config
+                .apply_sample(&mut **updater, series_key, *val, *ts);
         }
 
         // Check for closed windows
@@ -558,11 +552,9 @@ impl Worker {
 
             if let Some(accumulator) = merge_panes_for_window(&mut state.active_panes, &pane_starts)
             {
-                let accumulator = finalize_closed_accumulator(
-                    accumulator,
-                    &state.config,
-                    &mut state.delta_set_previous_keys,
-                )?;
+                let accumulator = state
+                    .config
+                    .finalize_window(accumulator, &mut state.cross_window_state)?;
                 let key = build_group_key_label_values(group_key);
                 let output = PrecomputedOutput::new(
                     *window_start as u64,
@@ -711,11 +703,9 @@ impl Worker {
                     if let Some(accumulator) =
                         merge_panes_for_window(&mut state.active_panes, &pane_starts)
                     {
-                        let accumulator = finalize_closed_accumulator(
-                            accumulator,
-                            &state.config,
-                            &mut state.delta_set_previous_keys,
-                        )?;
+                        let accumulator = state
+                            .config
+                            .finalize_window(accumulator, &mut state.cross_window_state)?;
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
                             *window_start as u64,
@@ -802,11 +792,9 @@ impl Worker {
                     if let Some(accumulator) =
                         merge_panes_for_window(&mut state.active_panes, &pane_starts)
                     {
-                        let accumulator = finalize_closed_accumulator(
-                            accumulator,
-                            &state.config,
-                            &mut state.delta_set_previous_keys,
-                        )?;
+                        let accumulator = state
+                            .config
+                            .finalize_window(accumulator, &mut state.cross_window_state)?;
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
                             *window_start as u64,
@@ -887,25 +875,6 @@ pub fn extract_metric_name(series_key: &str) -> &str {
     }
 }
 
-/// Extract grouping label values from a series key string based on the
-/// aggregation config's `grouping_labels`.
-///
-/// The series key format is: `metric_name{label1="val1",label2="val2",...}`
-pub fn extract_key_from_series(series_key: &str, config: &AggregationConfig) -> KeyByLabelValues {
-    let labels = parse_labels_from_series_key(series_key);
-    let mut values = Vec::new();
-
-    for label_name in &config.grouping_labels.labels {
-        if let Some(val) = labels.get(label_name.as_str()) {
-            values.push(val.to_string());
-        } else {
-            values.push(String::new());
-        }
-    }
-
-    KeyByLabelValues::new_with_labels(values)
-}
-
 /// Parse label key-value pairs from a series key string.
 /// `"metric{a=\"b\",c=\"d\"}"` → `{("a", "b"), ("c", "d")}`
 pub fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
@@ -959,116 +928,6 @@ pub fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
     labels
 }
 
-/// Route a single sample to `updater`, dispatching keyed vs. non-keyed based on config.
-///
-/// For keyed accumulators (MultipleSum, CMS, HydraKLL), the key is extracted
-/// from the series' **aggregated_labels** — these are the labels that become
-/// the key dimension *inside* the sketch (e.g., which bucket in a CMS, which
-/// entry in a MultipleSumAccumulator's HashMap). This matches the Arroyo SQL
-/// pattern: `udf(concat_ws(';', aggregated_labels), value)`.
-fn apply_sample(
-    updater: &mut dyn AccumulatorUpdater,
-    series_key: &str,
-    val: f64,
-    ts: i64,
-    config: &AggregationConfig,
-) {
-    // Parse the series labels at most once and share them across value resolution
-    // and key extraction — both walk the same label string. Skip parsing entirely
-    // when neither path needs labels (non-keyed accumulator with no value_column),
-    // which is the common SUM/quantile case on the per-sample ingest hot path.
-    let keyed = updater.is_keyed();
-    let labels = if keyed || config.value_column.is_some() {
-        parse_labels_from_series_key(series_key)
-    } else {
-        HashMap::new()
-    };
-
-    let value = resolve_sample_value(&labels, val, config);
-    if keyed {
-        let key = extract_aggregated_key_from_series(&labels, config);
-        updater.update_keyed(&key, value, ts);
-    } else {
-        updater.update_single(value, ts);
-    }
-}
-
-/// Resolve which scalar to aggregate for a sample.
-///
-/// The wire format collapses each sample to a single scalar (`wire_val`) plus a
-/// set of labels carried in `series_key`. `wire_val` is whatever the source
-/// considered the default value column (e.g. `pkt_len` for the netflow dataset).
-/// But an aggregation may target a *different* column via `config.value_column`
-/// — most importantly `COUNT(DISTINCT dstip)`, where the HLL sketch must hash
-/// `dstip`, not the wire `pkt_len`.
-///
-/// Rule (general, self-correcting): if `config.value_column` names a column that
-/// is present among the series labels, aggregate that label's value; otherwise
-/// fall back to `wire_val`. Numeric value columns such as `pkt_len` are never
-/// sent as labels, so SUM / quantile / top-k transparently keep using the wire
-/// scalar, while label-present distinct targets such as `dstip` get substituted.
-///
-/// `labels` is the already-parsed label map for the sample's series key (parsed
-/// once by `apply_sample` and shared with key extraction), so this is allocation-
-/// free on the hot path.
-///
-/// The label value is parsed as `f64`. This is lossless for the netflow IPv4
-/// `u32` columns (≤ 2^32 < 2^53) and consistent with the replay's int→f64
-/// convention; cardinality only requires distinct inputs to map to distinct
-/// hashes, so the exact hash need not match the baseline engine.
-///
-/// # Panics
-/// Panics if `value_column` names a label whose value is not numeric. Non-numeric
-/// distinct targets (e.g. `proto`) are not yet supported; this is a temporary
-/// guard until the path is refactored to return a `Result` (see follow-up for a
-/// byte/string hashing path).
-fn resolve_sample_value(
-    labels: &HashMap<&str, &str>,
-    wire_val: f64,
-    config: &AggregationConfig,
-) -> f64 {
-    let Some(col) = config.value_column.as_deref() else {
-        return wire_val;
-    };
-
-    let Some(raw) = labels.get(col) else {
-        return wire_val;
-    };
-
-    match raw.parse::<f64>() {
-        Ok(v) => v,
-        // Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are not yet
-        // supported: silently falling back to the wire value would produce an
-        // INCORRECT aggregate, so fail loudly instead. This panic is a temporary
-        // measure — the longer-term fix is to make this path return a `Result`
-        // and propagate the error up to the caller.
-        Err(_) => panic!(
-            "value_column '{col}' label value {raw:?} is not numeric; non-numeric distinct \
-             targets (e.g. COUNT(DISTINCT proto)) are not yet supported"
-        ),
-    }
-}
-
-/// Extract aggregated label values from a series key string.
-/// These are the labels that form the key dimension *inside* keyed accumulators
-/// (MultipleSum, CMS, HydraKLL), matching Arroyo's `agg_columns`.
-fn extract_aggregated_key_from_series(
-    labels: &HashMap<&str, &str>,
-    config: &AggregationConfig,
-) -> KeyByLabelValues {
-    let mut values = Vec::new();
-
-    for label_name in &config.aggregated_labels.labels {
-        if let Some(val) = labels.get(label_name.as_str()) {
-            values.push(val.to_string());
-        } else {
-            values.push(String::new());
-        }
-    }
-
-    KeyByLabelValues::new_with_labels(values)
-}
-
 /// Merge the pane accumulators that constitute a closed window.
 ///
 /// The oldest pane (index 0) is taken destructively from `active_panes`
@@ -1115,55 +974,13 @@ fn merge_panes_for_window(
     merged
 }
 
-/// Convert a closed DeltaSetAggregator population into the stateful delta
-/// format used by the Arroyo implementation: keys newly present in this
-/// window go in `added`, and keys absent from this window go in `removed`.
-///
-/// The updater can only collect the current window's observed keys. The
-/// previous population therefore belongs to `GroupState`, which survives the
-/// per-pane updater lifecycle and is isolated for each `(agg_id, group_key)`.
-fn finalize_closed_accumulator(
-    accumulator: Box<dyn AggregateCore>,
-    config: &AggregationConfig,
-    previous_delta_set_keys: &mut HashSet<KeyByLabelValues>,
-) -> Result<Box<dyn AggregateCore>, Box<dyn std::error::Error + Send + Sync>> {
-    if config.aggregation_type != AggregationType::DeltaSetAggregator {
-        return Ok(accumulator);
-    }
-
-    let delta = accumulator
-        .as_any()
-        .downcast_ref::<DeltaSetAggregatorAccumulator>()
-        .ok_or_else(|| {
-            format!(
-                "DeltaSetAggregator config produced {} instead of DeltaSetAggregatorAccumulator",
-                accumulator.type_name()
-            )
-        })?;
-    let current_keys: HashSet<KeyByLabelValues> = delta
-        .get_keys()
-        .ok_or("DeltaSetAggregator accumulator could not resolve its current keys")?
-        .into_iter()
-        .collect();
-
-    let added = current_keys
-        .difference(previous_delta_set_keys)
-        .cloned()
-        .collect();
-    let removed = previous_delta_set_keys
-        .difference(&current_keys)
-        .cloned()
-        .collect();
-    *previous_delta_set_keys = current_keys;
-
-    Ok(Box::new(DeltaSetAggregatorAccumulator::new_with_sets(
-        added, removed,
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::precompute_engine::aggregation_spec::{
+        extract_key_from_series, resolve_sample_value, Worker,
+    };
+    use asap_types::aggregation_config::AggregationConfig;
 
     #[test]
     fn test_extract_metric_name() {
