@@ -3,11 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use promql_utilities::query_logics::enums::QueryResultType;
 
-/// Represents the result of a PromQL query
+/// The result of a query. Response adapters reject variants their protocol
+/// can't express.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryResult {
     Vector(InstantVector),
     Matrix(RangeVector),
+    /// A single value at one timestamp (PromQL scalar).
+    Scalar(Sample),
+    /// Named columns and rows (SQL result set).
+    Table(Table),
 }
 
 impl QueryResult {
@@ -15,6 +20,8 @@ impl QueryResult {
         match self {
             QueryResult::Vector(_) => QueryResultType::InstantVector,
             QueryResult::Matrix(_) => QueryResultType::RangeVector,
+            QueryResult::Scalar(_) => QueryResultType::Scalar,
+            QueryResult::Table(_) => QueryResultType::Table,
         }
     }
 
@@ -57,6 +64,27 @@ pub struct RangeVector {
 pub struct RangeVectorElement {
     pub labels: KeyByLabelValues,
     pub samples: Vec<Sample>,
+}
+
+/// Tabular result: every row has one value per column, in column order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Table {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<TableValue>>,
+}
+
+impl Table {
+    /// True when every row has exactly one value per column.
+    pub fn is_rectangular(&self) -> bool {
+        self.rows.iter().all(|row| row.len() == self.columns.len())
+    }
+}
+
+/// One table cell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TableValue {
+    String(String),
+    Float(f64),
 }
 
 /// A single sample (timestamp, value) pair

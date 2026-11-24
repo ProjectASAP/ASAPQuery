@@ -124,7 +124,8 @@ use crate::engines::QueryResult;
 
 /// Convert QueryResult to Prometheus-compatible format (for instant queries only)
 ///
-/// Returns an error if passed a Matrix result - use `convert_range_result_to_prometheus` for that.
+/// Returns an error if passed a Matrix result - use `convert_range_result_to_prometheus` for that -
+/// or a Table, which Prometheus can't express.
 pub fn convert_query_result_to_prometheus(
     result: &QueryResult,
     query_output_labels: &KeyByLabelNames,
@@ -159,12 +160,20 @@ pub fn convert_query_result_to_prometheus(
         QueryResult::Matrix(_) => {
             Err("convert_query_result_to_prometheus called with Matrix result; use convert_range_result_to_prometheus instead")
         }
+        QueryResult::Scalar(sample) => Ok(json!({
+            "resultType": "scalar",
+            "result": [sample.timestamp as f64 / 1000.0, sample.value.to_string()]
+        })),
+        QueryResult::Table(_) => {
+            Err("convert_query_result_to_prometheus called with Table result; Prometheus has no table result type")
+        }
     }
 }
 
 /// Convert range query result to Prometheus matrix format (for range queries only)
 ///
-/// Returns an error if passed a Vector result - use `convert_query_result_to_prometheus` for that.
+/// Returns an error for any non-Matrix result - use `convert_query_result_to_prometheus` for
+/// Vector and Scalar.
 pub fn convert_range_result_to_prometheus(
     result: &QueryResult,
     label_names: &KeyByLabelNames,
@@ -213,6 +222,12 @@ pub fn convert_range_result_to_prometheus(
         QueryResult::Vector(_) => {
             Err("convert_range_result_to_prometheus called with Vector result; use convert_query_result_to_prometheus instead")
         }
+        QueryResult::Scalar(_) => {
+            Err("convert_range_result_to_prometheus called with Scalar result; use convert_query_result_to_prometheus instead")
+        }
+        QueryResult::Table(_) => {
+            Err("convert_range_result_to_prometheus called with Table result; Prometheus has no table result type")
+        }
     }
 }
 
@@ -220,7 +235,9 @@ pub fn convert_range_result_to_prometheus(
 mod tests {
     use super::*;
     use crate::data_model::KeyByLabelValues;
-    use crate::engines::query_result::{InstantVectorElement, RangeVectorElement};
+    use crate::engines::query_result::{
+        InstantVectorElement, RangeVectorElement, Sample, Table, TableValue,
+    };
 
     fn create_test_labels() -> KeyByLabelValues {
         KeyByLabelValues::new_with_labels(vec!["host1".to_string(), "job1".to_string()])
@@ -369,5 +386,47 @@ mod tests {
 
         assert!(prometheus_data.is_err());
         assert!(prometheus_data.err().unwrap().contains("Vector"));
+    }
+
+    fn test_table() -> QueryResult {
+        QueryResult::Table(Table {
+            columns: vec!["host".to_string(), "value".to_string()],
+            rows: vec![vec![
+                TableValue::String("host1".to_string()),
+                TableValue::Float(1.5),
+            ]],
+        })
+    }
+
+    #[test]
+    fn test_convert_scalar_to_prometheus() {
+        let result = QueryResult::Scalar(Sample::new(1500, 42.5));
+
+        let data = convert_query_result_to_prometheus(&result, &create_test_label_names()).unwrap();
+
+        assert_eq!(
+            data,
+            json!({"resultType": "scalar", "result": [1.5, "42.5"]})
+        );
+    }
+
+    #[test]
+    fn test_convert_query_result_rejects_table() {
+        let err = convert_query_result_to_prometheus(&test_table(), &create_test_label_names())
+            .unwrap_err();
+        assert!(err.contains("Table"));
+    }
+
+    #[test]
+    fn test_convert_range_result_rejects_scalar_and_table() {
+        let labels = create_test_label_names();
+        let scalar = QueryResult::Scalar(Sample::new(1000, 1.0));
+
+        assert!(convert_range_result_to_prometheus(&scalar, &labels)
+            .unwrap_err()
+            .contains("Scalar"));
+        assert!(convert_range_result_to_prometheus(&test_table(), &labels)
+            .unwrap_err()
+            .contains("Table"));
     }
 }

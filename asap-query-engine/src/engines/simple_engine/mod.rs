@@ -5751,6 +5751,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                 v.values[0].value
             }
             QueryResult::Matrix(_) => panic!("expected an instant Vector, got a Matrix"),
+            other => panic!("expected an instant Vector, got {other:?}"),
         }
     }
 

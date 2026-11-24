@@ -8,11 +8,12 @@ use axum::{
 };
 use promql_utilities::data_model::KeyByLabelNames;
 use query_engine_rust::engine_api::{secs_to_ms, QueryEval, QueryRequest};
+use query_engine_rust::engines::query_result::TableValue;
 use query_engine_rust::engines::QueryResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, error};
 
 /// ClickHouse HTTP protocol adapter
 pub struct ClickHouseHttpAdapter {
@@ -129,8 +130,25 @@ impl QueryResponseAdapter for ClickHouseHttpAdapter {
                     output.push('\n');
                 }
             }
-            QueryResult::Matrix(_) => {
-                // ClickHouse adapter doesn't support Matrix results
+            QueryResult::Table(table) => {
+                if !table.is_rectangular() {
+                    error!("ClickHouse adapter: table rows don't match its columns");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+                for row in &table.rows {
+                    let cells: Vec<String> = row
+                        .iter()
+                        .map(|cell| match cell {
+                            TableValue::String(s) => s.clone(),
+                            TableValue::Float(f) => f.to_string(),
+                        })
+                        .collect();
+                    output.push_str(&cells.join("\t"));
+                    output.push('\n');
+                }
+            }
+            QueryResult::Matrix(_) | QueryResult::Scalar(_) => {
+                // ClickHouse adapter doesn't support Matrix or Scalar results
                 return Err(StatusCode::NOT_IMPLEMENTED);
             }
         };
@@ -342,6 +360,72 @@ mod tests {
         assert_eq!(cols2.len(), 2);
         assert_eq!(cols2[0], "host2");
         assert_eq!(cols2[1], "77.5");
+    }
+
+    /// A Table formats as one tab-separated line per row, cells in column order.
+    #[tokio::test]
+    async fn test_format_table_response() {
+        use axum::body::to_bytes;
+        use query_engine_rust::engines::query_result::Table;
+
+        let adapter = create_test_adapter();
+        let result = QueryExecutionResult {
+            query_output_labels: KeyByLabelNames::empty(),
+            query_result: QueryResult::Table(Table {
+                columns: vec!["hostname".to_string(), "p99".to_string()],
+                rows: vec![
+                    vec![
+                        TableValue::String("host1".to_string()),
+                        TableValue::Float(91.0),
+                    ],
+                    vec![
+                        TableValue::String("host2".to_string()),
+                        TableValue::Float(77.5),
+                    ],
+                ],
+            }),
+        };
+
+        let response = adapter.format_success_response(&result).await.unwrap();
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        assert_eq!(
+            String::from_utf8(body_bytes.to_vec()).unwrap(),
+            "host1\t91\nhost2\t77.5\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_format_ragged_table_is_server_error() {
+        use query_engine_rust::engines::query_result::Table;
+
+        let adapter = create_test_adapter();
+        let result = QueryExecutionResult {
+            query_output_labels: KeyByLabelNames::empty(),
+            query_result: QueryResult::Table(Table {
+                columns: vec!["hostname".to_string(), "p99".to_string()],
+                rows: vec![vec![TableValue::Float(1.0)]],
+            }),
+        };
+
+        let status = adapter.format_success_response(&result).await.unwrap_err();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_format_scalar_not_implemented() {
+        use query_engine_rust::engines::query_result::Sample;
+
+        let adapter = create_test_adapter();
+        let result = QueryExecutionResult {
+            query_output_labels: KeyByLabelNames::empty(),
+            query_result: QueryResult::Scalar(Sample::new(1000, 1.0)),
+        };
+
+        let status = adapter.format_success_response(&result).await.unwrap_err();
+
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 
     /// Test 11: Format error response
