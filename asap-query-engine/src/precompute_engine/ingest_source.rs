@@ -1,129 +1,34 @@
 use crate::drivers::ingest::prometheus_remote_write::DecodedSample;
+use crate::precompute_engine::aggregation_spec::RoutingConfigSet;
+use crate::precompute_engine::build_spec::SeriesRouting;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
-use crate::precompute_engine::worker::{extract_metric_name, parse_labels_from_series_key};
 use arc_swap::ArcSwap;
-use asap_types::aggregation_config::AggregationConfig;
-use asap_types::streaming_config::StreamingConfig;
-use promql_parser::label::Matcher;
-use promql_parser::parser::{parse, Expr};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Everything a source needs to push decoded samples into the worker pool.
-#[derive(Clone)]
-pub struct IngestContext {
-    pub(crate) router: SeriesRouter,
-    /// Aggregation configs and their compiled spatial filters.
-    /// Shared with `PrecomputeEngineHandle`, whose swaps are immediately visible
+pub struct IngestContext<R: SeriesRouting = RoutingConfigSet> {
+    pub(crate) router: SeriesRouter<R::Build>,
+    /// Which builds each series feeds.
+    /// Shared with the pipeline handle, whose swaps are immediately visible
     /// on this lock-free read path.
-    pub(crate) routing_configs: Arc<ArcSwap<RoutingConfigSet>>,
+    pub(crate) routing_configs: Arc<ArcSwap<R>>,
     /// When true, skip group-key extraction and pass raw samples through.
     pub(crate) pass_raw_samples: bool,
 }
 
-/// Aggregation configuration enriched with its precompiled spatial filter.
-#[derive(Clone)]
-pub(crate) struct RoutingAggregationConfig {
-    pub(crate) config: Arc<AggregationConfig>,
-    spatial_matchers: Vec<Matcher>,
-}
-
-impl RoutingAggregationConfig {
-    fn matches_spatial_filter(&self, labels: &HashMap<&str, &str>) -> bool {
-        self.spatial_matchers.iter().all(|matcher| {
-            let value = labels.get(matcher.name.as_str()).copied().unwrap_or("");
-            matcher.is_match(value)
-        })
-    }
-}
-
-/// The complete, atomically swappable routing configuration for ingest.
-pub(crate) struct RoutingConfigSet {
-    configs: Vec<RoutingAggregationConfig>,
-}
-
-impl RoutingConfigSet {
-    pub(crate) fn empty() -> Self {
+// Manual impl: cloning the shared handles must not require `R: Clone`.
+impl<R: SeriesRouting> Clone for IngestContext<R> {
+    fn clone(&self) -> Self {
         Self {
-            configs: Vec::new(),
+            router: self.router.clone(),
+            routing_configs: self.routing_configs.clone(),
+            pass_raw_samples: self.pass_raw_samples,
         }
     }
-
-    pub(crate) fn from_streaming_config(config: &StreamingConfig) -> Result<Self, String> {
-        Self::from_aggregation_configs(config.get_all_aggregation_configs().values().cloned())
-    }
-
-    pub(crate) fn from_aggregation_configs(
-        configs: impl IntoIterator<Item = AggregationConfig>,
-    ) -> Result<Self, String> {
-        let configs = configs
-            .into_iter()
-            .map(|config| {
-                let spatial_matchers = compile_spatial_filter(&config)?;
-                Ok(RoutingAggregationConfig {
-                    config: Arc::new(config),
-                    spatial_matchers,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self { configs })
-    }
-
-    pub(crate) fn configs(&self) -> &[RoutingAggregationConfig] {
-        &self.configs
-    }
-}
-
-fn compile_spatial_filter(config: &AggregationConfig) -> Result<Vec<Matcher>, String> {
-    // SQL aggregation configs do not use PromQL label selectors.
-    if config.table_name.is_some() || config.spatial_filter.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let filter = config.spatial_filter.trim();
-    let selector_body = if filter.starts_with('{') || filter.ends_with('}') {
-        if !filter.starts_with('{') || !filter.ends_with('}') {
-            return Err(format!(
-                "aggregation_id {} has invalid spatialFilter {:?}: unmatched selector braces",
-                config.aggregation_id, config.spatial_filter
-            ));
-        }
-        filter.to_string()
-    } else {
-        format!("{{{filter}}}")
-    };
-    let selector = format!("{}{}", config.metric, selector_body);
-    let Expr::VectorSelector(vector_selector) = parse(&selector).map_err(|error| {
-        format!(
-            "aggregation_id {} has invalid spatialFilter {:?}: {error}",
-            config.aggregation_id, config.spatial_filter
-        )
-    })?
-    else {
-        return Err(format!(
-            "aggregation_id {} has invalid spatialFilter {:?}: expected a vector selector",
-            config.aggregation_id, config.spatial_filter
-        ));
-    };
-
-    let matchers = vector_selector.matchers;
-    if !matchers.or_matchers.is_empty() {
-        return Err(format!(
-            "aggregation_id {} spatialFilter must not use selector-level or",
-            config.aggregation_id
-        ));
-    }
-    let matchers = matchers.matchers;
-    if matchers.iter().any(|matcher| matcher.name == "__name__") {
-        return Err(format!(
-            "aggregation_id {} spatialFilter must not match __name__; use metric instead",
-            config.aggregation_id
-        ));
-    }
-    Ok(matchers)
 }
 
 /// An ingest source for the precompute engine.
@@ -132,33 +37,18 @@ fn compile_spatial_filter(config: &AggregationConfig) -> Result<Vec<Matcher>, St
 /// into the engine via [`route_decoded_samples`].
 #[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
-pub trait IngestSource: Send + Sync {
+pub trait IngestSource<R: SeriesRouting = RoutingConfigSet>: Send + Sync {
     async fn run(
         self: Box<Self>,
-        ctx: IngestContext,
+        ctx: IngestContext<R>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-}
-
-pub(crate) fn extract_group_key(
-    labels: &HashMap<&str, &str>,
-    config: &AggregationConfig,
-) -> String {
-    let mut values = Vec::new();
-    for label_name in &config.grouping_labels.labels {
-        if let Some(val) = labels.get(label_name.as_str()) {
-            values.push(*val);
-        } else {
-            values.push("");
-        }
-    }
-    values.join(";")
 }
 
 /// Group decoded samples by (agg_id, group_key) and route them to workers.
 ///
 /// Returns an error if the router fails to deliver any message.
-pub(crate) async fn route_decoded_samples(
-    ctx: &IngestContext,
+pub(crate) async fn route_decoded_samples<R: SeriesRouting>(
+    ctx: &IngestContext<R>,
     samples: Vec<DecodedSample>,
     ingest_received_at: Instant,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -174,7 +64,7 @@ pub(crate) async fn route_decoded_samples(
                 .or_default()
                 .push((s.timestamp_ms, s.value));
         }
-        let messages: Vec<WorkerMessage> = by_series
+        let messages: Vec<WorkerMessage<R::Build>> = by_series
             .into_iter()
             .map(|(k, v)| WorkerMessage::RawSamples {
                 series_key: k.to_string(),
@@ -199,48 +89,24 @@ pub(crate) async fn route_decoded_samples(
     // Load routing configs once per request (lock-free ArcSwap read).
     let routing_configs = ctx.routing_configs.load();
 
-    // On first batch: log config metrics vs sample metric to diagnose mismatches.
+    // On first batch: log routing vs sample metric to diagnose mismatches.
     static FIRST_BATCH_LOGGED: AtomicBool = AtomicBool::new(false);
     if !FIRST_BATCH_LOGGED.swap(true, Ordering::Relaxed) {
         if let Some(first) = samples.first() {
-            let sample_metric = extract_metric_name(&first.labels);
-            warn!(
-                sample_metric,
-                sample_labels = %first.labels,
-                num_agg_configs = routing_configs.configs().len(),
-                "routing: first batch diagnostic"
-            );
-            for routing_config in routing_configs.configs() {
-                let cfg = &routing_config.config;
-                warn!(
-                    agg_id = cfg.aggregation_id,
-                    config_metric = %cfg.metric,
-                    config_spatial_filter = %cfg.spatial_filter,
-                    table_name = ?cfg.table_name,
-                    "routing: agg config metric"
-                );
-            }
+            routing_configs.log_routing_diagnostic(&first.labels);
         }
     }
 
     let mut matched_samples: usize = 0;
     for s in &samples {
-        let metric_name = extract_metric_name(&s.labels);
-        let labels = parse_labels_from_series_key(&s.labels);
-        for routing_config in routing_configs.configs() {
-            let config = &routing_config.config;
-            if (config.metric != metric_name && config.table_name.as_deref() != Some(metric_name))
-                || !routing_config.matches_spatial_filter(&labels)
-            {
-                continue;
-            }
+        routing_configs.route_series(&s.labels, |agg_id, group_key| {
             matched_samples += 1;
-            let group_key = extract_group_key(&labels, config);
-            by_group
-                .entry((config.aggregation_id, group_key))
-                .or_default()
-                .push((s.labels.clone(), s.timestamp_ms, s.value));
-        }
+            by_group.entry((agg_id, group_key)).or_default().push((
+                s.labels.clone(),
+                s.timestamp_ms,
+                s.value,
+            ));
+        });
     }
 
     debug!(
@@ -250,7 +116,7 @@ pub(crate) async fn route_decoded_samples(
         "routing: batch match summary"
     );
 
-    let messages: Vec<WorkerMessage> = by_group
+    let messages: Vec<WorkerMessage<R::Build>> = by_group
         .into_iter()
         .map(
             |((agg_id, group_key), samples)| WorkerMessage::GroupSamples {
@@ -271,6 +137,7 @@ pub(crate) async fn route_decoded_samples(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asap_types::aggregation_config::AggregationConfig;
     use asap_types::enums::{AggregationType, WindowType};
     use promql_utilities::data_model::key_by_label_names::KeyByLabelNames;
     use tokio::sync::mpsc::error::TryRecvError;
