@@ -1,6 +1,5 @@
 use super::config::AdapterConfig;
 use super::traits::*;
-use crate::engines::QueryResult;
 use async_trait::async_trait;
 use axum::{
     extract::{Form, Query},
@@ -8,6 +7,7 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use promql_utilities::data_model::KeyByLabelNames;
+use query_engine_rust::engines::QueryResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -180,7 +180,7 @@ impl HttpProtocolAdapter for ClickHouseHttpAdapter {
 
     async fn handle_runtime_info(
         &self,
-        _store: Arc<dyn crate::stores::Store>,
+        _store: Arc<dyn query_engine_rust::stores::Store>,
     ) -> Result<Json<Value>, StatusCode> {
         // Stub implementation - return basic info
         // In the future, this could query the store for metrics
@@ -196,9 +196,9 @@ impl HttpProtocolAdapter for ClickHouseHttpAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::enums::{QueryLanguage, QueryProtocol};
-    use crate::engines::QueryResult;
     use promql_utilities::data_model::KeyByLabelNames;
+    use query_engine_rust::data_model::enums::{QueryLanguage, QueryProtocol};
+    use query_engine_rust::engines::QueryResult;
 
     fn create_test_adapter() -> ClickHouseHttpAdapter {
         let config = AdapterConfig::new(
@@ -283,9 +283,9 @@ mod tests {
     /// Test 10: Format success response with actual data in TabSeparated format
     #[tokio::test]
     async fn test_format_success_response() {
-        use crate::data_model::KeyByLabelValues;
-        use crate::engines::query_result::InstantVectorElement;
         use axum::body::to_bytes;
+        use query_engine_rust::data_model::KeyByLabelValues;
+        use query_engine_rust::engines::query_result::InstantVectorElement;
 
         let adapter = create_test_adapter();
 

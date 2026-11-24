@@ -8,6 +8,8 @@
 //! Usage:
 //!   cargo run --bin test_e2e_precompute
 
+use asap_adapters::drivers::query::adapters::AdapterConfig;
+use asap_adapters::{HttpServer, HttpServerConfig};
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, WindowType};
 use prost::Message;
@@ -15,7 +17,6 @@ use query_engine_rust::data_model::{LockStrategy, QueryLanguage, StreamingConfig
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
     Label, Sample, TimeSeries, WriteRequest,
 };
-use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::{
@@ -26,7 +27,6 @@ use query_engine_rust::precompute_engine::{
 };
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
-use query_engine_rust::{HttpServer, HttpServerConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -152,6 +152,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "asap-adapters"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "asap_planner",
+ "asap_sketchlib",
+ "asap_types",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap 4.6.7",
+ "figment",
+ "flate2",
+ "form_urlencoded",
+ "opentelemetry-proto",
+ "prometheus",
+ "promql_utilities",
+ "prost",
+ "query_engine_rust",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "snap",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "asap_planner"
 version = "0.5.0"
 dependencies = [
@@ -2177,7 +2210,6 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "asap_planner",
  "asap_sketchlib",
  "asap_types",
  "async-trait",
@@ -2189,12 +2221,8 @@ dependencies = [
  "csv",
  "dashmap",
  "elastic_dsl_utilities",
- "figment",
- "flate2",
- "form_urlencoded",
  "futures",
  "lazy_static",
- "opentelemetry-proto",
  "prometheus",
  "promql-parser",
  "promql_utilities",
@@ -2213,10 +2241,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
- "tokio-stream",
- "tonic",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "urlencoding",
  "uuid",

@@ -1,8 +1,8 @@
 use super::{FallbackClient, FallbackResponse};
-use crate::data_model::QueryLanguage;
 use crate::drivers::query::adapters::ParsedQueryRequest;
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use query_engine_rust::data_model::QueryLanguage;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -229,8 +229,8 @@ impl FallbackClient for ElasticHttpFallback {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::enums::QueryLanguage;
     use axum::{routing::post, Json, Router};
+    use query_engine_rust::data_model::enums::QueryLanguage;
     use std::time::SystemTime;
     use tokio::net::TcpListener;
     use tokio::time::{sleep, Duration};

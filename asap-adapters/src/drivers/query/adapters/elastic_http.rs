@@ -1,7 +1,5 @@
 use super::config::AdapterConfig;
 use super::traits::*;
-use crate::data_model::QueryLanguage;
-use crate::QueryResult;
 use async_trait::async_trait;
 use axum::{
     body::Bytes,
@@ -9,6 +7,8 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
+use query_engine_rust::data_model::QueryLanguage;
+use query_engine_rust::QueryResult;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -214,7 +214,7 @@ impl QueryResponseAdapter for ElasticHttpAdapter {
 
     async fn format_range_success_response(
         &self,
-        _result: &crate::engines::QueryResult,
+        _result: &query_engine_rust::engines::QueryResult,
         _labels: &promql_utilities::KeyByLabelNames,
     ) -> Result<Response, StatusCode> {
         // Elasticsearch doesn't support Prometheus-style range queries
@@ -234,7 +234,7 @@ impl HttpProtocolAdapter for ElasticHttpAdapter {
 
     async fn handle_runtime_info(
         &self,
-        store: Arc<dyn crate::stores::Store>,
+        store: Arc<dyn query_engine_rust::stores::Store>,
     ) -> Result<Json<Value>, StatusCode> {
         // Delegate to the version with headers
         self.handle_runtime_info_with_headers(store, HashMap::new())
@@ -244,7 +244,7 @@ impl HttpProtocolAdapter for ElasticHttpAdapter {
     // Override the new method
     async fn handle_runtime_info_with_headers(
         &self,
-        store: Arc<dyn crate::stores::Store>,
+        store: Arc<dyn query_engine_rust::stores::Store>,
         headers: HashMap<String, String>,
     ) -> Result<Json<Value>, StatusCode> {
         debug!("Handling runtime info request in Elasticsearch adapter");
@@ -290,9 +290,9 @@ impl HttpProtocolAdapter for ElasticHttpAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::enums::{QueryLanguage, QueryProtocol};
-    use crate::engines::QueryResult;
     use promql_utilities::data_model::KeyByLabelNames;
+    use query_engine_rust::data_model::enums::{QueryLanguage, QueryProtocol};
+    use query_engine_rust::engines::QueryResult;
 
     fn create_test_adapter() -> ElasticHttpAdapter {
         let config = AdapterConfig::new(

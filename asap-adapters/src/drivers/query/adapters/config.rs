@@ -1,5 +1,5 @@
-use crate::data_model::enums::{QueryLanguage, QueryProtocol};
 use crate::drivers::query::fallback::FallbackClient;
+use query_engine_rust::data_model::enums::{QueryLanguage, QueryProtocol};
 use std::sync::Arc;
 
 /// Configuration for a specific protocol adapter

@@ -3,7 +3,7 @@ use super::config::AdapterConfig;
 use super::elastic_http::ElasticHttpAdapter;
 use super::prometheus_http::PrometheusHttpAdapter;
 use super::traits::HttpProtocolAdapter;
-use crate::data_model::enums::QueryProtocol;
+use query_engine_rust::data_model::enums::QueryProtocol;
 use std::sync::Arc;
 
 /// Factory function to create appropriate HTTP adapter based on protocol

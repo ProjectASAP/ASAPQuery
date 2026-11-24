@@ -3,27 +3,27 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::data_model::{
-        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
-        KeyByLabelValues, PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage, RqeConfig,
-        SchemaConfig, StreamingConfig, WindowType,
-    };
     use crate::drivers::query::adapters::AdapterConfig;
     use crate::drivers::query::servers::http::{HttpServer, HttpServerConfig, RQE_QUERY_ENDPOINT};
-    use crate::engines::{QueryResult, RqeQueryError, SimpleEngine};
-    use crate::precompute_operators::{
-        CountMinSketchWithHeapAccumulator, DDSketchAccumulator, HllAccumulator,
-        MultipleSumAccumulator, SumAccumulator,
-    };
-    use crate::stores::simple_map_store::SimpleMapStore;
-    use crate::stores::Store;
-    use crate::AggregateCore;
     use asap_types::query_config::{
         QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeGrouping,
         QueryTimeGroupingMode,
     };
     use asap_types::rqe_expr::RqeExpr;
     use promql_utilities::data_model::KeyByLabelNames;
+    use query_engine_rust::data_model::{
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        KeyByLabelValues, PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage, RqeConfig,
+        SchemaConfig, StreamingConfig, WindowType,
+    };
+    use query_engine_rust::engines::{QueryResult, RqeQueryError, SimpleEngine};
+    use query_engine_rust::precompute_operators::{
+        CountMinSketchWithHeapAccumulator, DDSketchAccumulator, HllAccumulator,
+        MultipleSumAccumulator, SumAccumulator,
+    };
+    use query_engine_rust::stores::simple_map_store::SimpleMapStore;
+    use query_engine_rust::stores::Store;
+    use query_engine_rust::AggregateCore;
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Arc;
