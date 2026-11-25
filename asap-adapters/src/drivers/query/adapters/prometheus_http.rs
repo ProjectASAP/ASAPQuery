@@ -1,7 +1,5 @@
 use super::config::AdapterConfig;
 use super::traits::*;
-use crate::engines::QueryResult;
-use crate::utils::http::{convert_query_result_to_prometheus, convert_range_result_to_prometheus};
 use async_trait::async_trait;
 use axum::{
     extract::{Form, Query},
@@ -9,6 +7,10 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use promql_utilities::data_model::KeyByLabelNames;
+use query_engine_rust::engines::QueryResult;
+use query_engine_rust::utils::http::{
+    convert_query_result_to_prometheus, convert_range_result_to_prometheus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -254,7 +256,7 @@ impl HttpProtocolAdapter for PrometheusHttpAdapter {
 
     async fn handle_runtime_info(
         &self,
-        store: Arc<dyn crate::stores::Store>,
+        store: Arc<dyn query_engine_rust::stores::Store>,
     ) -> Result<Json<Value>, StatusCode> {
         debug!("Handling runtime info request in Prometheus adapter");
 
@@ -305,7 +307,7 @@ impl HttpProtocolAdapter for PrometheusHttpAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::enums::{QueryLanguage, QueryProtocol};
+    use query_engine_rust::data_model::enums::{QueryLanguage, QueryProtocol};
 
     fn create_test_adapter() -> PrometheusHttpAdapter {
         let config = AdapterConfig::new(QueryProtocol::PrometheusHttp, QueryLanguage::promql, None);

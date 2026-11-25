@@ -6,7 +6,7 @@ first N of --engine-cpus, drives it with `bench_ingest_sender` pinned to
 parameters) to --out as one line. Give --engine-cpus one hyperthread per
 physical core so workers never share a core.
 
-Build first (in asap-query-engine):
+Build first (in asap-adapters):
     cargo build --release --bin precompute_engine --bin bench_ingest_sender
 
 Usage:

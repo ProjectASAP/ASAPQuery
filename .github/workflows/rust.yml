@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'asap-query-engine/**'
+      - 'asap-adapters/**'
       - 'asap-planner-rs/**'
       - 'rqe-optimizer/**'
       - 'asap-common/dependencies/rs/**'
@@ -18,6 +19,7 @@ on:
     branches: [ main ]
     paths:
       - 'asap-query-engine/**'
+      - 'asap-adapters/**'
       - 'asap-planner-rs/**'
       - 'rqe-optimizer/**'
       - 'asap-common/dependencies/rs/**'

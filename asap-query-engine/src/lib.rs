@@ -9,10 +9,8 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 pub mod data_model;
 pub mod drivers;
 pub mod engines;
-pub mod planner_client;
 pub mod precompute_engine;
 pub mod precompute_operators;
-pub mod query_tracker;
 pub mod stores;
 
 #[cfg(test)]
@@ -37,16 +35,12 @@ pub use stores::{SimpleMapStore, Store, StoreResult};
 pub use engines::NativeRangeExecutionMode;
 pub use engines::{InstantVector, QueryExecutionError, QueryResult, SimpleEngine};
 
-pub use drivers::{HttpServer, HttpServerConfig, OtlpReceiver, OtlpReceiverConfig};
-
 pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 pub use precompute_engine::output_sink::StoreOutputSink;
 pub use precompute_engine::{
     HttpIngestConfig, HttpIngestSource, IngestContext, IngestSource, PrecomputeEngine,
     PrecomputeEngineHandle,
 };
-
-pub use query_tracker::{QueryTracker, QueryTrackerConfig};
 
 pub use utils::{normalize_spatial_filter, read_inference_config, read_streaming_config};
 

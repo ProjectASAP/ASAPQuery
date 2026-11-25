@@ -9,8 +9,8 @@ directly to the engine.
 
 | File | Role |
 |---|---|
-| `asap-query-engine/src/bin/bench_ingest_sender.rs` | Load generator (separate process). Pre-encodes remote-write bodies on its own threads, 16 senders each owning a disjoint slice of series with one request in flight, optional rate limit. Prints one JSON line: acked samples/s, engine CPU cores, sender CPU cores, engine peak RSS. |
-| `asap-query-engine/src/bin/precompute_engine.rs` | Engine under test. Benchmark relies on `--num-aggregates-to-retain` (added for this) and `--wall-clock-grace-period-ms`. |
+| `asap-adapters/src/bin/bench_ingest_sender.rs` | Load generator (separate process). Pre-encodes remote-write bodies on its own threads, 16 senders each owning a disjoint slice of series with one request in flight, optional rate limit. Prints one JSON line: acked samples/s, engine CPU cores, sender CPU cores, engine peak RSS. |
+| `asap-adapters/src/bin/precompute_engine.rs` | Engine under test. Benchmark relies on `--num-aggregates-to-retain` (added for this) and `--wall-clock-grace-period-ms`. |
 | `configs/{kll,ddsketch,cms_heap,hydra_kll}.yaml` | The four pipelines (10s tumbling windows). |
 | `sweep.py` | Runs one experiment: per point, starts a fresh engine + sender, appends a JSON line to `--out`, engine log to `results/logs/`. |
 | `plot.py` | One figure per experiment. `main` is sized for one column of a two-column paper. |
@@ -43,9 +43,9 @@ Each point = 15s warmup + 30s measurement + startup, ~50s.
    ```bash
    H=milindsr@node5.scratch3.cloudmigration-PG0.clemson.cloudlab.us
    R=/scratch/sketch_db_for_prometheus/code
-   rsync -avR asap-query-engine/Cargo.toml \
-     asap-query-engine/src/bin/precompute_engine.rs \
-     asap-query-engine/src/bin/bench_ingest_sender.rs \
+   rsync -avR asap-adapters/Cargo.toml \
+     asap-adapters/src/bin/precompute_engine.rs \
+     asap-adapters/src/bin/bench_ingest_sender.rs \
      asap-tools/experiments/microbench/precompute_throughput/{sweep.py,plot.py,configs} \
      $H:$R/
    ```
@@ -53,7 +53,7 @@ Each point = 15s warmup + 30s measurement + startup, ~50s.
 2. Build on the node:
 
    ```bash
-   ssh $H "cd $R/asap-query-engine && ~/.cargo/bin/cargo build --release --bin precompute_engine --bin bench_ingest_sender"
+   ssh $H "cd $R/asap-adapters && ~/.cargo/bin/cargo build --release --bin precompute_engine --bin bench_ingest_sender"
    ```
 
 3. Run in tmux so it survives disconnects (engine on socket 0, one hyperthread

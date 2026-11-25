@@ -1,16 +1,16 @@
+use crate::drivers::query::adapters::AdapterConfig;
+use crate::drivers::query::servers::http::{HttpServer, HttpServerConfig};
+use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 #[cfg(test)]
-use crate::data_model::{
+use query_engine_rust::data_model::{
     AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, PromQLSchema,
     QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
 };
-use crate::drivers::query::adapters::AdapterConfig;
-use crate::drivers::query::servers::http::{HttpServer, HttpServerConfig};
-use crate::engines::SimpleEngine;
-use crate::stores::simple_map_store::SimpleMapStore;
+use query_engine_rust::engines::SimpleEngine;
+use query_engine_rust::stores::simple_map_store::SimpleMapStore;
 #[cfg(feature = "native_query_legacy_test_support")]
-use crate::NativeRangeExecutionMode;
-use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::AggregationType;
+use query_engine_rust::NativeRangeExecutionMode;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -162,7 +162,7 @@ async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
         inference_config,
         streaming_config.clone(),
         15000, // 15s scrape interval
-        crate::data_model::QueryLanguage::promql,
+        query_engine_rust::data_model::QueryLanguage::promql,
     ));
 
     let server = HttpServer::new(config, query_engine, store, None);
@@ -330,7 +330,7 @@ async fn test_forwarding_disabled() {
         inference_config,
         streaming_config.clone(),
         15000, // 15s scrape interval
-        crate::data_model::QueryLanguage::promql,
+        query_engine_rust::data_model::QueryLanguage::promql,
     ));
 
     let server = HttpServer::new(config, query_engine, store, None);
@@ -387,7 +387,7 @@ async fn test_prometheus_server_unreachable() {
         inference_config,
         streaming_config.clone(),
         15000, // 15s scrape interval
-        crate::data_model::QueryLanguage::promql,
+        query_engine_rust::data_model::QueryLanguage::promql,
     ));
 
     let server = HttpServer::new(config, query_engine, store, None);
@@ -513,7 +513,7 @@ async fn test_range_query_forwarding_disabled() {
         inference_config,
         streaming_config.clone(),
         15000,
-        crate::data_model::QueryLanguage::promql,
+        query_engine_rust::data_model::QueryLanguage::promql,
     ));
 
     let server = HttpServer::new(config, query_engine, store, None);
@@ -565,7 +565,7 @@ async fn test_range_query_server_unreachable() {
         inference_config,
         streaming_config.clone(),
         15000,
-        crate::data_model::QueryLanguage::promql,
+        query_engine_rust::data_model::QueryLanguage::promql,
     ));
 
     let server = HttpServer::new(config, query_engine, store, None);

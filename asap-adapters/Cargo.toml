@@ -1,0 +1,71 @@
+[package]
+name = "asap-adapters"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Internal crates (workspace)
+query_engine_rust.workspace = true
+promql_utilities.workspace = true
+asap_types.workspace = true
+asap_planner.workspace = true
+asap_sketchlib.workspace = true
+
+# Shared external (workspace)
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+
+# Crate-specific (keep version pinned here)
+form_urlencoded = "1.2"
+axum = "0.7"
+flate2 = "1.0"
+async-trait = "0.1"
+prost = "0.13"
+opentelemetry-proto = { version = "0.28", features = ["gen-tonic", "gen-tonic-messages", "metrics"] }
+tonic = "0.12"
+tokio-stream = "0.1"
+snap = "1"
+prometheus = "0.13"
+reqwest = { version = "0.11", features = ["json"] }
+tracing-appender = "0.2"
+figment = { version = "0.10", features = ["yaml"] }
+
+[[bin]]
+name = "query_engine_rust"
+path = "src/main.rs"
+
+[[bin]]
+name = "query_engine_rust_fp"
+path = "src/main.rs"
+
+[[bin]]
+name = "precompute_engine"
+path = "src/bin/precompute_engine.rs"
+
+[[bin]]
+name = "test_e2e_precompute"
+path = "src/bin/test_e2e_precompute.rs"
+
+[[bin]]
+name = "bench_precompute_sketch"
+path = "src/bin/bench_precompute_sketch.rs"
+
+[[bin]]
+name = "bench_ingest_sender"
+path = "src/bin/bench_ingest_sender.rs"
+
+[[bin]]
+name = "e2e_quickstart_resource_test"
+path = "src/bin/e2e_quickstart_resource_test.rs"
+
+[dev-dependencies]
+serde_yaml.workspace = true
+
+[features]
+native_query_legacy_test_support = ["query_engine_rust/native_query_legacy_test_support"]

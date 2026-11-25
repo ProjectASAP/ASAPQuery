@@ -16,12 +16,14 @@ COPY asap-common ./asap-common
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
+COPY asap-adapters/Cargo.toml ./asap-adapters/
 COPY asap-planner-rs/Cargo.toml ./asap-planner-rs/
 COPY rqe-optimizer/Cargo.toml ./rqe-optimizer/
 COPY rqe-optimizer/src ./rqe-optimizer/src
 
 # Create dummy source files so Cargo can resolve all workspace members
-RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs && \
+RUN mkdir -p asap-query-engine/src && echo "pub fn placeholder() {}" > asap-query-engine/src/lib.rs && \
+    mkdir -p asap-adapters/src && echo "fn main() {}" > asap-adapters/src/main.rs && \
     mkdir -p asap-planner-rs/src/bin && echo "fn main() {}" > asap-planner-rs/src/main.rs && \
     echo "fn main() {}" > asap-planner-rs/src/bin/optimizer_cli.rs && \
     echo "fn main() {}" > asap-planner-rs/src/bin/benchmark_promql_status.rs && \

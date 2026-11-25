@@ -11,9 +11,10 @@ use std::sync::{Arc, RwLock};
 use tokio::signal;
 use tracing::{debug, error, info, warn};
 
+use asap_adapters::drivers::AdapterConfig;
+use asap_adapters::{HttpServer, HttpServerConfig, OtlpReceiver, OtlpReceiverConfig};
 use asap_types::streaming_config::StreamingConfig;
 use query_engine_rust::data_model::enums::{CleanupPolicy, StreamingEngine};
-use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::precompute_engine::csv_ingest::{CsvFileIngestConfig, CsvFileIngestSource};
 use query_engine_rust::precompute_engine::json_ingest::{
@@ -24,9 +25,8 @@ use query_engine_rust::stores::simple_map_store::spill::SpillWriter;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
 use query_engine_rust::{
-    HttpIngestConfig, HttpIngestSource, HttpServer, HttpServerConfig, IngestSource, OtlpReceiver,
-    OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, PrecomputeEngineHandle, Result,
-    SimpleEngine, SimpleMapStore, StoreOutputSink,
+    HttpIngestConfig, HttpIngestSource, IngestSource, PrecomputeEngine, PrecomputeEngineConfig,
+    PrecomputeEngineHandle, Result, SimpleEngine, SimpleMapStore, StoreOutputSink,
 };
 
 #[derive(Parser, Debug)]
@@ -317,8 +317,8 @@ async fn main() -> Result<()> {
     }
 
     let query_tracker = if config.query_tracker.enabled {
-        use query_engine_rust::planner_client::{LocalPlannerClient, PlannerResult};
-        use query_engine_rust::QueryTrackerConfig;
+        use asap_adapters::planner_client::{LocalPlannerClient, PlannerResult};
+        use asap_adapters::QueryTrackerConfig;
 
         let tracker_config = QueryTrackerConfig {
             observation_window_secs: config.query_tracker.observation_window_secs,
@@ -343,7 +343,7 @@ async fn main() -> Result<()> {
 
         let (plan_tx, plan_rx) = tokio::sync::watch::channel(None::<PlannerResult>);
 
-        let tracker = Arc::new(query_engine_rust::QueryTracker::new(
+        let tracker = Arc::new(asap_adapters::QueryTracker::new(
             tracker_config,
             streaming_config_ref.clone(),
             inference_config_ref.clone(),

@@ -7,6 +7,7 @@ on:
   #   paths:
   #     - 'promql-compliance/**'
   #     - 'asap-query-engine/**'
+  #     - 'asap-adapters/**'
   #     - 'asap-planner-rs/**'
   #     - 'asap-common/**'
   #     - 'Cargo.toml'

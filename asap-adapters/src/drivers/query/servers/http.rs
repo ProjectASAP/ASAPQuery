@@ -17,14 +17,14 @@ use tracing::{debug, info, warn};
 use crate::drivers::query::adapters::{
     create_http_adapter, AdapterConfig, HttpProtocolAdapter, PrometheusResponse,
 };
-use crate::engines::{QueryExecutionError, RqeQueryError, SimpleEngine};
-use crate::utils::http::convert_query_result_to_prometheus;
 use asap_types::rqe_expr::RqeExpr;
+use query_engine_rust::engines::{QueryExecutionError, RqeQueryError, SimpleEngine};
+use query_engine_rust::utils::http::convert_query_result_to_prometheus;
 
 /// Answers an RQE expression tree, whatever the adapter's query language.
 pub const RQE_QUERY_ENDPOINT: &str = "/api/v1/rqe_query";
 use crate::query_tracker::QueryTracker;
-use crate::stores::Store;
+use query_engine_rust::stores::Store;
 
 #[derive(Debug, Clone)]
 pub struct HttpServerConfig {
@@ -795,9 +795,9 @@ async fn handle_range_query_post(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::{InferenceConfig, StreamingConfig};
-    use crate::engines::SimpleEngine;
-    use crate::stores::simple_map_store::SimpleMapStore;
+    use query_engine_rust::data_model::{InferenceConfig, StreamingConfig};
+    use query_engine_rust::engines::SimpleEngine;
+    use query_engine_rust::stores::simple_map_store::SimpleMapStore;
     use reqwest::Client;
     use std::sync::Arc;
 
@@ -815,13 +815,13 @@ mod tests {
         };
 
         let inference_config = InferenceConfig::new(
-            crate::data_model::QueryLanguage::promql,
-            crate::data_model::CleanupPolicy::NoCleanup,
+            query_engine_rust::data_model::QueryLanguage::promql,
+            query_engine_rust::data_model::CleanupPolicy::NoCleanup,
         );
         let streaming_config = Arc::new(StreamingConfig::default());
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),
-            crate::data_model::CleanupPolicy::NoCleanup,
+            query_engine_rust::data_model::CleanupPolicy::NoCleanup,
         ));
         let query_engine = Arc::new(SimpleEngine::new(
             store.clone(),
@@ -829,7 +829,7 @@ mod tests {
             inference_config,
             streaming_config.clone(),
             15000,
-            crate::data_model::QueryLanguage::promql,
+            query_engine_rust::data_model::QueryLanguage::promql,
         ));
 
         let server = HttpServer::new(config, query_engine, store, None);

@@ -11,6 +11,7 @@ on:
       - main
     paths:
       - 'asap-query-engine/**'
+      - 'asap-adapters/**'
       - 'asap-planner-rs/**'
       - 'rqe-optimizer/Cargo.toml'
       - 'rqe-optimizer/src/**'

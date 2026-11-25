@@ -9,7 +9,7 @@ use promql_utilities::data_model::KeyByLabelNames;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::engines::QueryResult;
+use query_engine_rust::engines::QueryResult;
 
 /// Parsed query request data ready for engine processing
 #[derive(Debug, Clone)]
@@ -154,12 +154,12 @@ pub trait HttpProtocolAdapter: QueryRequestAdapter + QueryResponseAdapter + Send
     /// optionally forward to fallback backend for additional info.
     async fn handle_runtime_info(
         &self,
-        store: std::sync::Arc<dyn crate::stores::Store>,
+        store: std::sync::Arc<dyn query_engine_rust::stores::Store>,
     ) -> Result<Json<Value>, StatusCode>;
 
     async fn handle_runtime_info_with_headers(
         &self,
-        store: std::sync::Arc<dyn crate::stores::Store>,
+        store: std::sync::Arc<dyn query_engine_rust::stores::Store>,
         headers: HashMap<String, String>,
     ) -> Result<Json<Value>, StatusCode> {
         // Default implementation ignores headers and calls the old method

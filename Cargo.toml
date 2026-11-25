@@ -8,6 +8,7 @@ members = [
     "asap-common/tests/compare_matched_tokens/rust_tests",
     "asap-common/tests/compare_patterns",
     "asap-query-engine",
+    "asap-adapters",
     "asap-planner-rs",
     "rqe-optimizer",
 ]
@@ -36,6 +37,7 @@ sql_utilities = { path = "asap-common/dependencies/rs/sql_utilities" }
 asap_types = { path = "asap-common/dependencies/rs/asap_types" }
 elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
 asap_planner = { path = "asap-planner-rs" }
+query_engine_rust = { path = "asap-query-engine" }
 # Pin past the published releases to pick up the CMS estimate i32::MAX clamp fix
 # and DDSketch's zero bucket and negative store. Revert to a published version
 # once released.

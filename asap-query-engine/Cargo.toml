@@ -8,7 +8,6 @@ edition.workspace = true
 promql_utilities.workspace = true
 sql_utilities.workspace = true
 asap_types.workspace = true
-asap_planner.workspace = true
 
 # Shared external (workspace)
 serde.workspace = true
@@ -24,32 +23,21 @@ promql-parser.workspace = true
 tokio.workspace = true
 
 # Crate-specific (keep version pinned here)
-form_urlencoded = "1.2"
 axum = "0.7"
-rusqlite = { version = "0.31", features = ["bundled"] }
 bincode = "1.3"
 dashmap = "5.5"
-uuid = { version = "1.0", features = ["v4"] }
-structopt = "0.3"
 urlencoding = "2.1"
-flate2 = "1.0"
 async-trait = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
 base64 = "0.21"
 sqlparser = "0.59.0"
 futures = "0.3"
 prost = "0.13"
-opentelemetry-proto = { version = "0.28", features = ["gen-tonic", "gen-tonic-messages", "metrics"] }
-tonic = "0.12"
-tokio-stream = "0.1"
 snap = "1"
 regex = "1"
 prometheus = "0.13"
 lazy_static = "1.4"
 zstd = "0.13"
-reqwest = { version = "0.11", features = ["json"] }
-tracing-appender = "0.2"
-figment = { version = "0.10", features = ["yaml"] }
 arc-swap = "1"
 csv = "1"
 elastic_dsl_utilities.workspace = true
@@ -60,34 +48,6 @@ asap_sketchlib.workspace = true
 # crate still builds where jemalloc is unavailable; not built on MSVC.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }
-
-[[bin]]
-name = "query_engine_rust"
-path = "src/main.rs"
-
-[[bin]]
-name = "query_engine_rust_fp"
-path = "src/main.rs"
-
-[[bin]]
-name = "precompute_engine"
-path = "src/bin/precompute_engine.rs"
-
-[[bin]]
-name = "test_e2e_precompute"
-path = "src/bin/test_e2e_precompute.rs"
-
-[[bin]]
-name = "bench_precompute_sketch"
-path = "src/bin/bench_precompute_sketch.rs"
-
-[[bin]]
-name = "bench_ingest_sender"
-path = "src/bin/bench_ingest_sender.rs"
-
-[[bin]]
-name = "e2e_quickstart_resource_test"
-path = "src/bin/e2e_quickstart_resource_test.rs"
 
 [dev-dependencies]
 tempfile = "3.20.0"

@@ -4,7 +4,7 @@ This guide covers running the ASAP stack manually with Prometheus for developmen
 
 ## Prerequisites
 
-- asap-query-engine built at `~/code/asap-query-engine/target/release/query_engine_rust`
+- asap-query-engine built at `~/code/target/release/query_engine_rust` (workspace target dir)
 - asap-tools/data-sources/prometheus-exporters built (fake_exporter_rust)
 - Prometheus installed and accessible
 
